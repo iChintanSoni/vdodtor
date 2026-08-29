@@ -93,9 +93,13 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       `files.user-selected.read-write` and `files.bookmarks.app-scope` are granted, and
       `MediaAsset.bookmark` is modelled and persisted. **Minting and resolving the bookmark
       still needs native code** — nothing calls it yet
-- [~] CI (GitHub Actions, macOS): engine unit tests, `dart analyze`, `dart test`, app builds
-      — `.github/workflows/ci.yml` written, with the FFmpeg build cached on the script hash
-      and a check that the ffigen bindings are not stale. **Not yet run on a real runner**
+- [~] CI (**self-hosted** macOS runner): engine unit tests, `dart analyze`, `dart test`, app builds
+      — `.github/workflows/ci.yml` runs on `[self-hosted, macOS, ARM64]`, so a green build
+      means what a local build means: same Xcode, same Flutter, same signing identity.
+      FFmpeg is cached in `~/.cache/vdodtor` — outside the workspace, keyed on the build
+      script — so the checkout can clean normally without paying 10 minutes for it. The job
+      refuses to install anything on the machine; `tools/setup_ci_runner.sh` registers the
+      runner as a launchd service. **Runner not yet registered, so the workflow has not run**
 
 ### Document model (Dart)
 - [x] Rational-time type + project timebase, with arithmetic tests — exact `Rational`,
