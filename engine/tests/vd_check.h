@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static int vd_failures = 0;
+static int vd_failures = 0;  // NOLINT: tests read this directly
 static int vd_checks = 0;
 
 #define VD_CHECK(cond)                                                     \

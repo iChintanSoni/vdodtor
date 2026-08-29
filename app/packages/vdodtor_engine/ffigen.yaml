@@ -13,6 +13,9 @@ headers:
   entry-points:
     - '../../../engine/include/vdodtor/vd_time.h'
     - '../../../engine/include/vdodtor/vd_probe.h'
+    - '../../../engine/include/vdodtor/vd_decoder.h'
+    - '../../../engine/include/vdodtor/vd_compositor.h'
+    - '../../../engine/include/vdodtor/vd_engine.h'
   include-directives:
     - '**/vdodtor/**'
 compiler-opts:

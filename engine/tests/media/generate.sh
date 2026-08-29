@@ -30,6 +30,24 @@ ffmpeg $common -f lavfi -i "testsrc2=size=320x240:rate=60:duration=2" \
   -vf "select='not(mod(n,3))'" -fps_mode vfr \
   -c:v libx264 -preset veryfast -crf 40 -pix_fmt yuv420p -an vfr.mp4
 
+# Flat colour for the compositor's YCbCr conversion. 0x00C864 is chosen
+# deliberately: BT.601 and BT.709 disagree about it loudly — decoding this file
+# with the wrong matrix moves green by about 25 counts — where for most colours
+# the two differ by only a few, which is what makes a wrong matrix so easy to
+# ship. One file is SD and untagged, exercising the fallback; one is HD and
+# explicitly tagged BT.709.
+ffmpeg $common -f lavfi -i "color=c=0x00C864:size=320x240:rate=30:duration=1" \
+  -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -an solid_sd_601.mp4
+
+ffmpeg $common -f lavfi -i "color=c=0x00C864:size=1280x720:rate=30:duration=1" \
+  -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p \
+  -colorspace bt709 -color_primaries bt709 -color_trc bt709 -an solid_hd_709.mp4
+
+# A second flat colour, so a timeline test can tell which clip is on screen
+# from the pixels rather than from a frame count.
+ffmpeg $common -f lavfi -i "color=c=0xC86400:size=320x240:rate=30:duration=1" \
+  -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -an solid_sd_orange.mp4
+
 # Not media at all, for the failure path.
 printf 'this is not a video\n' > not_media.txt
 

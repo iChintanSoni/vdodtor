@@ -161,6 +161,548 @@ class VdEngineBindings {
       );
   late final _vd_result_string = _vd_result_stringPtr
       .asFunction<ffi.Pointer<ffi.Char> Function(int)>();
+
+  VdDecoderOptions vd_decoder_default_options() {
+    return _vd_decoder_default_options();
+  }
+
+  late final _vd_decoder_default_optionsPtr =
+      _lookup<ffi.NativeFunction<VdDecoderOptions Function()>>(
+        'vd_decoder_default_options',
+      );
+  late final _vd_decoder_default_options = _vd_decoder_default_optionsPtr
+      .asFunction<VdDecoderOptions Function()>();
+
+  /// Opens `path` for decoding. `out_result` receives VD_OK or a negative
+  /// VdResult; it may be NULL. Returns NULL on failure.
+  ffi.Pointer<VdDecoder> vd_decoder_open(
+    ffi.Pointer<ffi.Char> path,
+    VdDecoderOptions options,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_decoder_open(path, options, out_result);
+  }
+
+  late final _vd_decoder_openPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdDecoder> Function(
+            ffi.Pointer<ffi.Char>,
+            VdDecoderOptions,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_decoder_open');
+  late final _vd_decoder_open = _vd_decoder_openPtr
+      .asFunction<
+        ffi.Pointer<VdDecoder> Function(
+          ffi.Pointer<ffi.Char>,
+          VdDecoderOptions,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  void vd_decoder_close(ffi.Pointer<VdDecoder> decoder) {
+    return _vd_decoder_close(decoder);
+  }
+
+  late final _vd_decoder_closePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdDecoder>)>>(
+        'vd_decoder_close',
+      );
+  late final _vd_decoder_close = _vd_decoder_closePtr
+      .asFunction<void Function(ffi.Pointer<VdDecoder>)>();
+
+  /// What probing the same file would have said. Free — it is read at open.
+  int vd_decoder_info(
+    ffi.Pointer<VdDecoder> decoder,
+    ffi.Pointer<VdProbeInfo> out,
+  ) {
+    return _vd_decoder_info(decoder, out);
+  }
+
+  late final _vd_decoder_infoPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<VdDecoder>, ffi.Pointer<VdProbeInfo>)
+        >
+      >('vd_decoder_info');
+  late final _vd_decoder_info = _vd_decoder_infoPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdDecoder>, ffi.Pointer<VdProbeInfo>)
+      >();
+
+  /// The frame whose presentation interval contains `t`.
+  ///
+  /// Clamps: a `t` before the first frame returns the first, and a `t` past the
+  /// end returns the last. That is what a timeline wants — a clip trimmed a tick
+  /// past its source should show the last frame, not a black hole.
+  ///
+  /// Returns VD_OK, or VD_ERR_DECODE if the file has no decodable video.
+  int vd_decoder_frame_at(
+    ffi.Pointer<VdDecoder> decoder,
+    int t,
+    ffi.Pointer<VdFrame> out,
+  ) {
+    return _vd_decoder_frame_at(decoder, t, out);
+  }
+
+  late final _vd_decoder_frame_atPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdDecoder>,
+            VdTick,
+            ffi.Pointer<VdFrame>,
+          )
+        >
+      >('vd_decoder_frame_at');
+  late final _vd_decoder_frame_at = _vd_decoder_frame_atPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdDecoder>, int, ffi.Pointer<VdFrame>)
+      >();
+
+  /// Releases the frame's buffer and zeroes it. Safe on an already-released or
+  /// zeroed frame.
+  void vd_frame_release(ffi.Pointer<VdFrame> frame) {
+    return _vd_frame_release(frame);
+  }
+
+  late final _vd_frame_releasePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdFrame>)>>(
+        'vd_frame_release',
+      );
+  late final _vd_frame_release = _vd_frame_releasePtr
+      .asFunction<void Function(ffi.Pointer<VdFrame>)>();
+
+  /// --- keyframe index --------------------------------------------------------
+  /// Built at open from the container's index. Seeking anywhere means landing on
+  /// one of these and decoding forward, so the distance between them is the real
+  /// cost of a scrub.
+  int vd_decoder_keyframe_count(ffi.Pointer<VdDecoder> decoder) {
+    return _vd_decoder_keyframe_count(decoder);
+  }
+
+  late final _vd_decoder_keyframe_countPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdDecoder>)>>(
+        'vd_decoder_keyframe_count',
+      );
+  late final _vd_decoder_keyframe_count = _vd_decoder_keyframe_countPtr
+      .asFunction<int Function(ffi.Pointer<VdDecoder>)>();
+
+  /// The latest keyframe at or before `t`, or 0 when the container has no index.
+  int vd_decoder_keyframe_at_or_before(ffi.Pointer<VdDecoder> decoder, int t) {
+    return _vd_decoder_keyframe_at_or_before(decoder, t);
+  }
+
+  late final _vd_decoder_keyframe_at_or_beforePtr =
+      _lookup<
+        ffi.NativeFunction<VdTick Function(ffi.Pointer<VdDecoder>, VdTick)>
+      >('vd_decoder_keyframe_at_or_before');
+  late final _vd_decoder_keyframe_at_or_before =
+      _vd_decoder_keyframe_at_or_beforePtr
+          .asFunction<int Function(ffi.Pointer<VdDecoder>, int)>();
+
+  void vd_decoder_stats(
+    ffi.Pointer<VdDecoder> decoder,
+    ffi.Pointer<VdDecoderStats> out,
+  ) {
+    return _vd_decoder_stats(decoder, out);
+  }
+
+  late final _vd_decoder_statsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdDecoder>, ffi.Pointer<VdDecoderStats>)
+        >
+      >('vd_decoder_stats');
+  late final _vd_decoder_stats = _vd_decoder_statsPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdDecoder>, ffi.Pointer<VdDecoderStats>)
+      >();
+
+  void vd_decoder_reset_stats(ffi.Pointer<VdDecoder> decoder) {
+    return _vd_decoder_reset_stats(decoder);
+  }
+
+  late final _vd_decoder_reset_statsPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdDecoder>)>>(
+        'vd_decoder_reset_stats',
+      );
+  late final _vd_decoder_reset_stats = _vd_decoder_reset_statsPtr
+      .asFunction<void Function(ffi.Pointer<VdDecoder>)>();
+
+  /// Creates a compositor rendering `width` x `height` BGRA frames.
+  /// `out_result` may be NULL.
+  ffi.Pointer<VdCompositor> vd_compositor_create(
+    int width,
+    int height,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_compositor_create(width, height, out_result);
+  }
+
+  late final _vd_compositor_createPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdCompositor> Function(
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_compositor_create');
+  late final _vd_compositor_create = _vd_compositor_createPtr
+      .asFunction<
+        ffi.Pointer<VdCompositor> Function(int, int, ffi.Pointer<ffi.Int32>)
+      >();
+
+  void vd_compositor_destroy(ffi.Pointer<VdCompositor> compositor) {
+    return _vd_compositor_destroy(compositor);
+  }
+
+  late final _vd_compositor_destroyPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdCompositor>)>>(
+        'vd_compositor_destroy',
+      );
+  late final _vd_compositor_destroy = _vd_compositor_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdCompositor>)>();
+
+  int vd_compositor_width(ffi.Pointer<VdCompositor> compositor) {
+    return _vd_compositor_width(compositor);
+  }
+
+  late final _vd_compositor_widthPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdCompositor>)>
+      >('vd_compositor_width');
+  late final _vd_compositor_width = _vd_compositor_widthPtr
+      .asFunction<int Function(ffi.Pointer<VdCompositor>)>();
+
+  int vd_compositor_height(ffi.Pointer<VdCompositor> compositor) {
+    return _vd_compositor_height(compositor);
+  }
+
+  late final _vd_compositor_heightPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdCompositor>)>
+      >('vd_compositor_height');
+  late final _vd_compositor_height = _vd_compositor_heightPtr
+      .asFunction<int Function(ffi.Pointer<VdCompositor>)>();
+
+  /// Composites `layers` bottom-to-top onto black and publishes the result.
+  /// Blocks until the GPU is done, so the frame is ready to hand to Flutter or an
+  /// encoder the moment this returns.
+  int vd_compositor_render(
+    ffi.Pointer<VdCompositor> compositor,
+    ffi.Pointer<VdLayer> layers,
+    int layer_count,
+  ) {
+    return _vd_compositor_render(compositor, layers, layer_count);
+  }
+
+  late final _vd_compositor_renderPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdCompositor>,
+            ffi.Pointer<VdLayer>,
+            ffi.Int32,
+          )
+        >
+      >('vd_compositor_render');
+  late final _vd_compositor_render = _vd_compositor_renderPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<VdLayer>, int)
+      >();
+
+  /// The most recent composited frame, retained. Caller releases with
+  /// CVPixelBufferRelease. NULL before the first render.
+  ffi.Pointer<ffi.Void> vd_compositor_copy_output(
+    ffi.Pointer<VdCompositor> compositor,
+  ) {
+    return _vd_compositor_copy_output(compositor);
+  }
+
+  late final _vd_compositor_copy_outputPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<ffi.Void> Function(ffi.Pointer<VdCompositor>)
+        >
+      >('vd_compositor_copy_output');
+  late final _vd_compositor_copy_output = _vd_compositor_copy_outputPtr
+      .asFunction<ffi.Pointer<ffi.Void> Function(ffi.Pointer<VdCompositor>)>();
+
+  /// Milliseconds of GPU time the last render took.
+  double vd_compositor_last_gpu_ms(ffi.Pointer<VdCompositor> compositor) {
+    return _vd_compositor_last_gpu_ms(compositor);
+  }
+
+  late final _vd_compositor_last_gpu_msPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Double Function(ffi.Pointer<VdCompositor>)>
+      >('vd_compositor_last_gpu_ms');
+  late final _vd_compositor_last_gpu_ms = _vd_compositor_last_gpu_msPtr
+      .asFunction<double Function(ffi.Pointer<VdCompositor>)>();
+
+  /// Writes the last composited frame to `path` as PNG. This is how the
+  /// compositor gets checked on pixels rather than on timings.
+  int vd_compositor_dump_png(
+    ffi.Pointer<VdCompositor> compositor,
+    ffi.Pointer<ffi.Char> path,
+  ) {
+    return _vd_compositor_dump_png(compositor, path);
+  }
+
+  late final _vd_compositor_dump_pngPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Char>)
+        >
+      >('vd_compositor_dump_png');
+  late final _vd_compositor_dump_png = _vd_compositor_dump_pngPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Char>)
+      >();
+
+  /// Reads one pixel of the last composited frame, as 8-bit BGRA. Out of range
+  /// returns false. For tests: an assertion on colour is worth more than an
+  /// assertion on frame count.
+  bool vd_compositor_read_pixel(
+    ffi.Pointer<VdCompositor> compositor,
+    int x,
+    int y,
+    ffi.Pointer<ffi.Uint8> out_bgra,
+  ) {
+    return _vd_compositor_read_pixel(compositor, x, y, out_bgra);
+  }
+
+  late final _vd_compositor_read_pixelPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Bool Function(
+            ffi.Pointer<VdCompositor>,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Uint8>,
+          )
+        >
+      >('vd_compositor_read_pixel');
+  late final _vd_compositor_read_pixel = _vd_compositor_read_pixelPtr
+      .asFunction<
+        bool Function(
+          ffi.Pointer<VdCompositor>,
+          int,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+        )
+      >();
+
+  ffi.Pointer<VdEngine> vd_engine_create(ffi.Pointer<ffi.Int32> out_result) {
+    return _vd_engine_create(out_result);
+  }
+
+  late final _vd_engine_createPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdEngine> Function(ffi.Pointer<ffi.Int32>)
+        >
+      >('vd_engine_create');
+  late final _vd_engine_create = _vd_engine_createPtr
+      .asFunction<ffi.Pointer<VdEngine> Function(ffi.Pointer<ffi.Int32>)>();
+
+  /// Stops the render thread, waits for it, and only then tears anything down.
+  /// The S1 spike freed the engine while GPU completion handlers still held it,
+  /// and it presented as gradual slowdown rather than a crash.
+  void vd_engine_destroy(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_destroy(engine);
+  }
+
+  late final _vd_engine_destroyPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_destroy',
+      );
+  late final _vd_engine_destroy = _vd_engine_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdEngine>)>();
+
+  /// Replaces the render list. Safe to call while playing: the current position
+  /// is kept, and the next rendered frame reflects the new timeline. Reopening
+  /// decoders is avoided where a clip's source is unchanged.
+  int vd_engine_set_timeline(
+    ffi.Pointer<VdEngine> engine,
+    ffi.Pointer<VdTimeline> timeline,
+  ) {
+    return _vd_engine_set_timeline(engine, timeline);
+  }
+
+  late final _vd_engine_set_timelinePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdTimeline>)
+        >
+      >('vd_engine_set_timeline');
+  late final _vd_engine_set_timeline = _vd_engine_set_timelinePtr
+      .asFunction<
+        int Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdTimeline>)
+      >();
+
+  void vd_engine_play(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_play(engine);
+  }
+
+  late final _vd_engine_playPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_play',
+      );
+  late final _vd_engine_play = _vd_engine_playPtr
+      .asFunction<void Function(ffi.Pointer<VdEngine>)>();
+
+  void vd_engine_pause(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_pause(engine);
+  }
+
+  late final _vd_engine_pausePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_pause',
+      );
+  late final _vd_engine_pause = _vd_engine_pausePtr
+      .asFunction<void Function(ffi.Pointer<VdEngine>)>();
+
+  /// Moves the playhead. Renders one frame even when paused, which is what makes
+  /// scrubbing show anything.
+  void vd_engine_seek(ffi.Pointer<VdEngine> engine, int position) {
+    return _vd_engine_seek(engine, position);
+  }
+
+  late final _vd_engine_seekPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEngine>, VdTick)>
+      >('vd_engine_seek');
+  late final _vd_engine_seek = _vd_engine_seekPtr
+      .asFunction<void Function(ffi.Pointer<VdEngine>, int)>();
+
+  /// Renders the current position once, synchronously, on the calling thread.
+  /// For tests and for the first frame after a timeline change.
+  int vd_engine_render_now(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_render_now(engine);
+  }
+
+  late final _vd_engine_render_nowPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_render_now',
+      );
+  late final _vd_engine_render_now = _vd_engine_render_nowPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>)>();
+
+  int vd_engine_position(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_position(engine);
+  }
+
+  late final _vd_engine_positionPtr =
+      _lookup<ffi.NativeFunction<VdTick Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_position',
+      );
+  late final _vd_engine_position = _vd_engine_positionPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>)>();
+
+  int vd_engine_duration(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_duration(engine);
+  }
+
+  late final _vd_engine_durationPtr =
+      _lookup<ffi.NativeFunction<VdTick Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_duration',
+      );
+  late final _vd_engine_duration = _vd_engine_durationPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>)>();
+
+  int vd_engine_state(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_state(engine);
+  }
+
+  late final _vd_engine_statePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdEngine>)>>(
+        'vd_engine_state',
+      );
+  late final _vd_engine_state = _vd_engine_statePtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>)>();
+
+  void vd_engine_set_frame_callback(
+    ffi.Pointer<VdEngine> engine,
+    VdFrameCallback callback,
+    ffi.Pointer<ffi.Void> context,
+  ) {
+    return _vd_engine_set_frame_callback(engine, callback, context);
+  }
+
+  late final _vd_engine_set_frame_callbackPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdEngine>,
+            VdFrameCallback,
+            ffi.Pointer<ffi.Void>,
+          )
+        >
+      >('vd_engine_set_frame_callback');
+  late final _vd_engine_set_frame_callback = _vd_engine_set_frame_callbackPtr
+      .asFunction<
+        void Function(
+          ffi.Pointer<VdEngine>,
+          VdFrameCallback,
+          ffi.Pointer<ffi.Void>,
+        )
+      >();
+
+  /// The most recently published frame as a CVPixelBufferRef, retained. NULL
+  /// before the first render. Caller releases.
+  ffi.Pointer<ffi.Void> vd_engine_copy_output(ffi.Pointer<VdEngine> engine) {
+    return _vd_engine_copy_output(engine);
+  }
+
+  late final _vd_engine_copy_outputPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<ffi.Void> Function(ffi.Pointer<VdEngine>)
+        >
+      >('vd_engine_copy_output');
+  late final _vd_engine_copy_output = _vd_engine_copy_outputPtr
+      .asFunction<ffi.Pointer<ffi.Void> Function(ffi.Pointer<VdEngine>)>();
+
+  /// Writes the last published frame to `path` as PNG.
+  int vd_engine_dump_png(
+    ffi.Pointer<VdEngine> engine,
+    ffi.Pointer<ffi.Char> path,
+  ) {
+    return _vd_engine_dump_png(engine, path);
+  }
+
+  late final _vd_engine_dump_pngPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<VdEngine>, ffi.Pointer<ffi.Char>)
+        >
+      >('vd_engine_dump_png');
+  late final _vd_engine_dump_png = _vd_engine_dump_pngPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>, ffi.Pointer<ffi.Char>)>();
+
+  void vd_engine_stats(
+    ffi.Pointer<VdEngine> engine,
+    ffi.Pointer<VdEngineStats> out,
+  ) {
+    return _vd_engine_stats(engine, out);
+  }
+
+  late final _vd_engine_statsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdEngineStats>)
+        >
+      >('vd_engine_stats');
+  late final _vd_engine_stats = _vd_engine_statsPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdEngineStats>)
+      >();
 }
 
 /// An instant or a duration, in ticks. Signed: negative offsets are legal.
@@ -185,7 +727,10 @@ enum VdResult {
   /// opened, but nothing playable inside
   VD_ERR_NO_STREAMS(-2),
   VD_ERR_INVALID_ARG(-3),
-  VD_ERR_UNSUPPORTED(-4);
+  VD_ERR_UNSUPPORTED(-4),
+
+  /// opened, but a frame could not be produced
+  VD_ERR_DECODE(-5);
 
   final int value;
   const VdResult(this.value);
@@ -196,6 +741,7 @@ enum VdResult {
     -2 => VD_ERR_NO_STREAMS,
     -3 => VD_ERR_INVALID_ARG,
     -4 => VD_ERR_UNSUPPORTED,
+    -5 => VD_ERR_DECODE,
     _ => throw ArgumentError('Unknown value for VdResult: $value'),
   };
 }
@@ -248,6 +794,282 @@ final class VdProbeInfo extends ffi.Struct {
 
   @ffi.Array.multi([64])
   external ffi.Array<ffi.Char> format_name;
+}
+
+final class VdDecoder extends ffi.Opaque {}
+
+enum VdPixelFormat {
+  /// Zero-copy from VideoToolbox: an IOSurface-backed NV12 buffer, ready for
+  /// the Metal compositor to sample directly.
+  VD_PIXEL_NV12(0),
+
+  /// Software decode, copied into a planar buffer. Slower, and the compositor
+  /// has to sample it differently.
+  VD_PIXEL_YUV420P(1);
+
+  final int value;
+  const VdPixelFormat(this.value);
+
+  static VdPixelFormat fromValue(int value) => switch (value) {
+    0 => VD_PIXEL_NV12,
+    1 => VD_PIXEL_YUV420P,
+    _ => throw ArgumentError('Unknown value for VdPixelFormat: $value'),
+  };
+}
+
+final class VdDecoderOptions extends ffi.Struct {
+  /// 1 to try VideoToolbox. Falls back to software if the codec cannot be
+  /// hardware-decoded; check VdFrame::hardware to see what actually happened.
+  @ffi.Int32()
+  external int hardware;
+
+  /// Decoded frames to retain. 0 picks a default sized for scrubbing back and
+  /// forth across a second or so of footage.
+  @ffi.Int32()
+  external int cache_capacity;
+}
+
+/// The YCbCr matrix a source was encoded with. Getting this wrong does not
+/// look broken, it looks *slightly off* — which is worse, because nobody
+/// reports it and every export inherits it.
+enum VdColorMatrix {
+  VD_MATRIX_BT601(0),
+  VD_MATRIX_BT709(1),
+  VD_MATRIX_BT2020(2);
+
+  final int value;
+  const VdColorMatrix(this.value);
+
+  static VdColorMatrix fromValue(int value) => switch (value) {
+    0 => VD_MATRIX_BT601,
+    1 => VD_MATRIX_BT709,
+    2 => VD_MATRIX_BT2020,
+    _ => throw ArgumentError('Unknown value for VdColorMatrix: $value'),
+  };
+}
+
+final class VdFrame extends ffi.Struct {
+  /// CVPixelBufferRef, retained. Release with vd_frame_release, always, on
+  /// every path — the cache holds its own reference and does not care about
+  /// yours.
+  external ffi.Pointer<ffi.Void> pixel_buffer;
+
+  @ffi.UnsignedInt()
+  external int formatAsInt;
+
+  VdPixelFormat get format => VdPixelFormat.fromValue(formatAsInt);
+
+  /// The presentation interval this frame covers: [pts, pts + duration).
+  @VdTick()
+  external int pts;
+
+  @VdTick()
+  external int duration;
+
+  @ffi.Int32()
+  external int width;
+
+  @ffi.Int32()
+  external int height;
+
+  @ffi.Bool()
+  external bool hardware;
+
+  @ffi.UnsignedInt()
+  external int color_matrixAsInt;
+
+  VdColorMatrix get color_matrix => VdColorMatrix.fromValue(color_matrixAsInt);
+
+  /// True for 0-255 luma, false for the 16-235 video range most sources use.
+  @ffi.Bool()
+  external bool full_range;
+}
+
+/// --- telemetry -------------------------------------------------------------
+final class VdDecoderStats extends ffi.Struct {
+  @ffi.Int64()
+  external int frames_decoded;
+
+  @ffi.Int64()
+  external int cache_hits;
+
+  @ffi.Int64()
+  external int cache_misses;
+
+  @ffi.Int64()
+  external int seeks;
+
+  @ffi.Int64()
+  external int decode_errors;
+}
+
+final class VdCompositor extends ffi.Opaque {}
+
+/// How a source that does not match the output aspect is placed.
+enum VdFitMode {
+  /// whole frame visible, letterboxed
+  VD_FIT_CONTAIN(0),
+
+  /// fills the output, edges cropped
+  VD_FIT_COVER(1),
+
+  /// ignores aspect
+  VD_FIT_STRETCH(2);
+
+  final int value;
+  const VdFitMode(this.value);
+
+  static VdFitMode fromValue(int value) => switch (value) {
+    0 => VD_FIT_CONTAIN,
+    1 => VD_FIT_COVER,
+    2 => VD_FIT_STRETCH,
+    _ => throw ArgumentError('Unknown value for VdFitMode: $value'),
+  };
+}
+
+final class VdLayer extends ffi.Struct {
+  /// CVPixelBufferRef from vd_decoder_frame_at. Borrowed for the duration of
+  /// the call; the compositor does not retain it.
+  external ffi.Pointer<ffi.Void> pixel_buffer;
+
+  @ffi.UnsignedInt()
+  external int formatAsInt;
+
+  VdPixelFormat get format => VdPixelFormat.fromValue(formatAsInt);
+
+  /// Clockwise degrees to rotate for display: 0, 90, 180, 270.
+  @ffi.Int32()
+  external int rotation_degrees;
+
+  /// Copied straight from the VdFrame the buffer came out of.
+  @ffi.UnsignedInt()
+  external int color_matrixAsInt;
+
+  VdColorMatrix get color_matrix => VdColorMatrix.fromValue(color_matrixAsInt);
+
+  @ffi.Bool()
+  external bool full_range;
+
+  @ffi.UnsignedInt()
+  external int fitAsInt;
+
+  VdFitMode get fit => VdFitMode.fromValue(fitAsInt);
+
+  /// 0..1
+  @ffi.Float()
+  external double opacity;
+}
+
+final class VdEngine extends ffi.Opaque {}
+
+enum VdPlaybackState {
+  VD_STATE_IDLE(0),
+  VD_STATE_PLAYING(1),
+  VD_STATE_PAUSED(2),
+  VD_STATE_ENDED(3);
+
+  final int value;
+  const VdPlaybackState(this.value);
+
+  static VdPlaybackState fromValue(int value) => switch (value) {
+    0 => VD_STATE_IDLE,
+    1 => VD_STATE_PLAYING,
+    2 => VD_STATE_PAUSED,
+    3 => VD_STATE_ENDED,
+    _ => throw ArgumentError('Unknown value for VdPlaybackState: $value'),
+  };
+}
+
+final class VdTimelineClip extends ffi.Struct {
+  /// Absolute path to the source file. Copied on set_timeline; the caller keeps
+  /// ownership of its own string.
+  external ffi.Pointer<ffi.Char> path;
+
+  /// position on the timeline
+  @VdTick()
+  external int start;
+
+  /// length on the timeline
+  @VdTick()
+  external int duration;
+
+  /// offset into the source
+  @VdTick()
+  external int source_in;
+
+  /// Compositing order: lower renders first, so 0 is the main track.
+  @ffi.Int32()
+  external int track;
+
+  @ffi.Float()
+  external double opacity;
+
+  @ffi.UnsignedInt()
+  external int fitAsInt;
+
+  VdFitMode get fit => VdFitMode.fromValue(fitAsInt);
+}
+
+final class VdTimeline extends ffi.Struct {
+  @ffi.Int32()
+  external int width;
+
+  @ffi.Int32()
+  external int height;
+
+  external VdRational frame_rate;
+
+  external ffi.Pointer<VdTimelineClip> clips;
+
+  @ffi.Int32()
+  external int clip_count;
+}
+
+typedef VdFrameCallbackFunction = ffi.Void Function(
+  ffi.Pointer<ffi.Void> context,
+);
+typedef DartVdFrameCallbackFunction = void Function(
+  ffi.Pointer<ffi.Void> context,
+);
+
+/// Called from the render thread each time a new frame is published. The
+/// plugin hooks this to -[FlutterTextureRegistry textureFrameAvailable:].
+/// Must not block and must not call back into the engine.
+typedef VdFrameCallback =
+    ffi.Pointer<ffi.NativeFunction<VdFrameCallbackFunction>>;
+
+final class VdEngineStats extends ffi.Struct {
+  @ffi.Int64()
+  external int frames_presented;
+
+  /// Frames whose deadline had already passed when they were ready. This is
+  /// the number that says whether playback is actually keeping up.
+  @ffi.Int64()
+  external int frames_late;
+
+  @ffi.Double()
+  external double composite_ms_avg;
+
+  @ffi.Double()
+  external double present_fps;
+
+  @VdTick()
+  external int position;
+
+  @VdTick()
+  external int duration;
+
+  @ffi.Int32()
+  external int state;
+
+  @ffi.Int32()
+  external int open_decoders;
+
+  @ffi.Int32()
+  external int active_layers;
+
+  @ffi.Double()
+  external double last_seek_ms;
 }
 
 const int VD_TICKS_PER_SECOND = 120000;

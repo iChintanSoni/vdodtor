@@ -16,8 +16,11 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > crash recovery — 128 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
-> Next: decode session + audio + A/V sync in the engine, then bind the S2 timeline to the
-> real document.
+> The preview pipeline is closed end to end: document → render list → decode → Metal
+> composite → Flutter texture. Measured in the running app: 30 fps with 0 late frames,
+> 1.0 ms GPU composite, 13 ms scrub.
+>
+> Next: audio out and the A/V sync clock, then bind the S2 timeline to the real document.
 >
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
@@ -112,12 +115,16 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       — atomic write with one backup generation, debounced autosave, session marker
 
 ### Engine core (native)
-- [~] Engine interface v1: document sync, transport (play/pause/seek), texture handle
-      — the C ABI, its ffigen bindings and the tick conversions exist and are exercised
-      from the running app; transport and texture handle are not built
-- [ ] **Drain in-flight GPU work before engine teardown** — the spike's completion handlers
-      captured the engine and outlived it. The use-after-free presented as gradual
-      performance decay, not a crash, so make teardown ordering explicit and tested
+- [x] Engine interface v1: document sync, transport (play/pause/seek), texture handle
+      — `vd_engine` owns a clock, a render thread and a copy of the timeline. What
+      crosses the boundary is a *render list*: flat clips with paths and times, never the
+      scene graph, so a WebCodecs backend has one contract to implement. The Flutter
+      texture is registered over the one method channel hop that FFI cannot do
+- [x] **Drain in-flight GPU work before engine teardown** — solved by construction rather
+      than by ordering: `vd_compositor_render` waits on the GPU before it returns, so
+      nothing is ever in flight to outlive the engine. It costs about a millisecond of a
+      16.6 ms budget and removes the whole class of bug. Teardown joins the render thread
+      first; tested by destroying mid-playback at twelve different points
 - [x] Media probe: streams, duration, fps, rotation, VFR detection — with committed
       fixtures covering constant-rate, rotated, VFR and audio-only sources
 - [x] Decode session management, frame cache, keyframe seek index — `vd_decoder`
@@ -127,21 +134,29 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       software fallback that agrees with it frame for frame; bounded LRU cache; keyframe
       index from the container. Clamps at both ends, because a clip trimmed a tick past
       its source should show the last frame, not fail.
-      **Open question for the compositor step:** how sessions are pooled across clips.
-      Two clips on different tracks from the same file need separate decode positions, so
-      the pool cannot key on path alone — the right shape depends on the compositor's
-      access pattern, so it is deliberately not built yet
+      Sessions are pooled per clip (not per path — two clips from one file need separate
+      decode positions), capped at 8 open, LRU-evicted, and carried across timeline edits
+      so nudging a clip does not reopen every decoder
 - [ ] Audio: decode → resample to 48 kHz stereo → device output (single-track mix)
 - [ ] A/V sync clock
+- [x] **GPU compositor** (pulled forward from M2 — preview needs it) — one compositor for
+      preview and export, precompiled `.metallib` embedded in the binary, N alpha-blended
+      layers, contain/cover/stretch fit, rotation. The YCbCr matrix is read from the
+      source rather than assumed: BT.601, BT.709 and BT.2020, with the SD/HD fallback for
+      untagged files. Checked on pixels against ffmpeg's own conversion
 
 ### App
 - [ ] Project create (aspect: 9:16/16:9/1:1/4:5 + fps: 24/25/30/60) / open / recents
       — the model and the recents store are done; there is no UI
 - [ ] Import via drag-drop + file picker; media bin with thumbnails
 - [ ] Timeline (from S2) bound to the real document; scrubbing drives the engine
-- [ ] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
-      on macOS + Impeller (measured: 0 ui fps without a ticker). Drive repaints from a
-      ticker scoped to a `RepaintBoundary` around the `Texture`, running only during playback.
+- [~] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
+      on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
+      repaints from a ticker that runs only during playback and dirties a single
+      `RepaintBoundary` containing only the `Texture` — no rebuilds, nothing else in the
+      tree repaints. **Built but not yet confirmed on screen**: the engine's own output is
+      verified by PNG dump, and the on-screen half still needs an eyeball on an unlocked
+      display.
 
 **Exit criteria:** create a project, drop 3 clips onto the main track, play end-to-end with
 audio, scrub anywhere, quit and reopen with everything restored.

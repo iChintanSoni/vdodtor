@@ -5,9 +5,14 @@
 
 #include <stdlib.h>
 
+// Rotates through a few buffers, so building a timeline out of two fixture
+// paths does not end up with both pointing at the same string.
 static const char* fixture(const char* name) {
-  static char path[1024];
-  snprintf(path, sizeof(path), "%s/%s", VD_TEST_MEDIA_DIR, name);
+  static char paths[8][1024];
+  static int next = 0;
+  char* path = paths[next];
+  next = (next + 1) % 8;
+  snprintf(path, sizeof(paths[0]), "%s/%s", VD_TEST_MEDIA_DIR, name);
   return path;
 }
 

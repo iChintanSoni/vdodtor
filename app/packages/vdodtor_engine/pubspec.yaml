@@ -22,4 +22,7 @@ flutter:
   plugin:
     platforms:
       macos:
+        # ffiPlugin builds and bundles the native code; pluginClass registers
+        # the one class that needs the registrar, for texture ids.
         ffiPlugin: true
+        pluginClass: VdodtorEnginePlugin

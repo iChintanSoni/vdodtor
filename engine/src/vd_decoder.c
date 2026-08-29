@@ -245,6 +245,28 @@ static CVPixelBufferRef pixel_buffer_from_sw(const AVFrame* frame) {
   return buffer;
 }
 
+// What matrix was this encoded with?
+//
+// Most files say. The ones that do not are overwhelmingly old SD content,
+// which is BT.601, and HD content, which is BT.709 — that height split is the
+// same guess every player makes, and guessing is better than picking one and
+// being wrong half the time.
+static VdColorMatrix matrix_of(const AVFrame* frame) {
+  switch (frame->colorspace) {
+    case AVCOL_SPC_BT470BG:
+    case AVCOL_SPC_SMPTE170M:
+    case AVCOL_SPC_SMPTE240M:
+      return VD_MATRIX_BT601;
+    case AVCOL_SPC_BT709:
+      return VD_MATRIX_BT709;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL:
+      return VD_MATRIX_BT2020;
+    default:
+      return frame->height > 576 ? VD_MATRIX_BT709 : VD_MATRIX_BT601;
+  }
+}
+
 static bool export_frame(const VdDecoder* d, AVFrame* frame, VdTick pts,
                          VdTick duration, VdFrame* out) {
   memset(out, 0, sizeof(*out));
@@ -252,6 +274,8 @@ static bool export_frame(const VdDecoder* d, AVFrame* frame, VdTick pts,
   out->duration = duration;
   out->width = frame->width;
   out->height = frame->height;
+  out->color_matrix = matrix_of(frame);
+  out->full_range = frame->color_range == AVCOL_RANGE_JPEG;
 
   if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3]) {
     out->pixel_buffer = CVPixelBufferRetain((CVPixelBufferRef)frame->data[3]);

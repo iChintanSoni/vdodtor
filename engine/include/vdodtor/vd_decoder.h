@@ -45,6 +45,15 @@ typedef struct {
 
 VD_EXPORT VdDecoderOptions vd_decoder_default_options(void);
 
+// The YCbCr matrix a source was encoded with. Getting this wrong does not
+// look broken, it looks *slightly off* — which is worse, because nobody
+// reports it and every export inherits it.
+typedef enum {
+  VD_MATRIX_BT601 = 0,
+  VD_MATRIX_BT709 = 1,
+  VD_MATRIX_BT2020 = 2,
+} VdColorMatrix;
+
 typedef struct {
   // CVPixelBufferRef, retained. Release with vd_frame_release, always, on
   // every path — the cache holds its own reference and does not care about
@@ -59,6 +68,10 @@ typedef struct {
   int32_t width;
   int32_t height;
   bool    hardware;
+
+  VdColorMatrix color_matrix;
+  // True for 0-255 luma, false for the 16-235 video range most sources use.
+  bool    full_range;
 } VdFrame;
 
 // Opens `path` for decoding. `out_result` receives VD_OK or a negative
