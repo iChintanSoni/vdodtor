@@ -1,0 +1,6 @@
+#include "../../Flutter/Flutter-Release.xcconfig"
+#include "Warnings.xcconfig"
+
+// SPIKE ONLY: Homebrew FFmpeg ships arm64 only; a shipping build vendors a universal FFmpeg.
+ARCHS = arm64
+EXCLUDED_ARCHS[sdk=macosx*] = x86_64

@@ -1,0 +1,10 @@
+# Spike artifacts: generated test media, build output, verification renders.
+spikes/media/
+spikes/**/build/
+spikes/**/.dart_tool/
+spikes/**/macos/Pods/
+spikes/**/macos/Flutter/ephemeral/
+spikes/**/.idea/
+spikes/*.png
+
+.DS_Store
