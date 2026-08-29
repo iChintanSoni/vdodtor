@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.47.0'
+
+jobs:
+  build:
+    name: macOS
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The vendored FFmpeg takes ~10 minutes to build for two architectures,
+      # so it is cached on the build script itself: change the version or the
+      # configure flags and the cache key changes with them.
+      - name: Cache vendored FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('tools/build_ffmpeg.sh') }}
+
+      - name: Install build tools
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: brew install nasm
+
+      - name: Build vendored FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: ./tools/build_ffmpeg.sh
+
+      - name: Verify the FFmpeg build is LGPL and universal
+        run: |
+          grep -q 'CONFIG_GPL=0' third_party/ffmpeg/BUILD_INFO.txt
+          for lib in third_party/ffmpeg/lib/*.dylib; do
+            [ -L "$lib" ] && continue
+            archs="$(lipo -archs "$lib")"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "not universal: $lib ($archs)"; exit 1 ;;
+            esac
+          done
+
+      # --- engine ---------------------------------------------------------
+      - name: Configure engine
+        run: cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build engine
+        run: cmake --build build/engine --parallel
+
+      - name: Engine unit tests
+        run: ctest --test-dir build/engine --output-on-failure
+
+      # --- app ------------------------------------------------------------
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Resolve Dart dependencies
+        run: |
+          flutter pub get --directory app
+          flutter pub get --directory app/packages/vdodtor_engine
+
+      - name: Analyze
+        run: |
+          dart analyze --fatal-infos app/lib app/test
+          dart analyze --fatal-infos app/packages/vdodtor_engine/lib
+
+      - name: Check FFI bindings are up to date
+        working-directory: app/packages/vdodtor_engine
+        run: |
+          dart run ffigen --config ffigen.yaml
+          git diff --exit-code lib/src/bindings.g.dart \
+            || { echo "::error::bindings.g.dart is stale; run ffigen and commit"; exit 1; }
+
+      - name: Dart tests
+        working-directory: app
+        run: flutter test
+
+      - name: Build the app
+        working-directory: app
+        run: flutter build macos --release

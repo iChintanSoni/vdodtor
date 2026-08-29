@@ -1,10 +1,28 @@
-# Spike artifacts: generated test media, build output, verification renders.
+# --- build output ------------------------------------------------------------
+build/
+app/build/
+app/.dart_tool/
+app/packages/*/.dart_tool/
+app/macos/Pods/
+app/macos/Flutter/ephemeral/
+app/.flutter-plugins-dependencies
+
+# --- vendored third party ----------------------------------------------------
+# Reproducible from tools/build_ffmpeg.sh; ~46 MB of universal dylibs that do
+# not belong in git history.
+third_party/ffmpeg/
+third_party/.ffmpeg-build/
+
+# --- M0 spike artifacts ------------------------------------------------------
 spikes/media/
 spikes/**/build/
 spikes/**/.dart_tool/
 spikes/**/macos/Pods/
 spikes/**/macos/Flutter/ephemeral/
-spikes/**/.idea/
 spikes/*.png
 
+# --- editors and OS ----------------------------------------------------------
+.idea/
+**/.idea/
+*.iml
 .DS_Store

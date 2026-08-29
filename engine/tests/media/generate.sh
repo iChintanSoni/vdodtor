@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Regenerates the engine's probe fixtures. They are committed (a few KB each)
+# so `ctest` needs no media generation step and CI stays hermetic.
+# Requires an ffmpeg CLI on PATH — the vendored build ships libraries only.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+common="-y -loglevel error"
+
+# Constant 30 fps, stereo AAC, square pixels.
+ffmpeg $common -f lavfi -i "testsrc2=size=320x240:rate=30:duration=2" \
+  -f lavfi -i "sine=frequency=440:duration=2:sample_rate=48000" \
+  -ac 2 -c:v libx264 -preset veryfast -crf 40 -pix_fmt yuv420p \
+  -c:a aac -b:a 32k cfr_30fps_stereo.mp4
+
+# Same, carrying a display matrix. -display_rotation takes a COUNTER-clockwise
+# angle, so -90 there is the 90-degrees-clockwise-to-display case the probe
+# reports as rotation_degrees == 90.
+ffmpeg $common -f lavfi -i "testsrc2=size=320x240:rate=30:duration=1" \
+  -c:v libx264 -preset veryfast -crf 40 -pix_fmt yuv420p -an rotated_tmp.mp4
+ffmpeg $common -display_rotation -90 -i rotated_tmp.mp4 -c copy rotated_cw90.mp4
+rm -f rotated_tmp.mp4
+
+# Audio only, mono, 44.1 kHz.
+ffmpeg $common -f lavfi -i "sine=frequency=220:duration=3:sample_rate=44100" \
+  -ac 1 -c:a aac -b:a 32k audio_only.m4a
+
+# Irregular timestamps: r_frame_rate and avg_frame_rate diverge.
+ffmpeg $common -f lavfi -i "testsrc2=size=320x240:rate=60:duration=2" \
+  -vf "select='not(mod(n,3))'" -fps_mode vfr \
+  -c:v libx264 -preset veryfast -crf 40 -pix_fmt yuv420p -an vfr.mp4
+
+# Not media at all, for the failure path.
+printf 'this is not a video\n' > not_media.txt
+
+ls -la

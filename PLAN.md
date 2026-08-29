@@ -9,11 +9,19 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - A milestone is complete only when all its **exit criteria** pass — checkboxes alone don't count.
 - Keep the status line below current whenever a milestone starts or finishes.
 
-> **Status: M0 complete — GO on this stack. Next action: M1, walking skeleton.**
+> **Status: M1 in progress — foundation landed, engine and UI next.**
 >
-> M0 measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers (~1.5 ms GPU),
-> 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at 121 fps with 1002 clips.
-> Findings: [docs/spike-notes.md](docs/spike-notes.md).
+> Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
+> Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
+> crash recovery — 128 Dart tests), and the **media probe** through the full
+> Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
+>
+> Next: decode session + audio + A/V sync in the engine, then bind the S2 timeline to the
+> real document.
+>
+> M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
+> (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
+> 121 fps with 1002 clips. Findings: [docs/spike-notes.md](docs/spike-notes.md).
 
 ---
 
@@ -21,9 +29,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 
 ```
 vdodtor/
-├── app/       Flutter desktop app — UI, document model, commands/undo
-├── engine/    Native library (C/C++, CMake) — FFmpeg demux/decode/encode + Metal compositor
-└── docs/      Product brief, spike notes, design docs
+├── app/         Flutter desktop app — UI, document model, commands/undo
+│   └── packages/vdodtor_engine/   FFI plugin: ffigen bindings + the macOS build glue
+├── engine/      Native library (C/C++, CMake) — FFmpeg demux/decode/encode + Metal compositor
+├── tools/       Build scripts, including the vendored LGPL FFmpeg build
+├── third_party/ Vendored FFmpeg (generated, not committed)
+└── docs/        Product brief, spike notes, design docs
 ```
 
 - **Bridge:** `dart:ffi` with ffigen-generated bindings; preview frames reach Flutter as an
@@ -70,30 +81,48 @@ machine is still needed before any of this becomes a product guarantee (see PERF
 *Goal: real repo structure; import a clip, see it on a timeline, scrub and play with audio.*
 
 ### Repo & tooling
-- [ ] Monorepo layout (`app/`, `engine/`, `docs/`); CMake build for engine wired into the Flutter build
-- [ ] **Vendor a universal LGPL FFmpeg build** — the spike linked Homebrew's, which is GPL
-      and arm64-only. Blocks shipping and blocks Intel Macs; do it before the engine grows.
-- [ ] Re-enable the App Sandbox; security-scoped bookmarks for user media
-- [ ] CI (GitHub Actions, macOS): engine unit tests, `dart analyze`, `dart test`, app builds
+- [x] Monorepo layout (`app/`, `engine/`, `docs/`); CMake build for engine wired into the Flutter build
+      — the macOS podspec runs CMake as an Xcode phase and force-loads the archive, so
+      there is one definition of what the engine is and the Windows port can reuse it
+- [x] **Vendor a universal LGPL FFmpeg build** — `tools/build_ffmpeg.sh` builds 9.0.1 for
+      arm64 + x86_64, pins the source checksum, and *refuses to finish* if `CONFIG_GPL`,
+      `CONFIG_NONFREE` or `CONFIG_VERSION3` is set. The dylibs ride inside
+      `vdodtor_engine.framework/Versions/A/Frameworks`, resolved by `@loader_path`
+- [~] Re-enable the App Sandbox; security-scoped bookmarks for user media
+      — sandbox is on and verified (it blocks arbitrary paths; the app reads its own bundle);
+      `files.user-selected.read-write` and `files.bookmarks.app-scope` are granted, and
+      `MediaAsset.bookmark` is modelled and persisted. **Minting and resolving the bookmark
+      still needs native code** — nothing calls it yet
+- [~] CI (GitHub Actions, macOS): engine unit tests, `dart analyze`, `dart test`, app builds
+      — `.github/workflows/ci.yml` written, with the FFmpeg build cached on the script hash
+      and a check that the ffigen bindings are not stale. **Not yet run on a real runner**
 
 ### Document model (Dart)
-- [ ] Rational-time type + project timebase, with arithmetic tests
-- [ ] Scene graph: `Project`, `Track` (main / overlay / audio / text), `Clip`, properties
-- [ ] Immutable updates with structural sharing; command log; undo/redo
-- [ ] Project file save/load (JSON); autosave on every committed edit; crash recovery on launch
+- [x] Rational-time type + project timebase, with arithmetic tests — exact `Rational`,
+      `Tick` as a zero-cost extension type, `TimeSpan`; the engine mirrors the same
+      conversions in C and both sides test the same table
+- [x] Scene graph: `Project`, `Track` (main / overlay / audio / text), `Clip`, properties
+- [x] Immutable updates with structural sharing; command log; undo/redo — snapshot undo
+      with gesture coalescing, so a 40-event drag is one undo entry
+- [x] Project file save/load (JSON); autosave on every committed edit; crash recovery on launch
+      — atomic write with one backup generation, debounced autosave, session marker
 
 ### Engine core (native)
-- [ ] Engine interface v1: document sync, transport (play/pause/seek), texture handle
+- [~] Engine interface v1: document sync, transport (play/pause/seek), texture handle
+      — the C ABI, its ffigen bindings and the tick conversions exist and are exercised
+      from the running app; transport and texture handle are not built
 - [ ] **Drain in-flight GPU work before engine teardown** — the spike's completion handlers
       captured the engine and outlived it. The use-after-free presented as gradual
-      performance decay, not a crash, so make teardown ordering explicit and tested.
-- [ ] Media probe: streams, duration, fps, rotation, VFR detection
+      performance decay, not a crash, so make teardown ordering explicit and tested
+- [x] Media probe: streams, duration, fps, rotation, VFR detection — with committed
+      fixtures covering constant-rate, rotated, VFR and audio-only sources
 - [ ] Decode session management, frame cache, keyframe seek index
 - [ ] Audio: decode → resample to 48 kHz stereo → device output (single-track mix)
 - [ ] A/V sync clock
 
 ### App
 - [ ] Project create (aspect: 9:16/16:9/1:1/4:5 + fps: 24/25/30/60) / open / recents
+      — the model and the recents store are done; there is no UI
 - [ ] Import via drag-drop + file picker; media bin with thumbnails
 - [ ] Timeline (from S2) bound to the real document; scrubbing drives the engine
 - [ ] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
@@ -212,6 +241,6 @@ buy Pro, and export 4K — with no help.
 | ~~Timeline performance at scale~~ | **Retired in M0** — 121 fps with 1002 clips, cost flat in clip count |
 | Timeline interaction doesn't feel "easy" | Still open — perf is proven, taste is not. Owner runs `spikes/s2_timeline`; M2 exit criteria are the real test |
 | Performance on low-end hardware is unknown | M0 measured only an M3 Pro. Name a low-end reference machine (PERF-06) and re-measure before promising anything |
-| FFmpeg LGPL compliance in a sold, notarized app | Vendor a universal LGPL build in M1 (the spike used Homebrew's GPL build); dynamic linking + source offer verified during M4 packaging |
+| FFmpeg LGPL compliance in a sold, notarized app | **Half retired in M1** — a universal LGPL 2.1 build is vendored and dynamically linked, and the build script fails rather than emit a GPL or non-free configuration. Still open: the written source offer and signing the nested dylibs, both in M4 packaging |
 | Preview/export parity drift | One compositor + golden-frame CI from M2, parity tests in M4 |
 | Solo-dev scope creep | Milestone exit criteria are the guardrails; anything not in the brief goes to Post-v1 |
