@@ -160,6 +160,7 @@ const char* vd_result_string(int32_t result) {
     case VD_ERR_NO_STREAMS: return "the file has no playable audio or video";
     case VD_ERR_INVALID_ARG: return "invalid argument";
     case VD_ERR_UNSUPPORTED: return "unsupported media";
+    case VD_ERR_DECODE: return "the file could not be decoded";
     default: return "unknown error";
   }
 }

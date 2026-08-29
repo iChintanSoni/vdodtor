@@ -23,6 +23,7 @@ typedef enum {
   VD_ERR_NO_STREAMS = -2,    // opened, but nothing playable inside
   VD_ERR_INVALID_ARG = -3,
   VD_ERR_UNSUPPORTED = -4,
+  VD_ERR_DECODE = -5,        // opened, but a frame could not be produced
 } VdResult;
 
 typedef struct {

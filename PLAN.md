@@ -120,7 +120,17 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       performance decay, not a crash, so make teardown ordering explicit and tested
 - [x] Media probe: streams, duration, fps, rotation, VFR detection — with committed
       fixtures covering constant-rate, rotated, VFR and audio-only sources
-- [ ] Decode session management, frame cache, keyframe seek index
+- [x] Decode session management, frame cache, keyframe seek index — `vd_decoder`
+      is a *pull* API (`frame_at(tick)`), which is what makes "a frame is a pure
+      function of (document, time)" true for one source, and what makes seek and cache
+      behaviour testable exactly rather than approximately. VideoToolbox zero-copy with a
+      software fallback that agrees with it frame for frame; bounded LRU cache; keyframe
+      index from the container. Clamps at both ends, because a clip trimmed a tick past
+      its source should show the last frame, not fail.
+      **Open question for the compositor step:** how sessions are pooled across clips.
+      Two clips on different tracks from the same file need separate decode positions, so
+      the pool cannot key on path alone — the right shape depends on the compositor's
+      access pattern, so it is deliberately not built yet
 - [ ] Audio: decode → resample to 48 kHz stereo → device output (single-track mix)
 - [ ] A/V sync clock
 
