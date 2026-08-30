@@ -297,58 +297,121 @@ final class SplitClip extends EditCommand {
   }
 }
 
-/// Copies a clip and drops the copy in right after the original.
-final class DuplicateClip extends EditCommand {
-  const DuplicateClip(this.clipId, {required this.newClipId});
+/// Where a clip is going: which lane, and — on a magnetic lane, where order is
+/// the only thing that decides position — which slot in it.
+typedef ClipPlacement = ({String trackId, Clip clip, int? index});
 
-  final String clipId;
-  final String newClipId;
+/// Puts ready-made clips onto tracks.
+///
+/// The one command behind paste and duplicate. It is deliberately incurious:
+/// the caller has already decided what the clips are, which lane each goes on
+/// and where in the order it lands, so nothing here has to guess what the
+/// gesture meant. That is what lets paste-at-the-playhead and
+/// duplicate-in-place share an implementation instead of drifting apart.
+///
+/// On a magnetic lane [ClipPlacement.index] is a slot in the lane's *current*
+/// order and the lane repacks around it. On a free-form lane the clip keeps
+/// its own start, and moves to the end of the lane if that space is taken —
+/// a clip that appears somewhere beats one that appears nowhere and says
+/// nothing.
+final class InsertClips extends EditCommand {
+  const InsertClips(this.placements, {this.label = 'Paste'});
+
+  final List<ClipPlacement> placements;
 
   @override
-  String get label => 'Duplicate clip';
+  final String label;
 
   @override
   Project apply(Project project) {
-    final track = project.trackOfClip(clipId);
-    if (track == null) throw EditException('no clip $clipId');
-    if (project.clipById(newClipId) != null) {
-      throw EditException('clip $newClipId is already in the project');
-    }
-    final clip = track.clipById(clipId)!;
-    final copy = clip.copyWith(id: newClipId, start: clip.end);
-    final index = track.indexOfClip(clipId);
+    if (placements.isEmpty) return project;
 
-    if (track.isMagnetic) {
-      final next = List<Clip>.of(track.clips)..insert(index + 1, copy);
-      // In order, not by centre: the copy belongs next to its original even
-      // when it is longer than whatever follows.
-      return project.replaceTrack(track.packedInOrder(next));
+    final seen = <String>{};
+    for (final placement in placements) {
+      if (!seen.add(placement.clip.id)) {
+        throw EditException('clip ${placement.clip.id} placed twice');
+      }
+      if (project.clipById(placement.clip.id) != null) {
+        throw EditException(
+            'clip ${placement.clip.id} is already in the project');
+      }
+      if (placement.clip.duration.raw <= 0) {
+        throw EditException(
+            'clip ${placement.clip.id} has non-positive duration');
+      }
+      final mediaId = placement.clip.mediaId;
+      if (mediaId != null && !project.media.containsKey(mediaId)) {
+        throw EditException('clip ${placement.clip.id} refers to unknown '
+            'media $mediaId; add the media first');
+      }
+      if (project.trackById(placement.trackId) == null) {
+        throw EditException('no track ${placement.trackId}');
+      }
     }
 
-    // A free-form lane may already have something in that space. Land at the
-    // end of the lane rather than refusing — a duplicate that appears
-    // somewhere is better than one that appears nowhere and says nothing.
-    final overlaps = track.clips.any((c) => c.span.overlaps(copy.span));
-    final placed = overlaps ? copy.movedTo(track.duration) : copy;
-    return project.replaceTrack(track.withClips([...track.clips, placed]));
+    var next = project;
+    for (final trackId in placements.map((p) => p.trackId).toSet()) {
+      final track = next.trackById(trackId)!;
+      final incoming =
+          placements.where((p) => p.trackId == trackId).toList();
+
+      if (!track.isMagnetic) {
+        final clips = List<Clip>.of(track.clips);
+        for (final placement in incoming) {
+          final overlaps =
+              clips.any((c) => c.span.overlaps(placement.clip.span));
+          clips.add(overlaps
+              ? placement.clip.movedTo(_endOf(clips))
+              : placement.clip);
+        }
+        next = next.replaceTrack(track.withClips(clips));
+        continue;
+      }
+
+      // Indices name slots in the lane as it was, so they are applied in
+      // ascending order with a running offset for the ones already put in.
+      incoming.sort((a, b) =>
+          (a.index ?? track.clips.length).compareTo(b.index ?? track.clips.length));
+      final ordered = List<Clip>.of(track.clips);
+      var inserted = 0;
+      for (final placement in incoming) {
+        final at = (placement.index ?? track.clips.length) + inserted;
+        ordered.insert(at.clamp(0, ordered.length), placement.clip);
+        inserted++;
+      }
+      next = next.replaceTrack(track.packedInOrder(ordered));
+    }
+    return next;
   }
+
+  static Tick _endOf(List<Clip> clips) => clips.isEmpty
+      ? Tick.zero
+      : clips.map((c) => c.end).reduce(Tick.larger);
 }
 
-/// Removes a clip. On a magnetic track the gap closes behind it.
-final class DeleteClip extends EditCommand {
-  const DeleteClip(this.clipId);
+/// Removes clips. On a magnetic track the gaps close behind them.
+///
+/// Takes a set rather than one id because a selection is a set: deleting four
+/// clips has to be one edit, or undo becomes four presses to reverse one
+/// decision.
+final class DeleteClips extends EditCommand {
+  const DeleteClips(this.clipIds);
 
-  final String clipId;
+  final Set<String> clipIds;
 
   @override
-  String get label => 'Delete clip';
+  String get label => clipIds.length == 1 ? 'Delete clip' : 'Delete clips';
 
   @override
   Project apply(Project project) {
-    final track = project.trackOfClip(clipId);
-    if (track == null) return project;
-    final remaining = track.clips.where((c) => c.id != clipId).toList();
-    return project.replaceTrack(track.withClips(remaining).repacked());
+    final ids = clipIds;
+    var next = project;
+    for (final track in project.tracks) {
+      final remaining = track.clips.where((c) => !ids.contains(c.id)).toList();
+      if (remaining.length == track.clips.length) continue;
+      next = next.replaceTrack(track.withClips(remaining).repacked());
+    }
+    return next;
   }
 }
 

@@ -14,7 +14,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 332 Dart tests), and the **media probe** through the full
+> crash recovery, import — 357 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -47,10 +47,11 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > Editing clips — trim, split, move, ripple-delete — is deliberately **not** here. That is
 > M2's first bullet, and this milestone only ever needed to show the document and scrub it.
 >
-> **M2 is under way.** Clips now move, trim, split, duplicate and delete on the timeline,
-> each drag a single undo entry, each edge stopping where it should — at a frame of length,
-> at the end of the source, at the neighbour. Snapping lands edges on cuts and on the
-> playhead.
+> **M2 is under way.** Clips move, trim, split, duplicate and delete on the timeline, each
+> drag a single undo entry, each edge stopping where it should — at a frame of length, at
+> the end of the source, at the neighbour. Snapping lands edges on cuts and on the playhead.
+> A selection is now a *set*: ⌘-click to add, ⌘A for everything, and cut, copy and paste
+> move clips around with their source windows and their spacing intact.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -290,7 +291,30 @@ audio, scrub anywhere, quit and reopen with everything restored.
       lane. The saved file then shows what matters most about a split: the tail's
       `sourceIn` is exactly where the head's window ended, and the lane is still packed
       end to end at the same total duration
-- [ ] Multi-select, copy/paste
+- [x] Multi-select, copy/paste
+      — the selection became a set, and everything that acts on it takes the whole set in
+      one edit: deleting four clips is one undo entry, not four presses to reverse one
+      decision. ⌘-click and ⇧-click toggle membership and deliberately start **no drag**,
+      because choosing what to act on and moving it are different intentions and one should
+      not smuggle in the other. A plain press on a clip narrows the selection to it, since
+      a drag moves one clip and leaving four outlined would say otherwise. Trim handles
+      appear only when the selection is exactly one clip — trimming is a single-clip idea.
+      Undo can take a clip out from under a selection, so the selection prunes itself
+      against the document rather than keeping ids that name nothing.
+      The clipboard is rebased on **copy**, not on paste: the shape of a multi-clip copy —
+      the gaps, the lane each came from — is fixed at the moment it is taken and cannot be
+      changed by editing afterwards. Paste lands the earliest clip on the playhead, puts
+      each clip back on the lane it came from (or the first of the same kind), and on a
+      magnetic lane inserts *after* the clip the playhead is over. It skips anything whose
+      media the project no longer has, because a paste that plays black is worse than no
+      paste. Cut is a copy and a delete, so it undoes like the delete it is.
+      **`InsertClips`** replaced `DuplicateClip`: one incurious command behind both paste
+      and duplicate, taking clips that are already decided along with the lane and the slot
+      each goes in. That is what keeps paste-at-the-playhead and duplicate-in-place from
+      drifting apart, and `DeleteClips` is its opposite number.
+      Not included, and worth saying: dragging does not move a whole selection. Group drag
+      on a magnetic lane is a different problem — non-contiguous clips reflowing around each
+      other — and belongs with a bullet of its own rather than smuggled into this one
 - [ ] Parallel overlay video tracks (up to 3) with per-clip transform:
       position, scale, rotation, crop, opacity, flip
 - [ ] GPU compositor: multi-layer render graph, alpha blend, fit modes

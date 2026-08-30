@@ -25,6 +25,25 @@ abstract interface class TimelineTransport implements Listenable {
   void seek(int ticks);
 }
 
+/// One clip on the clipboard: the clip itself, with its start rebased so the
+/// earliest thing copied sits at zero, and where it came from.
+typedef ClipboardEntry = ({String trackId, TrackKind kind, Clip clip});
+
+/// What ⌘C put aside.
+///
+/// Rebased to zero on copy rather than on paste, so the shape of a
+/// multi-clip copy — the gaps and the lane it each came from — is fixed at
+/// the moment it is taken and cannot be changed by editing afterwards.
+@immutable
+final class TimelineClipboard {
+  const TimelineClipboard(this.entries);
+
+  final List<ClipboardEntry> entries;
+
+  bool get isEmpty => entries.isEmpty;
+  bool get isNotEmpty => entries.isNotEmpty;
+}
+
 /// What the pointer is currently doing.
 enum TimelineDrag {
   none,
@@ -75,7 +94,8 @@ class TimelineController extends ChangeNotifier {
   static const double minimumBodyPx = 26;
 
   TimelineGeometry _geometry = const TimelineGeometry();
-  String? _selectedClipId;
+  final Set<String> _selectedClipIds = {};
+  TimelineClipboard _clipboard = const TimelineClipboard([]);
   TimelineDrag _drag = TimelineDrag.none;
   Set<String> _unreachableMediaIds = const {};
 
@@ -103,7 +123,22 @@ class TimelineController extends ChangeNotifier {
     notifyListeners();
   }
 
-  String? get selectedClipId => _selectedClipId;
+  /// Every clip currently selected. Unmodifiable.
+  Set<String> get selectedClipIds => Set.unmodifiable(_selectedClipIds);
+
+  /// The selection when it is exactly one clip, and null when it is none or
+  /// many. Trimming and the trim handles are single-clip ideas, so this is
+  /// what asks whether they apply.
+  String? get selectedClipId =>
+      _selectedClipIds.length == 1 ? _selectedClipIds.first : null;
+
+  bool isSelected(String clipId) => _selectedClipIds.contains(clipId);
+
+  /// What ⌘C last put aside. Lives with the timeline, so it goes when the
+  /// project does — pasting a clip into a project whose media it names is not
+  /// there would be a paste that plays black.
+  TimelineClipboard get clipboard => _clipboard;
+
   TimelineDrag get drag => _drag;
   bool get isScrubbing => _drag == TimelineDrag.scrub;
   bool get isEditing =>
@@ -127,10 +162,31 @@ class TimelineController extends ChangeNotifier {
   Tick get duration =>
       Tick(math.max(project.duration.raw, transport.durationTicks));
 
-  Clip? get selectedClip =>
-      _selectedClipId == null ? null : project.clipById(_selectedClipId!);
+  Clip? get selectedClip {
+    final id = selectedClipId;
+    return id == null ? null : project.clipById(id);
+  }
 
-  void _onExternalChange() => notifyListeners();
+  /// The selected clips that still exist, in lane and time order.
+  List<({String trackId, Clip clip})> get selectedClips {
+    final out = <({String trackId, Clip clip})>[];
+    for (final track in project.tracks) {
+      for (final clip in track.clips) {
+        if (_selectedClipIds.contains(clip.id)) {
+          out.add((trackId: track.id, clip: clip));
+        }
+      }
+    }
+    return out;
+  }
+
+  void _onExternalChange() {
+    // Undo can take a clip out from under the selection, and a selection that
+    // names clips the document no longer has is a selection that silently
+    // does nothing when acted on.
+    _pruneSelection();
+    notifyListeners();
+  }
 
   // --- view ----------------------------------------------------------------
 
@@ -176,10 +232,40 @@ class TimelineController extends ChangeNotifier {
 
   // --- selection -----------------------------------------------------------
 
+  /// Replaces the selection with [clipId], or clears it when null.
   void select(String? clipId) {
-    if (_selectedClipId == clipId) return;
-    _selectedClipId = clipId;
+    final next = clipId == null ? const <String>{} : {clipId};
+    if (setEquals(_selectedClipIds, next)) return;
+    _selectedClipIds
+      ..clear()
+      ..addAll(next);
     notifyListeners();
+  }
+
+  /// Adds [clipId] to the selection, or takes it out if it is already in.
+  void toggleSelection(String clipId) {
+    if (!_selectedClipIds.remove(clipId)) _selectedClipIds.add(clipId);
+    notifyListeners();
+  }
+
+  void selectAll() {
+    final everything = {
+      for (final track in project.tracks)
+        for (final clip in track.clips) clip.id,
+    };
+    if (setEquals(_selectedClipIds, everything)) return;
+    _selectedClipIds
+      ..clear()
+      ..addAll(everything);
+    notifyListeners();
+  }
+
+  void clearSelection() => select(null);
+
+  /// Drops ids that are no longer in the document — after an undo, or after
+  /// something else deleted them.
+  void _pruneSelection() {
+    _selectedClipIds.removeWhere((id) => project.clipById(id) == null);
   }
 
   // --- the playhead --------------------------------------------------------
@@ -220,7 +306,10 @@ class TimelineController extends ChangeNotifier {
     return null;
   }
 
-  void pointerDown(Offset position) {
+  /// [additive] is ⌘ or ⇧ held: the press adds to or removes from the
+  /// selection rather than replacing it, and starts no drag — a modified
+  /// click is about *what* is chosen, never about moving it.
+  void pointerDown(Offset position, {bool additive = false}) {
     if (position.dx < TimelineGeometry.headerWidth) return;
 
     // The ruler is the scrub strip; the lanes below it are about clips.
@@ -233,6 +322,14 @@ class TimelineController extends ChangeNotifier {
     }
 
     final hit = clipAt(position);
+    if (additive) {
+      if (hit != null) toggleSelection(hit.clip.id);
+      return;
+    }
+
+    // A plain press on a clip narrows the selection to it, even when it was
+    // already part of a larger one: a drag moves one clip, and leaving four
+    // outlined while one of them moves would say otherwise.
     select(hit?.clip.id);
     if (hit == null) return;
 
@@ -375,19 +472,28 @@ class TimelineController extends ChangeNotifier {
 
   // --- edits with no pointer in them ---------------------------------------
 
-  /// Removes the selected clip. On a magnetic lane the gap closes behind it.
+  /// Removes everything selected. On a magnetic lane the gaps close behind
+  /// them, and the whole thing is one undo entry however many clips it was.
   bool deleteSelected() {
-    final id = _selectedClipId;
-    if (id == null || project.clipById(id) == null) return false;
-    if (project.trackOfClip(id)?.locked ?? false) return false;
+    final ids = _editableSelection();
+    if (ids.isEmpty) return false;
 
     store.endGesture();
-    store.run(DeleteClip(id));
+    store.run(DeleteClips(ids));
     store.endGesture();
-    _selectedClipId = null;
+    _selectedClipIds.removeAll(ids);
     notifyListeners();
     return true;
   }
+
+  /// The selected clips that can actually be edited: still in the document,
+  /// and not on a locked lane.
+  Set<String> _editableSelection() => {
+        for (final id in _selectedClipIds)
+          if (project.clipById(id) != null &&
+              !(project.trackOfClip(id)?.locked ?? true))
+            id,
+      };
 
   /// Cuts a clip in two at the playhead.
   ///
@@ -408,7 +514,9 @@ class TimelineController extends ChangeNotifier {
 
     // The tail is the part the playhead is now sitting at the start of, so it
     // is the part the next keystroke is about.
-    _selectedClipId = tailId;
+    _selectedClipIds
+      ..clear()
+      ..add(tailId);
     notifyListeners();
     return true;
   }
@@ -426,19 +534,120 @@ class TimelineController extends ChangeNotifier {
     return null;
   }
 
-  /// Copies the selected clip in next to itself, and selects the copy.
+  /// Copies everything selected in next to itself, and selects the copies.
   bool duplicateSelected() {
-    final id = _selectedClipId;
-    if (id == null || project.clipById(id) == null) return false;
-    if (project.trackOfClip(id)?.locked ?? false) return false;
+    final ids = _editableSelection();
+    if (ids.isEmpty) return false;
+
+    final placements = <ClipPlacement>[];
+    final copies = <String>{};
+    for (final entry in selectedClips) {
+      if (!ids.contains(entry.clip.id)) continue;
+      final track = project.trackById(entry.trackId)!;
+      final copyId = _ids.next('c-');
+      copies.add(copyId);
+      placements.add((
+        trackId: entry.trackId,
+        clip: entry.clip.copyWith(id: copyId, start: entry.clip.end),
+        // Right after the original, by slot rather than by time: on a
+        // magnetic lane order is the only thing that decides position.
+        index: track.isMagnetic ? track.indexOfClip(entry.clip.id) + 1 : null,
+      ));
+    }
 
     store.endGesture();
-    final copyId = _ids.next('c-');
-    store.run(DuplicateClip(id, newClipId: copyId));
+    store.run(InsertClips(
+      placements,
+      label: placements.length == 1 ? 'Duplicate clip' : 'Duplicate clips',
+    ));
     store.endGesture();
-    _selectedClipId = copyId;
+    _selectedClipIds
+      ..clear()
+      ..addAll(copies);
     notifyListeners();
     return true;
+  }
+
+  // --- the clipboard -------------------------------------------------------
+
+  /// Puts the selection aside. Returns false when there was nothing to take.
+  bool copySelection() {
+    final entries = selectedClips;
+    if (entries.isEmpty) return false;
+
+    // Rebased so the earliest sits at zero; paste then only has to add the
+    // playhead, and the shape of the copy is fixed at the moment it is taken.
+    final origin = entries
+        .map((e) => e.clip.start.raw)
+        .reduce((a, b) => a < b ? a : b);
+    _clipboard = TimelineClipboard([
+      for (final entry in entries)
+        (
+          trackId: entry.trackId,
+          kind: project.trackById(entry.trackId)!.kind,
+          clip: entry.clip.movedTo(Tick(entry.clip.start.raw - origin)),
+        ),
+    ]);
+    notifyListeners();
+    return true;
+  }
+
+  /// Copy, then delete. Both halves are the ordinary ones, so a cut undoes
+  /// like the delete it is.
+  bool cutSelection() => copySelection() && deleteSelected();
+
+  /// Drops the clipboard in at the playhead.
+  ///
+  /// Each clip goes back on the lane it came from when that lane still
+  /// exists, and otherwise on the first lane of the same kind — pasting audio
+  /// onto a video track would be a paste that does nothing anyone wanted.
+  bool paste() {
+    if (_clipboard.isEmpty) return false;
+    final at = playhead;
+
+    final placements = <ClipPlacement>[];
+    final pasted = <String>{};
+    for (final entry in _clipboard.entries) {
+      final track = project.trackById(entry.trackId) ?? _firstTrackOfKind(entry.kind);
+      if (track == null || track.locked) continue;
+      if (entry.clip.mediaId != null &&
+          !project.media.containsKey(entry.clip.mediaId)) {
+        continue;
+      }
+
+      final id = _ids.next('c-');
+      pasted.add(id);
+      placements.add((
+        trackId: track.id,
+        clip: entry.clip.copyWith(
+            id: id, start: Tick(at.raw + entry.clip.start.raw)),
+        // After everything that starts before the playhead: pasting "here"
+        // on a magnetic lane means after the clip you are looking at.
+        index: track.isMagnetic
+            ? track.clips.where((c) => c.start < at).length
+            : null,
+      ));
+    }
+    if (placements.isEmpty) return false;
+
+    store.endGesture();
+    store.run(InsertClips(
+      placements,
+      label: placements.length == 1 ? 'Paste clip' : 'Paste clips',
+    ));
+    store.endGesture();
+    _selectedClipIds
+      ..clear()
+      ..addAll(pasted);
+    notifyListeners();
+    return true;
+  }
+
+  Track? _firstTrackOfKind(TrackKind kind) {
+    for (final track in project.tracks) {
+      if (track.kind == kind) return track;
+    }
+    return null;
   }
 
   @override

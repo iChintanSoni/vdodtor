@@ -3,6 +3,7 @@ import 'package:vdodtor/commands/command.dart';
 import 'package:vdodtor/commands/document_store.dart';
 import 'package:vdodtor/commands/edits.dart';
 import 'package:vdodtor/model/media.dart';
+import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/serialization.dart';
 import 'package:vdodtor/model/time.dart';
 
@@ -285,10 +286,26 @@ void main() {
     });
   });
 
-  group('DuplicateClip', () {
+  /// The placement the timeline builds for a duplicate: right after the
+  /// original, by slot on a magnetic lane and by time on a free-form one.
+  /// Written out here rather than hidden in a command, because the whole point
+  /// of InsertClips is that the caller has already decided.
+  InsertClips duplicate(Project project, String clipId, String newId) {
+    final track = project.trackOfClip(clipId)!;
+    final clip = track.clipById(clipId)!;
+    return InsertClips([
+      (
+        trackId: track.id,
+        clip: clip.copyWith(id: newId, start: clip.end),
+        index: track.isMagnetic ? track.indexOfClip(clipId) + 1 : null,
+      ),
+    ], label: 'Duplicate');
+  }
+
+  group('InsertClips, as a duplicate', () {
     test('puts the copy straight after the original', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DuplicateClip('a', newClipId: 'a2'));
+      store.run(duplicate(store.project, 'a', 'a2'));
 
       final clips = store.project.mainTrack.clips;
       expect(clips.map((c) => c.id), ['a', 'a2', 'b', 'c']);
@@ -303,7 +320,7 @@ void main() {
           clipOf('ov', 'm1',
               start: Tick.zero, duration: secs(2), sourceIn: secs(3))));
 
-      store.run(const DuplicateClip('ov', newClipId: 'ov2'));
+      store.run(duplicate(store.project, 'ov', 'ov2'));
 
       final copy = store.project.clipById('ov2')!;
       expect(copy.sourceIn, secs(3));
@@ -313,14 +330,15 @@ void main() {
 
     test('stays next to its original even when it is the longest clip', () {
       // Ordering a magnetic lane by centre point would put this copy after
-      // the short clip that follows it.
+      // the short clip that follows it, because a longer clip's centre lands
+      // further right. The slot index is what stops that.
       final store = DocumentStore(emptyProject());
       store.run(InsertClip(mainTrackId,
           clipOf('long', 'm1', start: Tick.zero, duration: secs(8))));
       store.run(InsertClip(mainTrackId,
           clipOf('short', 'm1', start: secs(8), duration: secs(1))));
 
-      store.run(const DuplicateClip('long', newClipId: 'long2'));
+      store.run(duplicate(store.project, 'long', 'long2'));
 
       expect(store.project.mainTrack.clips.map((c) => c.id),
           ['long', 'long2', 'short']);
@@ -333,7 +351,7 @@ void main() {
       store.run(InsertClip(overlayTrackId,
           clipOf('second', 'm1', start: secs(2), duration: secs(2))));
 
-      store.run(const DuplicateClip('first', newClipId: 'first2'));
+      store.run(duplicate(store.project, 'first', 'first2'));
 
       expect(store.project.clipById('first2')!.start, secs(4));
       expect(store.project.trackById(overlayTrackId)!.clips, hasLength(3));
@@ -341,7 +359,7 @@ void main() {
 
     test('refuses an id the project already has', () {
       final store = DocumentStore(projectWithThreeClips());
-      expect(() => store.run(const DuplicateClip('a', newClipId: 'b')),
+      expect(() => store.run(duplicate(store.project, 'a', 'b')),
           throwsA(isA<EditException>()));
     });
   });
@@ -349,7 +367,7 @@ void main() {
   group('delete ripples', () {
     test('the gap closes on a magnetic lane', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
 
       expect(store.project.mainTrack.clips.map((c) => c.start.raw),
           [0, secs(3).raw]);
@@ -363,7 +381,7 @@ void main() {
       store.run(InsertClip(overlayTrackId,
           clipOf('second', 'm1', start: secs(6), duration: secs(2))));
 
-      store.run(const DeleteClip('first'));
+      store.run(const DeleteClips({'first'}));
 
       expect(store.project.trackById(overlayTrackId)!.clips.single.start,
           secs(6));
@@ -376,8 +394,8 @@ void main() {
 
       store.run(SplitClip('b', secs(3), newClipId: 'b2'));
       store.run(TrimClip('b2', end: Tick(secs(5).raw - frame * 3)));
-      store.run(const DuplicateClip('a', newClipId: 'a2'));
-      store.run(const DeleteClip('c'));
+      store.run(duplicate(store.project, 'a', 'a2'));
+      store.run(const DeleteClips({'c'}));
       store.run(TrimClip('a', start: Tick(frame * 4)));
 
       for (final track in store.project.tracks) {
@@ -404,9 +422,9 @@ void main() {
 
       store.run(SplitClip('b', secs(3), newClipId: 'b2'));
       store.endGesture();
-      store.run(const DuplicateClip('a', newClipId: 'a2'));
+      store.run(duplicate(store.project, 'a', 'a2'));
       store.endGesture();
-      store.run(const DeleteClip('c'));
+      store.run(const DeleteClips({'c'}));
       store.endGesture();
       store.run(TrimClip('a', start: Tick(frame * 4)));
 

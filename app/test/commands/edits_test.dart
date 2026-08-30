@@ -176,10 +176,10 @@ void main() {
     });
   });
 
-  group('DeleteClip', () {
+  group('DeleteClips', () {
     test('ripples the gap closed on a magnetic track', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       expect(store.project.mainTrack.clips.map((c) => c.id), ['b', 'c']);
       expect(store.project.mainTrack.clips.map((c) => c.start.raw),
           [0, secs(3).raw]);
@@ -195,13 +195,13 @@ void main() {
                 clipOf('y', 'm1', start: secs(6), duration: secs(2)),
               ]));
       final store = DocumentStore(p);
-      store.run(const DeleteClip('x'));
+      store.run(const DeleteClips({'x'}));
       expect(store.project.clipById('y')!.start, secs(6));
     });
 
     test('deleting something absent changes nothing', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DeleteClip('ghost'));
+      store.run(const DeleteClips({'ghost'}));
       expect(store.canUndo, isFalse);
       expect(store.revision, 0);
     });
@@ -245,7 +245,7 @@ void main() {
       final store = DocumentStore(projectWithThreeClips());
       final before = encodeProject(store.project);
 
-      store.run(const DeleteClip('b'));
+      store.run(const DeleteClips({'b'}));
       store.endGesture();
       store.run(MoveClip('c', secs(0)));
 
@@ -258,7 +258,7 @@ void main() {
 
     test('redo replays forward', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       final afterDelete = encodeProject(store.project);
       store.undo();
       expect(store.project.clipById('a'), isNotNull);
@@ -269,17 +269,17 @@ void main() {
 
     test('a new edit clears the redo stack', () {
       final store = DocumentStore(projectWithThreeClips());
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       store.undo();
       expect(store.canRedo, isTrue);
-      store.run(const DeleteClip('b'));
+      store.run(const DeleteClips({'b'}));
       expect(store.canRedo, isFalse);
     });
 
     test('labels describe the pending undo and redo', () {
       final store = DocumentStore(projectWithThreeClips());
       expect(store.undoLabel, isNull);
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       expect(store.undoLabel, 'Delete clip');
       store.undo();
       expect(store.redoLabel, 'Delete clip');
@@ -355,8 +355,8 @@ void main() {
       final store = DocumentStore(projectWithThreeClips());
       var notifications = 0;
       store.addListener(() => notifications++);
-      store.run(const DeleteClip('a'));
-      store.run(const DeleteClip('ghost')); // no-op
+      store.run(const DeleteClips({'a'}));
+      store.run(const DeleteClips({'ghost'})); // no-op
       store.undo();
       expect(notifications, 2);
     });
@@ -365,7 +365,7 @@ void main() {
       final original = projectWithThreeClips();
       final snapshot = encodeProject(original);
       final store = DocumentStore(original);
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       store.run(MoveClip('b', secs(9)));
       expect(encodeProject(original), snapshot);
     });
