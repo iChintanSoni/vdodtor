@@ -15,6 +15,9 @@ export 'src/engine.dart'
         FitMode,
         PlaybackState,
         PreviewEngine;
+export 'src/media_access.dart'
+    show GrantedFile, MediaAccess, MediaDrop, ResolvedFile;
 export 'src/native.dart' show EngineException;
 export 'src/preview.dart' show EnginePreview;
 export 'src/probe.dart' show NativeProbe, VdodtorEngine;
+export 'src/thumbnails.dart' show NativeThumbnail, Thumbnails;

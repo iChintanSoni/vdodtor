@@ -1,3 +1,5 @@
+import 'dart:isolate';
+
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../model/media.dart';
@@ -60,5 +62,49 @@ class MediaProbeService {
       videoCodec: native.videoCodec.isEmpty ? null : native.videoCodec,
       audioCodec: native.audioCodec.isEmpty ? null : native.audioCodec,
     );
+  }
+}
+
+/// What probing one file produced: what is in it, or why it could not be read.
+typedef ProbeOutcome = ({String path, MediaProbe? probe, String? error});
+
+/// Probing a batch of files.
+///
+/// An interface because import is the app's most failure-prone path — a file
+/// that moved, a codec nobody has, a folder of holiday photos — and none of
+/// those cases are reachable in a test that needs the native engine.
+abstract interface class MediaProber {
+  /// Probes every path, in order, one outcome per input. Never throws for a
+  /// file it could not read: an import of twelve files where one is broken
+  /// should import eleven and say so.
+  Future<List<ProbeOutcome>> probeAll(List<String> paths);
+}
+
+/// The real one: the engine's probe, on a background isolate.
+///
+/// One isolate for the whole batch rather than one per file. Probing reads
+/// container headers, so it is milliseconds each — but it is milliseconds of
+/// disk, and a folder drop can be hundreds of files, which is exactly long
+/// enough to drop frames if it ran on the UI isolate.
+final class EngineMediaProber implements MediaProber {
+  const EngineMediaProber();
+
+  @override
+  Future<List<ProbeOutcome>> probeAll(List<String> paths) => paths.isEmpty
+      ? Future.value(const [])
+      : Isolate.run(() => _probeAll(paths));
+
+  static List<ProbeOutcome> _probeAll(List<String> paths) {
+    const service = MediaProbeService();
+    final outcomes = <ProbeOutcome>[];
+    for (final path in paths) {
+      try {
+        final probe = service.toProbe(VdodtorEngine.probeFile(path));
+        outcomes.add((path: path, probe: probe, error: null));
+      } on EngineException catch (error) {
+        outcomes.add((path: path, probe: null, error: error.message));
+      }
+    }
+    return outcomes;
   }
 }

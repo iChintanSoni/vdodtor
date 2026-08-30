@@ -26,13 +26,16 @@ Two documents govern all work; consult them before starting anything:
 
 ## Repository state
 
-M1 is under way: the document model, the vendored FFmpeg, the CMake engine and the
-FFI bridge are in; the decode/audio engine and the editor UI are not. See PLAN.md.
+M1 is under way: the document model, the engine (decode, audio, compositor, transport),
+the project chooser and import are in; the timeline is not. See PLAN.md.
 
 ```
-app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`)
-  packages/vdodtor_engine/   FFI plugin — ffigen bindings + macOS podspec that drives CMake
-engine/    C engine (CMake): `vd_time` (tick math), `vd_probe` (media probe)
+app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
+           `lib/media` — import, thumbnails, sandbox file access — and `lib/ui`)
+  packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
+                             CMake, the preview texture and the open panel / drop target
+engine/    C engine (CMake): vd_time (tick math), vd_probe, vd_decoder, vd_compositor
+           (Metal), vd_audio_*, vd_engine (transport), vd_thumbnail
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 

@@ -385,6 +385,75 @@ static void test_software_frames_composite_the_same(void) {
   vd_decoder_close(d);
 }
 
+// The output buffer the GPU writes into is padded to a stride of its own; the
+// packed copy has to unpick that. A width whose row is not a multiple of 64 is
+// the case that catches it, and a source with detail in it is the only one
+// that can — every pixel of a flat colour is the same pixel, so a copy that
+// reads the wrong row still passes.
+static void test_copy_pixels_is_packed(void) {
+  VdFrame frame;
+  if (!first_frame("cfr_30fps_stereo.mp4", &frame)) return;
+
+  const int32_t w = 322, h = 182;
+  VdCompositor* c = vd_compositor_create(w, h, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    const int64_t bytes = (int64_t)w * h * 4;
+    uint8_t* packed = (uint8_t*)malloc((size_t)bytes);
+    VD_CHECK_EQ(vd_compositor_copy_pixels(c, packed, bytes), VD_OK);
+
+    // Every pixel of the packed buffer must be the pixel read_pixel reports at
+    // the same coordinates — checked at the corners and along the diagonal,
+    // where a row-offset error shows up immediately.
+    int32_t mismatches = 0;
+    const int32_t probes[][2] = {{0, 0},     {w - 1, 0},     {0, h - 1},
+                                 {w - 1, h - 1}, {1, 1},     {w / 2, h / 2},
+                                 {w - 2, h - 2}, {3, h - 3}, {w - 3, 3}};
+    for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+      const int32_t x = probes[i][0], y = probes[i][1];
+      uint8_t expected[4];
+      if (!vd_compositor_read_pixel(c, x, y, expected)) continue;
+      const uint8_t* actual = packed + ((size_t)y * w + x) * 4;
+      if (memcmp(expected, actual, 4) != 0) {
+        mismatches++;
+        fprintf(stderr, "FAIL packed pixel (%d,%d): expected %d,%d,%d "
+                        "got %d,%d,%d\n",
+                x, y, expected[2], expected[1], expected[0], actual[2],
+                actual[1], actual[0]);
+      }
+    }
+    VD_CHECK_EQ(mismatches, 0);
+
+    // A buffer one byte short is refused rather than half-filled.
+    VD_CHECK_EQ(vd_compositor_copy_pixels(c, packed, bytes - 1),
+                VD_ERR_INVALID_ARG);
+    VD_CHECK_EQ(vd_compositor_copy_pixels(c, NULL, bytes), VD_ERR_INVALID_ARG);
+    VD_CHECK_EQ(vd_compositor_copy_pixels(NULL, packed, bytes),
+                VD_ERR_INVALID_ARG);
+
+    free(packed);
+    vd_compositor_destroy(c);
+  }
+
+  // A compositor nobody has rendered into copies out black rather than
+  // refusing: the output buffer exists from creation, and black is what it
+  // would put on screen.
+  VdCompositor* fresh = vd_compositor_create(16, 16, NULL);
+  if (fresh) {
+    uint8_t buffer[16 * 16 * 4];
+    memset(buffer, 0xAB, sizeof(buffer));
+    VD_CHECK_EQ(vd_compositor_copy_pixels(fresh, buffer, sizeof(buffer)),
+                VD_OK);
+    VD_CHECK_EQ(buffer[0], 0);
+    VD_CHECK_EQ(buffer[sizeof(buffer) - 2], 0);
+    vd_compositor_destroy(fresh);
+  }
+
+  vd_frame_release(&frame);
+}
+
 int main(void) {
   test_lifecycle();
   test_no_layers_is_black();
@@ -398,6 +467,7 @@ int main(void) {
   test_a_null_layer_is_skipped_not_crashed();
   test_output_and_png();
   test_repeated_renders_stay_correct();
+  test_copy_pixels_is_packed();
   test_software_frames_composite_the_same();
   return VD_REPORT();
 }

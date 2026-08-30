@@ -7,6 +7,9 @@
 #include "vdodtor/vd_engine.h"
 
 #include <CoreVideo/CoreVideo.h>
+#include <pthread.h>
+
+#include "vdodtor/vd_audio.h"
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -30,6 +33,14 @@ static const int ORANGE[3] = {200, 100, 0};  // solid_sd_orange.mp4
 static const int BLACK[3] = {0, 0, 0};
 
 static void sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
+
+// No output device: ctest must not make a noise, and the audio path is
+// exercised by pulling the renderer directly.
+static VdEngine* make_engine(void) {
+  VdEngineOptions options = vd_engine_default_options();
+  options.audio_output = 0;
+  return vd_engine_create_with_options(options, NULL);
+}
 
 static bool near_enough(int a, int b) {
   int d = a - b;
@@ -112,7 +123,7 @@ static void test_lifecycle(void) {
 }
 
 static void test_rejects_a_bad_timeline(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
 
   VdTimelineClip clips[2];
@@ -133,7 +144,7 @@ static void test_rejects_a_bad_timeline(void) {
 }
 
 static void test_position_selects_the_clip(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
 
   VdTimelineClip clips[2];
@@ -167,7 +178,7 @@ static void test_position_selects_the_clip(void) {
 }
 
 static void test_a_gap_renders_black(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
 
   VdTimelineClip clips[2];
@@ -185,7 +196,7 @@ static void test_a_gap_renders_black(void) {
 }
 
 static void test_seek_clamps(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -205,7 +216,7 @@ static void test_seek_clamps(void) {
 }
 
 static void test_play_advances_and_ends(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -242,7 +253,7 @@ static void test_play_advances_and_ends(void) {
 }
 
 static void test_pause_freezes_the_clock(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -269,7 +280,7 @@ static void test_pause_freezes_the_clock(void) {
 }
 
 static void test_play_from_the_end_restarts(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -292,7 +303,7 @@ static void count_frames(void* context) {
 }
 
 static void test_frame_callback(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -318,7 +329,7 @@ static void test_frame_callback(void) {
 }
 
 static void test_editing_the_timeline_keeps_decoders(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -347,7 +358,7 @@ static void test_editing_the_timeline_keeps_decoders(void) {
 }
 
 static void test_a_missing_source_is_a_gap_not_a_stall(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
 
   VdTimelineClip clips[2];
@@ -368,7 +379,7 @@ static void test_a_missing_source_is_a_gap_not_a_stall(void) {
 }
 
 static void test_an_empty_timeline_renders_black(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
 
   VdTimeline timeline;
@@ -385,7 +396,7 @@ static void test_an_empty_timeline_renders_black(void) {
 }
 
 static void test_scrubbing_stays_correct(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -415,7 +426,7 @@ static void test_scrubbing_stays_correct(void) {
 // thread and drain the GPU before anything is freed.
 static void test_destroy_while_playing(void) {
   for (int i = 0; i < 12; i++) {
-    VdEngine* e = vd_engine_create(NULL);
+    VdEngine* e = make_engine();
     if (!e) return;
     VdTimelineClip clips[2];
     VdTimeline timeline = two_clip_timeline(clips);
@@ -431,7 +442,7 @@ static void test_destroy_while_playing(void) {
 }
 
 static void test_seek_storm_while_playing(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -452,7 +463,7 @@ static void test_seek_storm_while_playing(void) {
 }
 
 static void test_png_dump(void) {
-  VdEngine* e = vd_engine_create(NULL);
+  VdEngine* e = make_engine();
   if (!e) return;
   VdTimelineClip clips[2];
   VdTimeline timeline = two_clip_timeline(clips);
@@ -474,6 +485,149 @@ static void test_png_dump(void) {
   vd_engine_destroy(e);
 }
 
+// --- A/V sync --------------------------------------------------------------
+
+typedef struct {
+  VdAudioRenderer* renderer;
+  int32_t frames;
+  volatile bool stop;
+} PullJob;
+
+// Drains the renderer as fast as it can. Deliberately *not* at real time:
+// that is what separates "the engine follows audio" from "the engine follows
+// the wall clock and audio happens to agree".
+static void* pull_thread(void* arg) {
+  PullJob* job = (PullJob*)arg;
+  float buffer[512 * VD_AUDIO_CHANNELS];
+  while (!job->stop && job->frames > 0) {
+    const int32_t want = job->frames < 512 ? job->frames : 512;
+    vd_audio_renderer_pull(job->renderer, buffer, want);
+    job->frames -= want;
+    usleep(200);
+  }
+  return NULL;
+}
+
+static void test_audio_is_the_master_clock(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  memset(&clip, 0, sizeof(clip));
+  clip.path = fixture("cfr_30fps_stereo.mp4");  // the fixture with sound
+  clip.start = 0;
+  clip.duration = 10 * SECOND;  // longer than the file, so it cannot end early
+  clip.opacity = 1.0f;
+  clip.fit = VD_FIT_CONTAIN;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK(stats.audio_available);
+
+  vd_engine_seek(e, 0);
+  vd_engine_play(e);
+
+  // Pull two seconds of audio in far less than two seconds of wall time.
+  PullJob job = {
+      .renderer = vd_engine_audio_renderer(e),
+      .frames = VD_AUDIO_SAMPLE_RATE * 2,
+      .stop = false,
+  };
+  pthread_t thread;
+  pthread_create(&thread, NULL, pull_thread, &job);
+  pthread_join(thread, NULL);
+
+  const VdTick position = vd_engine_position(e);
+  // Two seconds of audio consumed is two seconds of timeline, however long it
+  // took in wall time. If the wall clock were still in charge this would read
+  // a fraction of a second.
+  VD_CHECK(position > SECOND + SECOND / 2);
+  VD_CHECK(position < 3 * SECOND);
+  if (position <= SECOND + SECOND / 2 || position >= 3 * SECOND) {
+    fprintf(stderr,
+            "  after 2 s of audio the playhead is at %lld ticks, expected ~%d\n",
+            (long long)position, 2 * SECOND);
+  }
+
+  vd_engine_pause(e);
+  vd_engine_destroy(e);
+}
+
+static void test_a_silent_timeline_uses_the_wall_clock(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // solid_sd_601 and solid_sd_orange are both encoded -an.
+  VdTimelineClip clips[2];
+  VdTimeline timeline = two_clip_timeline(clips);
+  vd_engine_set_timeline(e, &timeline);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK(!stats.audio_available);
+
+  vd_engine_seek(e, 0);
+  vd_engine_play(e);
+  sleep_ms(300);
+  const VdTick position = vd_engine_position(e);
+  // Nothing is draining an audio clock, so the picture must still advance.
+  VD_CHECK(position > SECOND / 5);
+  VD_CHECK(position < SECOND);
+  vd_engine_pause(e);
+
+  vd_engine_destroy(e);
+}
+
+static void test_audio_follows_a_seek(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  memset(&clip, 0, sizeof(clip));
+  clip.path = fixture("cfr_30fps_stereo.mp4");
+  clip.start = 0;
+  clip.duration = 10 * SECOND;
+  clip.opacity = 1.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+  vd_engine_set_timeline(e, &timeline);
+
+  vd_engine_play(e);
+  PullJob job = {
+      .renderer = vd_engine_audio_renderer(e),
+      .frames = VD_AUDIO_SAMPLE_RATE / 2,
+      .stop = false,
+  };
+  pthread_t thread;
+  pthread_create(&thread, NULL, pull_thread, &job);
+  pthread_join(thread, NULL);
+
+  // A seek rebases the audio clock; the playhead must land where it was told,
+  // not where the accumulated frame count would have put it.
+  vd_engine_seek(e, 4 * SECOND);
+  const VdTick after = vd_engine_position(e);
+  VD_CHECK(after >= 4 * SECOND);
+  VD_CHECK(after < 4 * SECOND + SECOND / 4);
+
+  vd_engine_pause(e);
+  vd_engine_destroy(e);
+}
+
 int main(void) {
   test_lifecycle();
   test_rejects_a_bad_timeline();
@@ -491,5 +645,8 @@ int main(void) {
   test_destroy_while_playing();
   test_seek_storm_while_playing();
   test_png_dump();
+  test_audio_is_the_master_clock();
+  test_a_silent_timeline_uses_the_wall_clock();
+  test_audio_follows_a_seek();
   return VD_REPORT();
 }

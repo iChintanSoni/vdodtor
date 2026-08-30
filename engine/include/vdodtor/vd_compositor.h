@@ -81,6 +81,17 @@ VD_EXPORT int32_t vd_compositor_dump_png(VdCompositor* compositor,
 VD_EXPORT bool vd_compositor_read_pixel(VdCompositor* compositor, int32_t x,
                                         int32_t y, uint8_t* out_bgra);
 
+// Copies the last composited frame into `out` as tightly packed BGRA —
+// width * height * 4 bytes, no row padding. The output buffer the GPU writes
+// into is padded to a stride of its own choosing, and every consumer outside
+// this file (Flutter's decodeImageFromPixels, an encoder, a PNG writer) wants
+// it packed, so the unpacking happens once, here.
+//
+// Returns VD_ERR_INVALID_ARG if `capacity` is short of that. A compositor
+// that has not rendered yet copies out black, the same thing it would show.
+VD_EXPORT int32_t vd_compositor_copy_pixels(VdCompositor* compositor,
+                                            uint8_t* out, int64_t capacity);
+
 #ifdef __cplusplus
 }
 #endif

@@ -77,6 +77,11 @@ add_library(vdodtor_engine STATIC
   src/vd_probe.c
   src/vd_decoder.c
   src/vd_engine.c
+  src/vd_audio_source.c
+  src/vd_audio_ring.c
+  src/vd_audio_renderer.c
+  src/vd_audio_device.c
+  src/vd_thumbnail.c
   ${VD_EXTRA_SOURCES}
 )
 target_include_directories(vdodtor_engine
@@ -90,7 +95,7 @@ if(APPLE)
     "-framework CoreVideo" "-framework CoreMedia"
     "-framework VideoToolbox" "-framework Metal" "-framework CoreFoundation"
     "-framework CoreGraphics" "-framework ImageIO" "-framework QuartzCore"
-    "-framework Foundation")
+    "-framework Foundation" "-framework AudioToolbox")
 endif()
 
 # --- tests ------------------------------------------------------------------

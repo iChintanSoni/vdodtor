@@ -6,6 +6,7 @@
 #include <string.h>
 #include <CoreVideo/CoreVideo.h>
 
+#include "vdodtor/vd_audio.h"
 #include "vdodtor/vd_decoder.h"
 
 // How many decoders stay open at once. The M0 spike measured four concurrent
@@ -64,6 +65,14 @@ struct VdEngine {
   uint64_t anchor_host;
   bool render_requested;
 
+  // The frame index last published. The render loop waits on a condition, and
+  // a condition can wake early — so without this it would publish the same
+  // frame twice and report a frame rate higher than the project's.
+  int64_t last_frame;
+
+  VdAudioRenderer* audio;
+  VdAudioDevice* audio_device;
+
   VdFrameCallback frame_callback;
   void* frame_callback_context;
 
@@ -93,10 +102,21 @@ static int64_t host_to_ns(uint64_t delta) {
 // --- position --------------------------------------------------------------
 
 // Caller holds the lock.
+//
+// Audio is the master clock whenever there is audio to play. Video can be a
+// millisecond late and nobody sees it; audio cannot be stretched or skipped
+// without the listener hearing it immediately. So the picture follows the
+// sound, and the wall clock is only the fallback for a silent timeline.
 static VdTick current_position(const VdEngine* e) {
   if (e->state != VD_STATE_PLAYING) return e->anchor_position;
-  int64_t elapsed_ns = host_to_ns(host_now() - e->anchor_host);
-  VdTick position = e->anchor_position + vd_ticks_from_nanos(elapsed_ns);
+
+  VdTick position;
+  if (e->audio && vd_audio_renderer_clock_valid(e->audio)) {
+    position = vd_audio_renderer_position(e->audio);
+  } else {
+    const int64_t elapsed_ns = host_to_ns(host_now() - e->anchor_host);
+    position = e->anchor_position + vd_ticks_from_nanos(elapsed_ns);
+  }
   return position > e->duration ? e->duration : position;
 }
 
@@ -287,8 +307,51 @@ static void* render_thread(void* arg) {
       pthread_mutex_unlock(&e->lock);
       break;
     }
+
+    const bool forced = e->render_requested;
     e->render_requested = false;
     const VdTick position = current_position(e);
+    const int64_t frame = position / e->ticks_per_frame;
+
+    if (e->state == VD_STATE_PLAYING && frame < e->last_frame) {
+      e->stats.clock_regressions++;
+    }
+
+    // Not a new frame yet. This happens on every early wake, and it happens
+    // often once audio is the clock: the wait is scheduled in wall time
+    // against a deadline in audio time, and the two do not tick together.
+    //
+    // The comparison is `<=`, not `==`, on purpose. During playback the
+    // playhead only ever moves forward as far as the viewer is concerned, so
+    // a frame at or behind the one already on screen is never worth
+    // publishing — and that holds however the position came to dip.
+    if (e->state == VD_STATE_PLAYING && !forced && frame <= e->last_frame) {
+      const VdTick next = (frame + 1) * e->ticks_per_frame;
+      const int64_t wait_ns = vd_nanos_from_ticks(next - position);
+      if (wait_ns > 0) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_nsec += wait_ns % 1000000000LL;
+        deadline.tv_sec += wait_ns / 1000000000LL;
+        if (deadline.tv_nsec >= 1000000000LL) {
+          deadline.tv_nsec -= 1000000000LL;
+          deadline.tv_sec += 1;
+        }
+        pthread_cond_timedwait(&e->wake, &e->lock, &deadline);
+      }
+      pthread_mutex_unlock(&e->lock);
+      continue;
+    }
+
+    // Skipped frames are the honest measure of not keeping up, and they are
+    // only knowable here, by comparing frame indices rather than by noticing
+    // that a deadline had passed.
+    if (e->state == VD_STATE_PLAYING && e->last_frame >= 0 &&
+        frame > e->last_frame + 1) {
+      e->stats.frames_late += frame - e->last_frame - 1;
+    }
+    if (forced) e->stats.forced_renders++;
+    e->last_frame = frame;
     const bool have_compositor = e->compositor != NULL;
     pthread_mutex_unlock(&e->lock);
 
@@ -305,29 +368,10 @@ static void* render_thread(void* arg) {
     if (e->state == VD_STATE_PLAYING && position >= e->duration) {
       e->state = VD_STATE_ENDED;
       e->anchor_position = e->duration;
+      if (e->audio_device) vd_audio_device_stop(e->audio_device);
+      if (e->audio) vd_audio_renderer_stop(e->audio);
     }
     e->stats.state = e->state;
-
-    if (e->state == VD_STATE_PLAYING && !e->quit) {
-      // Wait until the next frame boundary. Waiting on the condition rather
-      // than sleeping means pause and seek take effect immediately.
-      const VdTick next =
-          ((position / e->ticks_per_frame) + 1) * e->ticks_per_frame;
-      int64_t wait_ns = vd_nanos_from_ticks(next - current_position(e));
-      if (wait_ns > 0) {
-        struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
-        deadline.tv_nsec += wait_ns % 1000000000LL;
-        deadline.tv_sec += wait_ns / 1000000000LL;
-        if (deadline.tv_nsec >= 1000000000LL) {
-          deadline.tv_nsec -= 1000000000LL;
-          deadline.tv_sec += 1;
-        }
-        pthread_cond_timedwait(&e->wake, &e->lock, &deadline);
-      } else {
-        e->stats.frames_late++;
-      }
-    }
     pthread_mutex_unlock(&e->lock);
   }
 
@@ -336,7 +380,21 @@ static void* render_thread(void* arg) {
 
 // --- lifecycle -------------------------------------------------------------
 
+VdEngineOptions vd_engine_default_options(void) {
+  VdEngineOptions options = {.audio_output = 1};
+  return options;
+}
+
 VdEngine* vd_engine_create(int32_t* out_result) {
+  return vd_engine_create_with_options(vd_engine_default_options(), out_result);
+}
+
+struct VdAudioRenderer* vd_engine_audio_renderer(VdEngine* e) {
+  return e ? (struct VdAudioRenderer*)e->audio : NULL;
+}
+
+VdEngine* vd_engine_create_with_options(VdEngineOptions options,
+                                        int32_t* out_result) {
   if (out_result) *out_result = VD_OK;
   VdEngine* e = calloc(1, sizeof(VdEngine));
   if (!e) {
@@ -347,8 +405,17 @@ VdEngine* vd_engine_create(int32_t* out_result) {
   pthread_mutex_init(&e->lock, NULL);
   pthread_cond_init(&e->wake, NULL);
   e->state = VD_STATE_IDLE;
+  e->last_frame = -1;
   e->frame_rate = (VdRational){30, 1};
   e->ticks_per_frame = vd_ticks_per_frame(e->frame_rate);
+
+  // A machine with no output device is unusual but not a reason to refuse to
+  // open a project: the picture still works, and the clock falls back to wall
+  // time.
+  e->audio = vd_audio_renderer_create(NULL);
+  if (e->audio && options.audio_output) {
+    e->audio_device = vd_audio_device_open(e->audio, NULL);
+  }
   return e;
 }
 
@@ -364,6 +431,13 @@ void vd_engine_destroy(VdEngine* e) {
   // Join before anything is freed. vd_compositor_render already waits on the
   // GPU, so once the thread is gone nothing else can be holding the engine.
   if (running) pthread_join(e->thread, NULL);
+
+  // Order matters here as much as it does on the video side. Closing the
+  // device returns only once its real-time callback is guaranteed not to run
+  // again, which is what makes it safe to free the renderer it was pulling
+  // from.
+  if (e->audio_device) vd_audio_device_close(e->audio_device);
+  if (e->audio) vd_audio_renderer_destroy(e->audio);
 
   // The thread is gone and every render already waited on the GPU, so nothing
   // can still be reading this. render_lock is taken anyway to make the
@@ -455,6 +529,12 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
   e->duration = duration;
   e->stats.duration = duration;
 
+  // The audio side gets the same render list and picks out what has sound.
+  if (e->audio) {
+    vd_audio_renderer_set_timeline(e->audio, timeline->clips,
+                                   timeline->clip_count);
+  }
+
   if (timeline->frame_rate.num > 0 && timeline->frame_rate.den > 0) {
     e->frame_rate = timeline->frame_rate;
     const int64_t per_frame = vd_ticks_per_frame(e->frame_rate);
@@ -504,6 +584,12 @@ void vd_engine_play(VdEngine* e) {
     }
     e->state = VD_STATE_PLAYING;
     e->stats.state = e->state;
+    e->last_frame = -1;
+    e->render_requested = true;
+    if (e->audio) {
+      vd_audio_renderer_start(e->audio, e->anchor_position);
+      if (e->audio_device) vd_audio_device_start(e->audio_device);
+    }
     ensure_thread(e);
     pthread_cond_broadcast(&e->wake);
   }
@@ -517,6 +603,8 @@ void vd_engine_pause(VdEngine* e) {
     reanchor(e, current_position(e));
     e->state = VD_STATE_PAUSED;
     e->stats.state = e->state;
+    if (e->audio_device) vd_audio_device_stop(e->audio_device);
+    if (e->audio) vd_audio_renderer_stop(e->audio);
     pthread_cond_broadcast(&e->wake);
   }
   pthread_mutex_unlock(&e->lock);
@@ -532,6 +620,8 @@ void vd_engine_seek(VdEngine* e, VdTick position) {
     e->state = VD_STATE_PAUSED;
   }
   e->stats.state = e->state;
+  if (e->audio) vd_audio_renderer_seek(e->audio, position);
+  e->last_frame = -1;
   e->seek_started_host = (double)host_now();
   e->seek_pending = true;
   // Render even while paused: a scrub that shows nothing is not a scrub.
@@ -621,5 +711,13 @@ void vd_engine_stats(VdEngine* e, VdEngineStats* out) {
     if (e->clips[i].decoder) open++;
   }
   out->open_decoders = open;
+
+  if (e->audio) {
+    VdAudioStats audio;
+    vd_audio_renderer_stats(e->audio, &audio);
+    out->audio_available = vd_audio_renderer_has_audio(e->audio);
+    out->audio_underruns = audio.underruns;
+    out->audio_buffered_frames = audio.buffered_frames;
+  }
   pthread_mutex_unlock(&e->lock);
 }
