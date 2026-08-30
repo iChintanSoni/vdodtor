@@ -1,0 +1,30 @@
+# Regenerate with:  dart run ffigen --config ffigen.yaml
+#
+# The bindings are generated from the engine's public headers, so the C ABI has
+# exactly one definition. Do not hand-edit the generated file.
+name: VdEngineBindings
+description: |
+  Generated bindings for the vdodtor native engine.
+
+  Source of truth: engine/include/vdodtor/*.h
+  Regenerate with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/src/bindings.g.dart'
+headers:
+  entry-points:
+    - '../../../engine/include/vdodtor/vd_time.h'
+    - '../../../engine/include/vdodtor/vd_probe.h'
+    - '../../../engine/include/vdodtor/vd_decoder.h'
+    - '../../../engine/include/vdodtor/vd_compositor.h'
+    - '../../../engine/include/vdodtor/vd_engine.h'
+  include-directives:
+    - '**/vdodtor/**'
+compiler-opts:
+  - '-I../../../engine/include'
+comments:
+  style: any
+  length: full
+preamble: |
+  // GENERATED FILE — do not edit.
+  // Regenerate with: dart run ffigen --config ffigen.yaml
+  // ignore_for_file: always_specify_types, camel_case_types
+  // ignore_for_file: non_constant_identifier_names, unused_element

@@ -1,0 +1,28 @@
+name: vdodtor_engine
+description: "vdodtor native engine: FFmpeg decode, Metal compositor, FFI surface."
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.3
+
+dev_dependencies:
+  ffigen: ^20.1.1
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      macos:
+        # ffiPlugin builds and bundles the native code; pluginClass registers
+        # the one class that needs the registrar, for texture ids.
+        ffiPlugin: true
+        pluginClass: VdodtorEnginePlugin

@@ -1,0 +1,20 @@
+/// Dart surface for the vdodtor native engine.
+///
+/// The engine is a plain C library (engine/) with no Flutter dependency. This
+/// package is the bridge: generated FFI bindings, a Dart-shaped API over them,
+/// and the one widget that knows how a Flutter texture has to be driven on
+/// macOS. It holds no document knowledge — the app owns the document model and
+/// maps to and from these plain types.
+library;
+
+export 'src/engine.dart'
+    show
+        EngineClip,
+        EngineStats,
+        EngineTimeline,
+        FitMode,
+        PlaybackState,
+        PreviewEngine;
+export 'src/native.dart' show EngineException;
+export 'src/preview.dart' show EnginePreview;
+export 'src/probe.dart' show NativeProbe, VdodtorEngine;

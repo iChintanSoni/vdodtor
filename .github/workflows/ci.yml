@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS (self-hosted)
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+
+    steps:
+      # Default clean is on: the workspace persists between runs on a
+      # self-hosted runner, and a stale build directory must never be able to
+      # make a red build look green. The expensive artifact — the vendored
+      # FFmpeg — is deliberately cached outside the workspace so wiping this
+      # one costs nothing.
+      - uses: actions/checkout@v4
+
+      # A CI job must not mutate the machine it runs on: report what is missing
+      # and stop, rather than quietly installing it.
+      - name: Check the toolchain
+        run: |
+          missing=0
+          for tool in cmake nasm flutter dart xcodebuild rsync; do
+            if ! command -v "$tool" >/dev/null; then
+              echo "::error::missing required tool: $tool"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "cmake:  $(cmake --version | head -1)"
+          echo "flutter:$(flutter --version | head -1)"
+          echo "xcode:  $(xcodebuild -version | head -1)"
+
+      # ~10 minutes for two architectures. Kept outside the workspace, keyed on
+      # the build script, so it survives checkouts and rebuilds only when the
+      # version or the configure flags actually change.
+      - name: Vendored FFmpeg
+        run: |
+          key="$(shasum -a 256 tools/build_ffmpeg.sh | cut -c1-16)"
+          cache="$HOME/.cache/vdodtor/ffmpeg-$key"
+          mkdir -p third_party
+          if [ -f "$cache/BUILD_INFO.txt" ]; then
+            echo "reusing $cache"
+            rm -rf third_party/ffmpeg
+            ln -sfn "$cache" third_party/ffmpeg
+          else
+            rm -rf third_party/ffmpeg
+            ./tools/build_ffmpeg.sh
+            mkdir -p "$(dirname "$cache")"
+            rm -rf "$cache"
+            cp -R third_party/ffmpeg "$cache"
+          fi
+
+      - name: Verify FFmpeg is LGPL and universal
+        run: |
+          grep -q 'CONFIG_GPL=0' third_party/ffmpeg/BUILD_INFO.txt
+          for lib in third_party/ffmpeg/lib/*.dylib; do
+            [ -L "$lib" ] && continue
+            archs="$(lipo -archs "$lib")"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "::error::not universal: $lib ($archs)"; exit 1 ;;
+            esac
+          done
+
+      # --- engine ---------------------------------------------------------
+      - name: Build engine
+        run: |
+          cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/engine --parallel
+
+      - name: Engine unit tests
+        run: ctest --test-dir build/engine --output-on-failure
+
+      # --- app ------------------------------------------------------------
+      - name: Resolve Dart dependencies
+        run: |
+          flutter pub get --directory app
+          flutter pub get --directory app/packages/vdodtor_engine
+
+      - name: Analyze
+        run: |
+          dart analyze --fatal-infos app/lib app/test
+          dart analyze --fatal-infos app/packages/vdodtor_engine/lib
+
+      - name: Check the FFI bindings are current
+        working-directory: app/packages/vdodtor_engine
+        run: |
+          dart run ffigen --config ffigen.yaml
+          git diff --exit-code lib/src/bindings.g.dart \
+            || { echo "::error::bindings.g.dart is stale; run ffigen and commit it"; exit 1; }
+
+      - name: Dart tests
+        working-directory: app
+        run: flutter test
+
+      - name: Build the app
+        working-directory: app
+        run: flutter build macos --release
