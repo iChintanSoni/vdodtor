@@ -282,7 +282,14 @@ audio, scrub anywhere, quit and reopen with everything restored.
       *neighbours*, so the next move compares the clip against positions the drag itself
       created, and dragging back the way you came does not undo the reorder.
       Split, duplicate and delete are on ⌘B, ⌘D and Delete for now; the full shortcut pass
-      is still its own item below
+      is still its own item below.
+      Driven on screen, not only in tests: dragging a trim handle took a clip from
+      `00:02:00` to `00:01:15` — the half-second asked for, to the frame — and the lane
+      rippled closed behind it; one ⌘Z put it back whole; ⌘B cut at the playhead and left
+      the total length untouched; and dragging a clip past two neighbours reordered the
+      lane. The saved file then shows what matters most about a split: the tail's
+      `sourceIn` is exactly where the head's window ended, and the lane is still packed
+      end to end at the same total duration
 - [ ] Multi-select, copy/paste
 - [ ] Parallel overlay video tracks (up to 3) with per-clip transform:
       position, scale, rotation, crop, opacity, flip
