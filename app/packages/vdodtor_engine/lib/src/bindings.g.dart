@@ -332,6 +332,19 @@ class VdEngineBindings {
   late final _vd_decoder_reset_stats = _vd_decoder_reset_statsPtr
       .asFunction<void Function(ffi.Pointer<VdDecoder>)>();
 
+  /// The identity, spelled out. Equivalent to a zeroed struct; this exists so
+  /// callers can say what they mean.
+  VdTransform vd_transform_identity() {
+    return _vd_transform_identity();
+  }
+
+  late final _vd_transform_identityPtr =
+      _lookup<ffi.NativeFunction<VdTransform Function()>>(
+        'vd_transform_identity',
+      );
+  late final _vd_transform_identity = _vd_transform_identityPtr
+      .asFunction<VdTransform Function()>();
+
   /// Creates a compositor rendering `width` x `height` BGRA frames.
   /// `out_result` may be NULL.
   ffi.Pointer<VdCompositor> vd_compositor_create(
@@ -1534,6 +1547,58 @@ enum VdFitMode {
   };
 }
 
+/// What a clip does to itself before it is composited: where it sits, how big
+/// it is, which way up, and how much of it shows.
+///
+/// Every field is defined so that **a zeroed struct is the identity**. A caller
+/// that does not care about transforms can `memset` its layers and never learn
+/// this field exists, which is worth more than the two lines it costs to treat
+/// a zero scale as one.
+///
+/// Applied in this order, about the layer's own centre: crop, then the fit the
+/// mode asked for, then scale, then rotation, then offset. Crop first because
+/// cropping changes the aspect ratio, and a fit computed before it would letter
+/// box the part that was thrown away.
+final class VdTransform extends ffi.Struct {
+  /// Offset from the centre of the output, as a fraction of the output's own
+  /// width and height. {0,0} is centred; {0.5,0} is off the right edge.
+  @ffi.Float()
+  external double offset_x;
+
+  @ffi.Float()
+  external double offset_y;
+
+  /// Uniform multiplier on the fitted size. 0 and 1 both mean "as fitted".
+  @ffi.Float()
+  external double scale;
+
+  /// Extra clockwise rotation in degrees, on top of whatever the source's own
+  /// orientation metadata already asked for. Any angle, not just quarter turns.
+  @ffi.Float()
+  external double rotation_degrees;
+
+  /// The part of the *display-oriented* source to show, normalised, origin top
+  /// left. A zeroed width or height means the whole thing.
+  @ffi.Float()
+  external double crop_x;
+
+  @ffi.Float()
+  external double crop_y;
+
+  @ffi.Float()
+  external double crop_w;
+
+  @ffi.Float()
+  external double crop_h;
+
+  /// Mirrored horizontally / vertically, in display orientation.
+  @ffi.Bool()
+  external bool flip_h;
+
+  @ffi.Bool()
+  external bool flip_v;
+}
+
 final class VdLayer extends ffi.Struct {
   /// CVPixelBufferRef from vd_decoder_frame_at. Borrowed for the duration of
   /// the call; the compositor does not retain it.
@@ -1565,6 +1630,10 @@ final class VdLayer extends ffi.Struct {
   /// 0..1
   @ffi.Float()
   external double opacity;
+
+  /// Where this layer goes and how much of it shows. A zeroed transform is the
+  /// identity, so this may be ignored entirely.
+  external VdTransform transform;
 }
 
 final class VdEngine extends ffi.Opaque {}
@@ -1617,6 +1686,10 @@ final class VdTimelineClip extends ffi.Struct {
   external int fitAsInt;
 
   VdFitMode get fit => VdFitMode.fromValue(fitAsInt);
+
+  /// Where this clip sits inside the frame. A zeroed transform is the identity,
+  /// so a caller with nothing to say about it can leave the field alone.
+  external VdTransform transform;
 }
 
 final class VdTimeline extends ffi.Struct {

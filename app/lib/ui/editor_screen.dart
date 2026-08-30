@@ -17,6 +17,7 @@ import '../media/media_import.dart';
 import '../media/thumbnails.dart';
 import '../model/media.dart';
 import '../model/time.dart';
+import 'inspector.dart';
 import 'media_bin.dart';
 import 'theme.dart';
 import 'timecode.dart';
@@ -287,6 +288,11 @@ class _EditorScreenState extends State<EditorScreen> {
                                           unawaited(_importFromPicker()),
                                     ),
                         ),
+                        if (_timeline != null) ...[
+                          const VerticalDivider(
+                              width: 1, color: VdColors.line),
+                          Inspector(timeline: _timeline!),
+                        ],
                       ],
                     ),
                   ),

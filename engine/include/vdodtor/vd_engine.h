@@ -47,6 +47,10 @@ typedef struct {
 
   float opacity;
   VdFitMode fit;
+
+  // Where this clip sits inside the frame. A zeroed transform is the identity,
+  // so a caller with nothing to say about it can leave the field alone.
+  VdTransform transform;
 } VdTimelineClip;
 
 typedef struct {

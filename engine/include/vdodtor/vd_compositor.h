@@ -30,6 +30,47 @@ typedef enum {
   VD_FIT_STRETCH = 2,  // ignores aspect
 } VdFitMode;
 
+// What a clip does to itself before it is composited: where it sits, how big
+// it is, which way up, and how much of it shows.
+//
+// Every field is defined so that **a zeroed struct is the identity**. A caller
+// that does not care about transforms can `memset` its layers and never learn
+// this field exists, which is worth more than the two lines it costs to treat
+// a zero scale as one.
+//
+// Applied in this order, about the layer's own centre: crop, then the fit the
+// mode asked for, then scale, then rotation, then offset. Crop first because
+// cropping changes the aspect ratio, and a fit computed before it would letter
+// box the part that was thrown away.
+typedef struct {
+  // Offset from the centre of the output, as a fraction of the output's own
+  // width and height. {0,0} is centred; {0.5,0} is off the right edge.
+  float offset_x;
+  float offset_y;
+
+  // Uniform multiplier on the fitted size. 0 and 1 both mean "as fitted".
+  float scale;
+
+  // Extra clockwise rotation in degrees, on top of whatever the source's own
+  // orientation metadata already asked for. Any angle, not just quarter turns.
+  float rotation_degrees;
+
+  // The part of the *display-oriented* source to show, normalised, origin top
+  // left. A zeroed width or height means the whole thing.
+  float crop_x;
+  float crop_y;
+  float crop_w;
+  float crop_h;
+
+  // Mirrored horizontally / vertically, in display orientation.
+  bool flip_h;
+  bool flip_v;
+} VdTransform;
+
+// The identity, spelled out. Equivalent to a zeroed struct; this exists so
+// callers can say what they mean.
+VD_EXPORT VdTransform vd_transform_identity(void);
+
 typedef struct {
   // CVPixelBufferRef from vd_decoder_frame_at. Borrowed for the duration of
   // the call; the compositor does not retain it.
@@ -45,6 +86,10 @@ typedef struct {
 
   VdFitMode fit;
   float opacity;  // 0..1
+
+  // Where this layer goes and how much of it shows. A zeroed transform is the
+  // identity, so this may be ignored entirely.
+  VdTransform transform;
 } VdLayer;
 
 // Creates a compositor rendering `width` x `height` BGRA frames.

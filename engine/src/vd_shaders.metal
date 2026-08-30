@@ -7,19 +7,29 @@
 using namespace metal;
 
 struct VdLayerUniforms {
-  // Destination rectangle in normalised output space, origin top-left.
+  // Destination rectangle in normalised output space, origin top-left. The
+  // fit, the scale and the offset are all folded into this on the CPU; only
+  // the rotation has to happen per-vertex.
   float4 rect;
+  // The part of the source to sample, normalised, in display orientation.
+  float4 crop;
+  // cos and sin of the layer's rotation.
+  float2 rotation;
+  // Output width divided by height. Rotation happens in a square space and
+  // comes back out again, or a turned square would leave as a rhombus.
+  float aspect;
   float opacity;
   // Clockwise quarter turns to apply when sampling: 0..3.
   uint quarter_turns;
   // 1 when the source is full-range (0-255), 0 for video range (16-235).
   uint full_range;
-  uint _pad;
+  uint flip_h;
+  uint flip_v;
   // Luma coefficients for red and blue. BT.601, BT.709 and BT.2020 differ
   // only in these two numbers, so the matrix is derived rather than branched.
   float kr;
   float kb;
-  float2 _pad2;
+  float2 _pad;
 };
 
 struct VertexOut {
@@ -32,13 +42,28 @@ vertex VertexOut vd_vertex(uint vid [[vertex_id]],
   // Triangle strip over a unit quad: (0,0) (1,0) (0,1) (1,1).
   float2 corner = float2(float(vid & 1u), float((vid >> 1) & 1u));
 
-  float2 unit = u.rect.xy + corner * u.rect.zw;   // 0..1, top-left origin
+  // Rotate the quad about its own centre. In normalised output space x and y
+  // do not measure the same distance, so the offset goes into a square space
+  // to be turned and comes back out again; skipping that turns a square clip
+  // into a rhombus on any output that is not itself square.
+  const float2 centre = u.rect.xy + u.rect.zw * 0.5;
+  float2 local = (corner - 0.5) * u.rect.zw;
+  local.x *= u.aspect;
+  local = float2(local.x * u.rotation.x - local.y * u.rotation.y,
+                 local.x * u.rotation.y + local.y * u.rotation.x);
+  local.x /= u.aspect;
+
+  const float2 unit = centre + local;
   VertexOut out;
   out.position = float4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 
-  // Rotate the sampling coordinates rather than the geometry, so the quad the
-  // fit mode computed stays exactly where it was put.
+  // Sampling runs the other way, from what the viewer sees back to what the
+  // decoder produced: flip and crop in display orientation, then undo the
+  // source's own quarter turns to land in the frame's own coordinates.
   float2 uv = corner;
+  if (u.flip_h != 0u) uv.x = 1.0 - uv.x;
+  if (u.flip_v != 0u) uv.y = 1.0 - uv.y;
+  uv = u.crop.xy + uv * u.crop.zw;
   switch (u.quarter_turns) {
     case 1: uv = float2(uv.y, 1.0 - uv.x); break;
     case 2: uv = float2(1.0 - uv.x, 1.0 - uv.y); break;

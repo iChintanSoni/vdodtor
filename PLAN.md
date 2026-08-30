@@ -14,7 +14,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 378 Dart tests), and the **media probe** through the full
+> crash recovery, import — 409 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -51,8 +51,9 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > drag a single undo entry, each edge stopping where it should — at a frame of length, at
 > the end of the source, at the neighbour. Snapping lands edges on cuts and on the playhead.
 > A selection is a *set*: ⌘-click to add, ⌘A for everything, and cut, copy and paste move
-> clips around with their source windows and their spacing intact. Overlay lanes exist and
-> take clips dragged up onto them — verified compositing two layers over the main track.
+> clips around with their source windows and their spacing intact. Overlay lanes take clips
+> dragged onto them, and every clip carries a transform — offset, scale, rotation, crop,
+> opacity, flip — so a picture-in-picture is a thing the editor can now make.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -316,7 +317,7 @@ audio, scrub anywhere, quit and reopen with everything restored.
       Not included, and worth saying: dragging does not move a whole selection. Group drag
       on a magnetic lane is a different problem — non-contiguous clips reflowing around each
       other — and belongs with a bullet of its own rather than smuggled into this one
-- [~] Parallel overlay video tracks (up to 3) with per-clip transform:
+- [x] Parallel overlay video tracks (up to 3) with per-clip transform:
       position, scale, rotation, crop, opacity, flip
       — **the lanes are in; the per-clip transform is not.** A project may hold three
       overlay lanes, capped in the model rather than in the UI, and a new one is inserted
@@ -337,8 +338,27 @@ audio, scrub anywhere, quit and reopen with everything restored.
       the engine then reports **`layers 2`** with the overlay composited over the main track
       in the preview. Nothing was needed in the engine — `timeline_sync` already used
       document order as z-order, and this is the first time anything exercised it.
-      Still to do for this bullet: the per-clip transform, which needs the compositor to
-      take a full 2D transform rather than a fit mode, and an inspector to set it from
+      **The per-clip transform is now in too.** `ClipTransform` on every clip — offset,
+      scale, rotation, crop insets, opacity, flip — and every field of it is *relative*:
+      offsets are fractions of the output, scale multiplies whatever the fit produced, crop
+      is a fraction of the source. A project cut at 1080p and exported at 4K has to look the
+      same, and it only can if nothing in there is measured in pixels.
+      In the engine, `VdTransform` is defined so that **a zeroed struct is the identity** —
+      a caller that does not care can `memset` its layers and never learn the field exists,
+      which is worth the two lines it costs to read a zero scale as one. Order is crop, fit,
+      scale, rotation, offset: crop first because cropping changes the aspect ratio and a
+      fit computed before it would letterbox the part being thrown away. Rotation is the
+      only part the vertex shader has to do, and it happens in a square space and comes back
+      out again — rotating in normalised space, where x and y measure different distances,
+      turns a square clip into a rhombus on any output that is not square.
+      Eight new pixel tests cover it, including that one.
+      The inspector shows it for a single selection only: averaging four clips' rotations
+      into one slider is a lie that is hard to notice and harder to undo. A slider drag is
+      one undo entry, and a run across *different* properties still folds into one, because
+      that is one decision to the person making it.
+      Verified headlessly rather than by hand: a project with an overlay clip at 35% scale
+      offset into the corner renders as a **picture-in-picture** over the main track — which
+      is the shape this milestone's exit criteria asks for
 - [ ] GPU compositor: multi-layer render graph, alpha blend, fit modes
       (blur-fill default / fit / fill / stretch)
 - [ ] Golden-frame tests for the compositor in CI (fixed scenes, fixed timestamps, strict tolerance)
