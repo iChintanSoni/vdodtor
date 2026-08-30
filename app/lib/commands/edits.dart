@@ -134,6 +134,206 @@ final class MoveClip extends EditCommand {
       next is MoveClip && next.clipId == clipId ? next : null;
 }
 
+/// Moves one edge of a clip without moving the other.
+///
+/// A trim is not a resize. The head edge takes [Clip.sourceIn] with it, so the
+/// frames stay where they were and fewer of them are shown; the tail edge only
+/// changes how many. Getting that wrong is the bug where trimming the front of
+/// a clip silently shifts every frame in it.
+///
+/// Both edges are clamped rather than refused: this is what a drag runs on,
+/// and a drag that stops at the limit is right where one that snaps back to
+/// the start is not. The limits are one frame of length, the source's own
+/// extent, and — on a free-form track — the neighbours.
+final class TrimClip extends EditCommand {
+  const TrimClip(this.clipId, {this.start, this.end});
+
+  final String clipId;
+
+  /// Where the clip's first frame should now sit on the timeline. Null leaves
+  /// the head alone.
+  final Tick? start;
+
+  /// Where the clip should now end on the timeline. Null leaves the tail
+  /// alone.
+  final Tick? end;
+
+  @override
+  String get label => 'Trim clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    final minimum = project.ticksPerFrame;
+
+    var next = clip;
+    if (start != null) {
+      var delta = start!.raw - clip.start.raw;
+      // Cannot show frames the source does not have, and cannot trim a clip
+      // out of existence.
+      if (clip.sourceIn.raw + delta < 0) delta = -clip.sourceIn.raw;
+      if (clip.duration.raw - delta < minimum) {
+        delta = clip.duration.raw - minimum;
+      }
+      if (!track.isMagnetic) {
+        final floor = _endOfPrevious(track, clip);
+        if (clip.start.raw + delta < floor) delta = floor - clip.start.raw;
+      } else if (clip.start.raw + delta < 0) {
+        delta = -clip.start.raw;
+      }
+      next = next.trimHeadBy(Tick(delta));
+    }
+
+    if (end != null) {
+      final head = next;
+      var wanted = end!.raw - head.start.raw;
+      if (wanted < minimum) wanted = minimum;
+
+      final limit = maxDurationFor(head, project.assetFor(head));
+      if (limit.raw > 0 && wanted > limit.raw) wanted = limit.raw;
+      if (!track.isMagnetic) {
+        final ceiling = _startOfNext(track, clip);
+        if (ceiling != null && head.start.raw + wanted > ceiling) {
+          wanted = ceiling - head.start.raw;
+        }
+      }
+      if (wanted < minimum) wanted = minimum;
+      next = head.copyWith(duration: Tick(wanted));
+    }
+
+    if (next == clip) return project;
+
+    final replaced = [
+      for (final c in track.clips) c.id == clipId ? next : c,
+    ];
+    // A magnetic lane has no gaps to leave behind: shortening a clip pulls
+    // everything after it back, in the order they already had.
+    return project.replaceTrack(track.isMagnetic
+        ? track.packedInOrder(replaced)
+        : track.withClips(replaced));
+  }
+
+  static int _endOfPrevious(Track track, Clip clip) {
+    var floor = 0;
+    for (final other in track.clips) {
+      if (other.id == clip.id) continue;
+      if (other.end.raw <= clip.start.raw && other.end.raw > floor) {
+        floor = other.end.raw;
+      }
+    }
+    return floor;
+  }
+
+  static int? _startOfNext(Track track, Clip clip) {
+    int? ceiling;
+    for (final other in track.clips) {
+      if (other.id == clip.id) continue;
+      if (other.start.raw >= clip.end.raw &&
+          (ceiling == null || other.start.raw < ceiling)) {
+        ceiling = other.start.raw;
+      }
+    }
+    return ceiling;
+  }
+
+  /// A trim drag is one undo entry, the same way a move drag is.
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is TrimClip &&
+              next.clipId == clipId &&
+              (next.start == null) == (start == null)
+          ? next
+          : null;
+}
+
+/// Cuts a clip in two at [at], leaving both halves where they were.
+///
+/// The head keeps the id — everything already pointing at this clip keeps
+/// pointing at the part that did not move — and the tail is new.
+final class SplitClip extends EditCommand {
+  const SplitClip(this.clipId, this.at, {required this.newClipId});
+
+  final String clipId;
+  final Tick at;
+  final String newClipId;
+
+  @override
+  String get label => 'Split clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    if (project.clipById(newClipId) != null) {
+      throw EditException('clip $newClipId is already in the project');
+    }
+    final clip = track.clipById(clipId)!;
+
+    // Snapped, because a cut between two frames is a cut at neither of them
+    // and every length downstream inherits the rounding.
+    final cut = Timebase.project.snapToFrame(at, project.format.frameRate);
+    if (cut <= clip.start || cut >= clip.end) return project;
+
+    final head = clip.copyWith(duration: cut - clip.start);
+    final tail = Clip(
+      id: newClipId,
+      mediaId: clip.mediaId,
+      start: cut,
+      duration: clip.end - cut,
+      sourceIn: clip.sourceTimeAt(cut),
+      label: clip.label,
+      enabled: clip.enabled,
+    );
+
+    final index = track.indexOfClip(clipId);
+    final next = List<Clip>.of(track.clips)
+      ..[index] = head
+      ..insert(index + 1, tail);
+    // The two halves exactly fill what the original did, so no lane moves and
+    // there is nothing to repack on either kind of track.
+    return project.replaceTrack(track.withClips(next));
+  }
+}
+
+/// Copies a clip and drops the copy in right after the original.
+final class DuplicateClip extends EditCommand {
+  const DuplicateClip(this.clipId, {required this.newClipId});
+
+  final String clipId;
+  final String newClipId;
+
+  @override
+  String get label => 'Duplicate clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    if (project.clipById(newClipId) != null) {
+      throw EditException('clip $newClipId is already in the project');
+    }
+    final clip = track.clipById(clipId)!;
+    final copy = clip.copyWith(id: newClipId, start: clip.end);
+    final index = track.indexOfClip(clipId);
+
+    if (track.isMagnetic) {
+      final next = List<Clip>.of(track.clips)..insert(index + 1, copy);
+      // In order, not by centre: the copy belongs next to its original even
+      // when it is longer than whatever follows.
+      return project.replaceTrack(track.packedInOrder(next));
+    }
+
+    // A free-form lane may already have something in that space. Land at the
+    // end of the lane rather than refusing — a duplicate that appears
+    // somewhere is better than one that appears nowhere and says nothing.
+    final overlaps = track.clips.any((c) => c.span.overlaps(copy.span));
+    final placed = overlaps ? copy.movedTo(track.duration) : copy;
+    return project.replaceTrack(track.withClips([...track.clips, placed]));
+  }
+}
+
 /// Removes a clip. On a magnetic track the gap closes behind it.
 final class DeleteClip extends EditCommand {
   const DeleteClip(this.clipId);

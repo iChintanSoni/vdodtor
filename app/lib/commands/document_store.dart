@@ -42,14 +42,28 @@ class DocumentStore extends ChangeNotifier {
 
   /// Applies [command]. A command that returns the same document is dropped:
   /// it does not dirty the project, push undo, or notify.
-  void run(EditCommand command) {
-    final before = _project;
-    final after = command.apply(before);
-    if (identical(after, before)) return;
-
+  ///
+  /// Set [fromGestureStart] for the repeated commands a drag emits. They are
+  /// then applied to the document as it stood when the gesture began rather
+  /// than to the document the gesture has left behind — a drag is one edit
+  /// that keeps changing its mind, not a run of edits that accumulate.
+  ///
+  /// It matters most on a magnetic track, where committing a move repacks the
+  /// *neighbours* too. Measured against the repacked lane, the next move of
+  /// the same drag compares the clip to positions the drag itself created, so
+  /// dragging back the way you came does not undo the reorder — the clip is
+  /// stuck wherever it first landed.
+  void run(EditCommand command, {bool fromGestureStart = false}) {
     final top = _undo.isEmpty ? null : _undo.last;
     final merged =
         _coalescingBarrier ? null : top?.command.mergeWith(command);
+
+    final before =
+        fromGestureStart && merged != null ? top!.snapshot : _project;
+    final after = command.apply(before);
+    // Compared against the current document, not the base: mid-gesture, an
+    // edit that lands back where the project already is has changed nothing.
+    if (identical(after, _project)) return;
 
     if (merged != null) {
       // Same gesture: keep the older snapshot, adopt the newer command so the

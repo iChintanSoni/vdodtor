@@ -141,7 +141,19 @@ final class Track {
   /// makes a reorder feel deliberate rather than twitchy.
   Track repackedFrom(List<Clip> source) {
     assert(isMagnetic, 'only a magnetic track packs');
-    final ordered = List<Clip>.of(source)..sort(_byCentre);
+    return packedInOrder(List<Clip>.of(source)..sort(_byCentre));
+  }
+
+  /// Packs [source] end to end from zero, keeping the order it is given.
+  ///
+  /// The other half of [repackedFrom], separated because insertion already
+  /// knows where its new clip belongs. Ordering that by centre point would
+  /// move it somewhere else the moment it happened to be longer than the
+  /// neighbour it was meant to sit before — a duplicate that lands two clips
+  /// away is not a duplicate anyone asked for.
+  Track packedInOrder(List<Clip> source) {
+    assert(isMagnetic, 'only a magnetic track packs');
+    final ordered = source;
 
     var cursor = Tick.zero;
     final packed = <Clip>[];
