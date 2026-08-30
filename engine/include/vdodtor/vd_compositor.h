@@ -28,6 +28,11 @@ typedef enum {
   VD_FIT_CONTAIN = 0,  // whole frame visible, letterboxed
   VD_FIT_COVER = 1,    // fills the output, edges cropped
   VD_FIT_STRETCH = 2,  // ignores aspect
+  // Whole frame visible, and the bars filled with a blurred, cover-fitted
+  // copy of the same picture rather than black. Costs three extra passes, and
+  // only when there are bars to fill — a clip that already fills the output
+  // takes the ordinary path.
+  VD_FIT_BLUR = 3,
 } VdFitMode;
 
 // What a clip does to itself before it is composited: where it sits, how big

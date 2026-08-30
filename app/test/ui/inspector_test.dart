@@ -55,6 +55,29 @@ void main() {
     expect(find.byType(Slider), findsNothing);
   });
 
+  testWidgets('offers the four ways of filling the frame', (tester) async {
+    controller.select('b');
+    await pumpInspector(tester);
+
+    for (final label in ['Blur', 'Fit', 'Fill', 'Stretch']) {
+      expect(find.text(label), findsOneWidget);
+    }
+  });
+
+  testWidgets('blur fill is what a clip starts on', (tester) async {
+    // Black bars make a clip look like a mistake; this makes it look
+    // deliberate, so it is the default rather than an option to find.
+    expect(const ClipTransform().fit, ClipFit.blurFill);
+
+    controller.select('b');
+    await pumpInspector(tester);
+    await tester.tap(find.text('Fit'));
+    await tester.pump();
+
+    expect(store.project.clipById('b')!.transform.fit, ClipFit.contain);
+    expect(store.undoLabels, ['Adjust clip']);
+  });
+
   testWidgets('shows the selected clip and its controls', (tester) async {
     controller.select('b');
     await pumpInspector(tester);
@@ -131,10 +154,15 @@ void main() {
     controller.select('b');
     await pumpInspector(tester);
 
+    // The panel scrolls; the flip buttons live below the crop sliders.
+    await tester.ensureVisible(find.text('Flip H'));
+    await tester.pump();
     await tester.tap(find.text('Flip H'));
     await tester.pump();
     expect(store.project.clipById('b')!.transform.flipHorizontal, isTrue);
 
+    await tester.ensureVisible(find.text('Flip H'));
+    await tester.pump();
     await tester.tap(find.text('Flip H'));
     await tester.pump();
     expect(store.project.clipById('b')!.transform.flipHorizontal, isFalse);

@@ -7,6 +7,7 @@ import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/serialization.dart';
 import 'package:vdodtor/model/time.dart';
+import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../fixtures.dart';
 
@@ -55,6 +56,61 @@ void main() {
       expect(a, b);
       expect(a.hashCode, b.hashCode);
       expect(a, isNot(const ClipTransform(scale: 2)));
+    });
+  });
+
+  group('how a clip fills a frame it does not match', () {
+    test('blur fill is the default, not an option to go and find', () {
+      // Black bars make a clip look like a mistake. The brief calls this the
+      // default, so a clip that nobody has touched already has it.
+      expect(const ClipTransform().fit, ClipFit.blurFill);
+      expect(ClipTransform.identity.fit, ClipFit.blurFill);
+    });
+
+    test('a project saved before fit modes existed gets the default', () {
+      final json = projectToJson(projectWithThreeClips());
+      final restored = projectFromJson(json);
+      expect(restored.clipById('b')!.transform.fit, ClipFit.blurFill);
+    });
+
+    test('the default is not written to the file', () {
+      final json = projectToJson(projectWithThreeClips());
+      final track = (json['tracks']! as List).first as Map<String, Object?>;
+      final clip = (track['clips']! as List).first as Map<String, Object?>;
+      expect(clip.containsKey('transform'), isFalse);
+    });
+
+    test('anything else is written, and comes back', () {
+      final p = projectWithThreeClips();
+      final withFit = p.replaceTrack(p.mainTrack.withClips([
+        for (final c in p.mainTrack.clips)
+          c.id == 'b'
+              ? c.copyWith(
+                  transform: const ClipTransform(fit: ClipFit.cover))
+              : c,
+      ]));
+
+      final restored = projectFromJson(projectToJson(withFit));
+      expect(restored.clipById('b')!.transform.fit, ClipFit.cover);
+      expect(restored.clipById('a')!.transform.fit, ClipFit.blurFill);
+    });
+
+    test('each one reaches the engine as its own mode', () {
+      const pairs = {
+        ClipFit.blurFill: FitMode.blurFill,
+        ClipFit.contain: FitMode.contain,
+        ClipFit.cover: FitMode.cover,
+        ClipFit.stretch: FitMode.stretch,
+      };
+      for (final entry in pairs.entries) {
+        final p = projectWithThreeClips();
+        final tweaked = p.replaceTrack(p.mainTrack.withClips([
+          for (final c in p.mainTrack.clips)
+            c.copyWith(transform: ClipTransform(fit: entry.key)),
+        ]));
+        expect(engineTimelineFor(tweaked).clips.first.fit, entry.value,
+            reason: '${entry.key}');
+      }
     });
   });
 

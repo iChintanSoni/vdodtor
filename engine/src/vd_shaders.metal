@@ -29,7 +29,10 @@ struct VdLayerUniforms {
   // only in these two numbers, so the matrix is derived rather than branched.
   float kr;
   float kb;
-  float2 _pad;
+  // Distance between blur taps, in texture coordinates. One axis at a time:
+  // a separable blur is two cheap passes where a square kernel is one dear
+  // one, and at these radii the difference is the whole cost.
+  float2 blur_step;
 };
 
 struct VertexOut {
@@ -119,4 +122,34 @@ fragment float4 vd_fragment_yuv420p(VertexOut in [[stage_in]],
   float v_ = cr.sample(vd_sampler, in.uv).r;
   float3 rgb = ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u);
   return float4(rgb * u.opacity, u.opacity);
+}
+
+// --- blur fill --------------------------------------------------------------
+// The background behind a letterboxed clip: the same picture, cover-fitted so
+// it reaches the edges, blurred until it reads as a colour rather than as a
+// second copy of the shot.
+
+constant float vd_blur_weights[5] = {0.2270270270, 0.1945945946, 0.1216216216,
+                                     0.0540540541, 0.0162162162};
+
+fragment float4 vd_fragment_blur(VertexOut in [[stage_in]],
+                                 constant VdLayerUniforms& u [[buffer(0)]],
+                                 texture2d<float> source [[texture(0)]]) {
+  float4 sum = source.sample(vd_sampler, in.uv) * vd_blur_weights[0];
+  for (int i = 1; i < 5; i++) {
+    const float2 offset = u.blur_step * float(i);
+    sum += source.sample(vd_sampler, in.uv + offset) * vd_blur_weights[i];
+    sum += source.sample(vd_sampler, in.uv - offset) * vd_blur_weights[i];
+  }
+  return sum;
+}
+
+// Draws an already-composited RGBA texture, at a given opacity.
+fragment float4 vd_fragment_texture(VertexOut in [[stage_in]],
+                                    constant VdLayerUniforms& u [[buffer(0)]],
+                                    texture2d<float> source [[texture(0)]]) {
+  const float4 texel = source.sample(vd_sampler, in.uv);
+  // Already premultiplied by the pass that produced it, so opacity scales
+  // both halves together.
+  return texel * u.opacity;
 }
