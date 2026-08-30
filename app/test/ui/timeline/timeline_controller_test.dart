@@ -79,7 +79,7 @@ void main() {
     test('a document edit repaints the timeline', () {
       var notifications = 0;
       controller.addListener(() => notifications++);
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       expect(notifications, greaterThanOrEqualTo(1));
     });
   });
@@ -190,7 +190,7 @@ void main() {
 
     test('a clip deleted out from under the selection reads as gone', () {
       controller.pointerDown(inLane(40, 0));
-      store.run(const DeleteClip('a'));
+      store.run(const DeleteClips({'a'}));
       expect(controller.selectedClip, isNull);
     });
   });

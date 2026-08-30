@@ -152,7 +152,9 @@ class TimelinePainter extends CustomPainter {
     final asset = controller.project.assetFor(clip);
     final missing = asset == null ||
         controller.unreachableMediaIds.contains(asset.id);
-    final selected = clip.id == controller.selectedClipId;
+    final selected = controller.isSelected(clip.id);
+    // Handles mean "you can trim this", and trimming is a single-clip idea.
+    final lone = clip.id == controller.selectedClipId;
 
     // Half a pixel of inset on each side, so two clips butted flush on a
     // magnetic track still read as two clips rather than one long one.
@@ -193,7 +195,7 @@ class TimelinePainter extends CustomPainter {
       // Handles only on the selected clip. Drawing them on every clip would
       // put a grab target on every cut in the project and make a busy lane
       // unreadable; the edges stay grabbable either way.
-      if (width >= TimelineController.minimumBodyPx) {
+      if (lone && width >= TimelineController.minimumBodyPx) {
         _paintHandles(canvas, rect, x0, x1, top);
       }
     }

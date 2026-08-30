@@ -96,7 +96,11 @@ class _TimelineViewState extends State<TimelineView>
         builder: (context, constraints) {
           _width = constraints.maxWidth;
           return Listener(
-            onPointerDown: (e) => widget.controller.pointerDown(e.localPosition),
+            onPointerDown: (e) => widget.controller.pointerDown(
+                  e.localPosition,
+                  additive: HardwareKeyboard.instance.isMetaPressed ||
+                      HardwareKeyboard.instance.isShiftPressed,
+                ),
             onPointerMove: (e) => widget.controller.pointerMove(e.localPosition),
             onPointerUp: (_) => widget.controller.pointerUp(),
             onPointerCancel: (_) => widget.controller.pointerUp(),

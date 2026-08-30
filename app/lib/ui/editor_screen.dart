@@ -232,6 +232,16 @@ class _EditorScreenState extends State<EditorScreen> {
             _timeline?.deleteSelected(),
         const SingleActivator(LogicalKeyboardKey.backspace): () =>
             _timeline?.deleteSelected(),
+        const SingleActivator(LogicalKeyboardKey.keyA, meta: true): () =>
+            _timeline?.selectAll(),
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            _timeline?.clearSelection(),
+        const SingleActivator(LogicalKeyboardKey.keyC, meta: true): () =>
+            _timeline?.copySelection(),
+        const SingleActivator(LogicalKeyboardKey.keyX, meta: true): () =>
+            _timeline?.cutSelection(),
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true): () =>
+            _timeline?.paste(),
       },
       child: Focus(
         autofocus: true,
