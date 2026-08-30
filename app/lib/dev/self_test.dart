@@ -4,6 +4,11 @@ import 'dart:io';
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../app/workspace.dart';
+import '../commands/document_store.dart';
+import '../engine/media_probe.dart';
+import '../media/file_access.dart';
+import '../media/media_import.dart';
+import '../media/thumbnails.dart';
 import '../model/project.dart';
 import '../model/time.dart';
 
@@ -81,4 +86,111 @@ Future<void> runSelfTest(PreviewEngine engine, Project project) async {
       'layers=${playing.activeLayers} '
       'position=${playing.positionTicks}');
   stdout.writeln('[selftest] frames in ${out.path}');
+}
+
+/// The clips bundled with the app, for the self test only.
+///
+/// The self test runs unattended, so it cannot open a file panel and cannot be
+/// dropped on. The App Sandbox lets the app read its own bundle, which makes
+/// these the only files it can reach without a user — everyone else imports.
+List<File> sampleMediaFiles() {
+  final exe = File(Platform.resolvedExecutable).parent; // …/Contents/MacOS
+  final bundled = Directory('${exe.parent.path}/Frameworks/App.framework/'
+      'Resources/flutter_assets/assets/dev');
+  final dir = bundled.existsSync()
+      ? bundled
+      : Directory('${Directory.current.path}/assets/dev');
+  if (!dir.existsSync()) return const [];
+
+  return dir
+      .listSync()
+      .whereType<File>()
+      .where((f) => f.path.endsWith('.mp4'))
+      .toList()
+    ..sort((a, b) => a.path.compareTo(b.path));
+}
+
+/// Copies the bundled samples into [into], and returns where they landed.
+///
+/// Importing straight out of the app bundle would not be a fair test: a bundle
+/// resource is readable but *not* bookmarkable — the sandbox grants it by
+/// being the app's own, not by a scope there is anything to remember — so
+/// every mint would fail for a reason no user will ever hit. The library
+/// folder is granted by entitlement and behaves like the user's own footage.
+List<File> stageSampleMedia(Directory into) {
+  final staged = Directory('${into.path}/self-test-media');
+  staged.createSync(recursive: true);
+  return [
+    for (final source in sampleMediaFiles())
+      source.copySync('${staged.path}/${source.uri.pathSegments.last}'),
+  ];
+}
+
+/// Puts the samples on the timeline the way a user would: through the real
+/// importer, the real probe and the real sandbox.
+///
+/// This is the only unattended check there is on the import path — a panel and
+/// a drop both need a person — so it deliberately goes the long way round,
+/// including the security-scoped bookmark round trip and one thumbnail, and
+/// prints what each step actually did rather than only whether it threw.
+Future<void> runImportSelfTest(
+  DocumentStore store, {
+  required Directory library,
+  FileAccess access = const SystemFileAccess(),
+  MediaProber prober = const EngineMediaProber(),
+}) async {
+  final files = stageSampleMedia(library);
+  stdout.writeln('[selftest] import: ${files.length} samples staged in '
+      '${library.path}');
+  if (files.isEmpty) return;
+
+  final importer = MediaImporter(prober: prober, access: access);
+  final clock = Stopwatch()..start();
+  final result = await importer.import(
+      store, [for (final f in files) GrantedFile(path: f.path)]);
+  clock.stop();
+
+  stdout.writeln('[selftest] import: added ${result.added.length}, '
+      'reused ${result.reused.length}, placed ${result.clipsPlaced}, '
+      'failed ${result.failures.length}, ${clock.elapsedMilliseconds} ms');
+  for (final failure in result.failures) {
+    stdout.writeln('[selftest]   FAILED ${failure.displayName}: '
+        '${failure.reason}');
+  }
+  for (final asset in result.added) {
+    stdout.writeln('[selftest]   ${asset.displayName} '
+        '${asset.probe.displayWidth}x${asset.probe.displayHeight} '
+        '${(asset.probe.duration.raw / 120000).toStringAsFixed(2)}s '
+        'bookmark=${asset.bookmark == null ? "NONE" : "minted"}');
+  }
+
+  final sample = result.added.isEmpty ? null : result.added.first;
+  if (sample == null) return;
+
+  // The bookmark is the only part of import that has to survive a quit, so it
+  // is the part worth resolving here rather than next launch.
+  final bookmark = sample.bookmark;
+  if (bookmark == null) {
+    stdout.writeln('[selftest] bookmark: NOT MINTED — this project will not '
+        'reopen with its media');
+  } else {
+    final resolved = await access.resolve(bookmark);
+    stdout.writeln('[selftest] bookmark: resolved='
+        '${resolved != null} granted=${resolved?.granted} '
+        'stale=${resolved?.stale} '
+        'sameFile=${resolved?.path == sample.path}');
+  }
+
+  final thumbClock = Stopwatch()..start();
+  try {
+    final thumb = await Thumbnails.render(sample.path,
+        ticks: thumbnailTick(sample.probe).raw, maxWidth: 320, maxHeight: 320);
+    thumbClock.stop();
+    stdout.writeln('[selftest] thumbnail: '
+        '${thumb == null ? "no picture" : "${thumb.width}x${thumb.height}, "
+            "${thumb.bgra.length} bytes"}'
+        ', ${thumbClock.elapsedMilliseconds} ms');
+  } catch (error) {
+    stdout.writeln('[selftest] thumbnail: FAILED $error');
+  }
 }

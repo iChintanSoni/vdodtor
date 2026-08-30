@@ -382,6 +382,25 @@ bool vd_compositor_read_pixel(VdCompositor* c, int32_t x, int32_t y,
   return true;
 }
 
+int32_t vd_compositor_copy_pixels(VdCompositor* c, uint8_t* out,
+                                  int64_t capacity) {
+  if (!c || !out || !c->output) return VD_ERR_INVALID_ARG;
+
+  const int64_t row_bytes = (int64_t)c->width * 4;
+  const int64_t needed = row_bytes * c->height;
+  if (capacity < needed) return VD_ERR_INVALID_ARG;
+
+  CVPixelBufferLockBaseAddress(c->output, kCVPixelBufferLock_ReadOnly);
+  const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(c->output);
+  const size_t stride = CVPixelBufferGetBytesPerRow(c->output);
+  for (int32_t y = 0; y < c->height; ++y) {
+    memcpy(out + (size_t)y * (size_t)row_bytes, base + (size_t)y * stride,
+           (size_t)row_bytes);
+  }
+  CVPixelBufferUnlockBaseAddress(c->output, kCVPixelBufferLock_ReadOnly);
+  return VD_OK;
+}
+
 int32_t vd_compositor_dump_png(VdCompositor* c, const char* path) {
   if (!c || !c->output || !path) return VD_ERR_INVALID_ARG;
 

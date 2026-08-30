@@ -9,11 +9,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - A milestone is complete only when all its **exit criteria** pass — checkboxes alone don't count.
 - Keep the status line below current whenever a milestone starts or finishes.
 
-> **Status: M1 in progress — engine done, the app shell is in, import is next.**
+> **Status: M1 in progress — engine done, the app shell and import are in, the
+> timeline is next.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery — 159 Dart tests), and the **media probe** through the full
+> crash recovery, import — 212 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -27,8 +28,20 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > one, or take back the one the app died with. Projects live in `~/Movies/vdodtor` and save
 > themselves on every edit — there is no Save command and never will be.
 >
-> Next: import. Drag-drop and the file picker, which is also where security-scoped
-> bookmarks finally land, and then the S2 timeline bound to the real document.
+> **Footage gets in now**, and stays in. The file panel and a drop target over the whole
+> window both land in one importer, which probes off the UI isolate, appends to the main or
+> audio track, and is one undo entry however many files arrived. Every imported file is
+> bookmarked at the moment access is granted, so reopening a project reopens its media —
+> verified against the real sandbox: minted, resolved, granted, and a folder renamed behind
+> the app's back was relinked on open and played at 30.0 fps with 0 late frames. The media
+> bin draws each asset through the *same compositor* as the preview, so a portrait clip
+> looks portrait in the bin.
+>
+> Next: the S2 timeline bound to the real document, and scrubbing that drives the engine.
+>
+> **Owner check outstanding:** the drag itself. The panel, the bookmarks, the relink and
+> mouse-through were all verified end to end; dropping files on the window is the one thing
+> that cannot be driven without a person.
 >
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
@@ -99,15 +112,21 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       arm64 + x86_64, pins the source checksum, and *refuses to finish* if `CONFIG_GPL`,
       `CONFIG_NONFREE` or `CONFIG_VERSION3` is set. The dylibs ride inside
       `vdodtor_engine.framework/Versions/A/Frameworks`, resolved by `@loader_path`
-- [~] Re-enable the App Sandbox; security-scoped bookmarks for user media
+- [x] Re-enable the App Sandbox; security-scoped bookmarks for user media
       — sandbox is on and verified (it blocks arbitrary paths; the app reads its own bundle).
       Project files need no bookmark and no panel: they live in `~/Movies/vdodtor` under
       `com.apple.security.assets.movies.read-write`, which grants the whole tree, so the
       atomic write's `.tmp` and `.bak` siblings are legal and a project always reopens.
-      `files.user-selected.read-write` and `files.bookmarks.app-scope` are granted and
-      `MediaAsset.bookmark` is modelled and persisted, but **minting and resolving the
-      bookmark still needs native code**. It belongs with import — the first thing that
-      reaches a file the app did not choose
+      Imported media does need one, and gets it at the only moment it can be had: the
+      instant the panel or the drop grants access. Opening a project resolves every
+      bookmark and holds the scope until the project closes, which is also why closing
+      releases them — the sandbox counts open scopes per process. A bookmark that comes
+      back **stale** is relinked: the asset takes the path it actually resolved to and the
+      refreshed bookmark is written straight through, outside the undo stack, because
+      where a file lives is a fact about the disk rather than an edit anyone made.
+      One thing learned the hard way and worth not relearning: a file **inside the app
+      bundle cannot be bookmarked at all** (`Could not open() the item`) — the sandbox
+      grants it for being the app's own, not through a scope there is anything to remember
 - [~] CI (**self-hosted** macOS runner): engine unit tests, `dart analyze`, `dart test`, app builds
       — `.github/workflows/ci.yml` runs on `[self-hosted, macOS, ARM64]`, so a green build
       means what a local build means: same Xcode, same Flutter, same signing identity.
@@ -159,6 +178,14 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       A video frame a millisecond late is invisible; audio cannot be stretched or
       skipped without the listener hearing it. The clock is the device's own frame
       counter, so drift is impossible by construction rather than corrected for
+- [x] Thumbnails: one frame, small, for the media bin — and pointedly *not* a second
+      imaging path. `vd_thumbnail_render` opens an ordinary decoder, asks for one frame and
+      runs it through the ordinary compositor at a small size, so the YCbCr matrix, the
+      rotation and the sample aspect are right for the same reason they are right on
+      screen. It returns the source's **display** shape rather than a fixed box, never
+      upscales, and answers `VD_ERR_UNSUPPORTED` for a file with no picture — which is a
+      fact about an audio asset, not a failure to report. Checked on pixels against the
+      same constants the compositor test uses
 - [x] **GPU compositor** (pulled forward from M2 — preview needs it) — one compositor for
       preview and export, precompiled `.metallib` embedded in the binary, N alpha-blended
       layers, contain/cover/stretch fit, rotation. The YCbCr matrix is read from the
@@ -175,7 +202,19 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       ended in a crash is offered back by name at the next launch — every edit was already
       written. The whole lifecycle lives in `Workspace`, outside the widget tree, so the part
       where losing someone's work is possible is the part that has tests
-- [ ] Import via drag-drop + file picker; media bin with thumbnails
+- [x] Import via drag-drop + file picker; media bin with thumbnails
+      — one importer behind both doors. It probes the whole batch on a single background
+      isolate (one hop, not one per file), skips what is already in the bin by path,
+      expands a dropped folder one level, sends anything with a picture to the main track
+      and audio-only files to the audio track, and commits the lot as **one gesture** — so
+      dropping eight clips is one undo. A file that will not open fails on its own and the
+      other seven still land. The drop target is a transparent AppKit view over the whole
+      Flutter view whose `hitTest:` returns nil, so a drag anywhere in the window is a drop
+      anywhere in the window and ordinary mouse input passes straight through — verified by
+      posting a real click through it. The panel is a sheet, never `runModal`, which would
+      spin its own run loop on the thread Flutter draws on.
+      The bin keeps an asset whose file has gone missing, greyed and labelled, because an
+      asset the user can point at again is worth more than a shorter list
 - [ ] Timeline (from S2) bound to the real document; scrubbing drives the engine
 - [x] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
       on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
@@ -300,7 +339,7 @@ buy Pro, and export 4K — with no help.
 | ~~Timeline performance at scale~~ | **Retired in M0** — 121 fps with 1002 clips, cost flat in clip count |
 | Timeline interaction doesn't feel "easy" | Still open — perf is proven, taste is not. Owner runs `spikes/s2_timeline`; M2 exit criteria are the real test |
 | Performance on low-end hardware is unknown | M0 measured only an M3 Pro. Name a low-end reference machine (PERF-06) and re-measure before promising anything |
-| **Scrub latency on long-GOP media** | **Open, and now measured.** A seek decodes forward from the preceding keyframe, so its cost is set by keyframe spacing, not resolution. A real 1080p25 stock clip with keyframes only at 0 s and 10 s seeks in 91–380 ms (mean 215) where the committed fixtures take 36 ms — and M0's 13 ms p50 came from denser media. Ordinary exported footage looks like this, so scrubbing needs a strategy of its own (proxies are already in the brief's fast-follow) before it can be called good |
+| **Scrub latency on long-GOP media** | **Open, and now measured.** A seek decodes forward from the preceding keyframe, so its cost is set by keyframe spacing, not resolution. A real 1080p25 stock clip with keyframes only at 0 s and 10 s seeks in 91–380 ms (mean 215) where the committed fixtures take 36 ms — and M0's 13 ms p50 came from denser media. Ordinary exported footage looks like this, so scrubbing needs a strategy of its own (proxies are already in the brief's fast-follow) before it can be called good. Bin thumbnails pay the same toll — they are decodes — which is why they run off the UI isolate, two at a time |
 | FFmpeg LGPL compliance in a sold, notarized app | **Half retired in M1** — a universal LGPL 2.1 build is vendored and dynamically linked, and the build script fails rather than emit a GPL or non-free configuration. Still open: the written source offer and signing the nested dylibs, both in M4 packaging |
 | Preview/export parity drift | One compositor + golden-frame CI from M2, parity tests in M4 |
 | Solo-dev scope creep | Milestone exit criteria are the guardrails; anything not in the brief goes to Post-v1 |

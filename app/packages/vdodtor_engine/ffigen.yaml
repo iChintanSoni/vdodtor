@@ -16,6 +16,7 @@ headers:
     - '../../../engine/include/vdodtor/vd_decoder.h'
     - '../../../engine/include/vdodtor/vd_compositor.h'
     - '../../../engine/include/vdodtor/vd_engine.h'
+    - '../../../engine/include/vdodtor/vd_thumbnail.h'
     - '../../../engine/include/vdodtor/vd_audio.h'
   include-directives:
     - '**/vdodtor/**'

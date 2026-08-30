@@ -1,29 +1,47 @@
 import 'dart:async';
+import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../app/workspace.dart';
 import '../commands/document_store.dart';
-import '../dev/sample_clips.dart';
+import '../commands/edits.dart';
 import '../dev/self_test.dart';
+import '../engine/media_probe.dart';
 import '../engine/timeline_sync.dart';
+import '../media/file_access.dart';
+import '../media/media_import.dart';
+import '../media/thumbnails.dart';
+import '../model/media.dart';
 import '../model/time.dart';
+import 'media_bin.dart';
 import 'theme.dart';
 
 /// The editor: one open document, synced to the engine, playing through the
 /// real compositor.
 ///
 /// M1's walking skeleton. The timeline from S2 binds to this same
-/// [DocumentStore] next; for now the transport bar is the only way to move the
-/// playhead.
+/// [DocumentStore] next; for now the media bin and the transport bar are how
+/// clips arrive and how the playhead moves.
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key, required this.open, required this.onClose});
+  const EditorScreen({
+    super.key,
+    required this.open,
+    required this.onClose,
+    required this.access,
+    this.prober = const EngineMediaProber(),
+  });
 
   final OpenProject open;
   final VoidCallback onClose;
+
+  /// How the app gets at the user's files: the panel, drops and bookmarks.
+  final FileAccess access;
+
+  /// Injected so an import can be exercised without the native engine.
+  final MediaProber prober;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -35,12 +53,21 @@ class _EditorScreenState extends State<EditorScreen> {
   Timer? _statsTimer;
   EngineStats? _stats;
 
+  late final MediaImporter _importer;
+  final ThumbnailCache _thumbnails = ThumbnailCache();
+  StreamSubscription<MediaDrop>? _drops;
+  bool _importing = false;
+  bool _syncQueued = false;
+  String? _notice;
+
   DocumentStore get _store => widget.open.store;
 
   @override
   void initState() {
     super.initState();
+    _importer = MediaImporter(prober: widget.prober, access: widget.access);
     _store.addListener(_onDocumentChanged);
+    _drops = MediaAccess.drops.listen(_onDrop);
     unawaited(_start());
   }
 
@@ -61,7 +88,12 @@ class _EditorScreenState extends State<EditorScreen> {
       });
 
       if (selfTestRequested) {
-        if (_store.project.mainTrack.isEmpty) _addSampleClips();
+        if (_store.project.mainTrack.isEmpty) {
+          await runImportSelfTest(_store,
+              library: File(widget.open.path).parent,
+              access: widget.access,
+              prober: widget.prober);
+        }
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
@@ -72,13 +104,63 @@ class _EditorScreenState extends State<EditorScreen> {
   void _onEngineChanged() => setState(() {});
 
   void _onDocumentChanged() {
-    // Every committed edit re-syncs. The engine keeps decoders open for
-    // sources that are still in the timeline, so this is cheap.
-    _engine?.setTimeline(engineTimelineFor(_store.project));
-    setState(() {});
+    if (_syncQueued) return;
+    _syncQueued = true;
+    // Coalesced, because an import commits two edits per file — the asset and
+    // the clip — in one synchronous burst. Syncing on each would rebuild the
+    // engine's render list two hundred times for a hundred files, and the
+    // ninety-nine it threw away were all wrong anyway. A microtask runs once
+    // the burst is over.
+    scheduleMicrotask(() {
+      _syncQueued = false;
+      if (!mounted) return;
+      _engine?.setTimeline(engineTimelineFor(_store.project));
+      setState(() {});
+    });
   }
 
-  void _addSampleClips() => addSampleClips(_store);
+  /// The file panel. Cancelling returns nothing and changes nothing.
+  Future<void> _importFromPicker() async {
+    if (_importing) return;
+    final files = await widget.access.pick();
+    if (files.isEmpty) return;
+    await _runImport(files);
+  }
+
+  void _onDrop(MediaDrop drop) {
+    // The drop position is the timeline's business, and there is no timeline
+    // yet: for now everything appends, wherever it landed.
+    if (drop.files.isNotEmpty) unawaited(_runImport(drop.files));
+  }
+
+  Future<void> _runImport(List<GrantedFile> files) async {
+    setState(() {
+      _importing = true;
+      _notice = null;
+    });
+    try {
+      final result = await _importer.import(_store, files);
+      if (!mounted) return;
+      setState(() => _notice = result.notice);
+    } catch (error) {
+      if (mounted) setState(() => _notice = 'Import failed: $error');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  void _place(MediaAsset asset) {
+    _store.endGesture();
+    _importer.place(_store, asset);
+    _store.endGesture();
+  }
+
+  void _remove(MediaAsset asset) {
+    _store.endGesture();
+    _store.run(RemoveMedia(asset.id));
+    _store.endGesture();
+    _thumbnails.forget(asset.id);
+  }
 
   void _togglePlayback() {
     final engine = _engine;
@@ -89,9 +171,11 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void dispose() {
     _statsTimer?.cancel();
+    unawaited(_drops?.cancel());
     _store.removeListener(_onDocumentChanged);
     _engine?.removeListener(_onEngineChanged);
     unawaited(_engine?.dispose());
+    _thumbnails.dispose();
     super.dispose();
   }
 
@@ -102,6 +186,8 @@ class _EditorScreenState extends State<EditorScreen> {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.space): _togglePlayback,
+        const SingleActivator(LogicalKeyboardKey.keyI, meta: true): () =>
+            unawaited(_importFromPicker()),
         const SingleActivator(LogicalKeyboardKey.keyZ, meta: true):
             _store.undo,
         const SingleActivator(LogicalKeyboardKey.keyZ,
@@ -113,30 +199,56 @@ class _EditorScreenState extends State<EditorScreen> {
         autofocus: true,
         child: Scaffold(
           backgroundColor: VdColors.canvas,
-          body: Column(
+          body: Stack(
             children: [
-              _EditorBar(
-                open: widget.open,
-                onClose: widget.onClose,
+              Column(
+                children: [
+                  _EditorBar(
+                    open: widget.open,
+                    onClose: widget.onClose,
+                    onImport: () => unawaited(_importFromPicker()),
+                  ),
+                  if (_notice != null)
+                    _NoticeBar(
+                      message: _notice!,
+                      onDismiss: () => setState(() => _notice = null),
+                    ),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        MediaBin(
+                          assets: _store.project.media.values.toList(),
+                          thumbnails: _thumbnails,
+                          unreachable: widget.open.unreachableMediaIds,
+                          busy: _importing,
+                          onImport: () => unawaited(_importFromPicker()),
+                          onPlace: _place,
+                          onRemove: _remove,
+                        ),
+                        const VerticalDivider(width: 1, color: VdColors.line),
+                        Expanded(
+                          child: _error != null
+                              ? _EngineFailure(error: _error!)
+                              : engine == null
+                                  ? const Center(
+                                      child: CircularProgressIndicator())
+                                  : _Stage(
+                                      engine: engine,
+                                      store: _store,
+                                      onImport: () =>
+                                          unawaited(_importFromPicker()),
+                                    ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (engine != null) ...[
+                    _TransportBar(engine: engine, store: _store),
+                    _StatsStrip(stats: _stats, store: _store),
+                  ],
+                ],
               ),
-              Expanded(
-                child: _error != null
-                    ? _EngineFailure(error: _error!)
-                    : engine == null
-                        ? const Center(child: CircularProgressIndicator())
-                        : _Stage(
-                            engine: engine,
-                            store: _store,
-                            onAddSamples:
-                                kDebugMode && sampleMediaFiles().isNotEmpty
-                                    ? _addSampleClips
-                                    : null,
-                          ),
-              ),
-              if (engine != null) ...[
-                _TransportBar(engine: engine, store: _store),
-                _StatsStrip(stats: _stats, store: _store),
-              ],
+              const _DropOverlay(),
             ],
           ),
         ),
@@ -145,18 +257,60 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 }
 
+/// What the window shows while footage is being dragged over it.
+///
+/// Over everything, and ignoring pointers: the native drop target is a
+/// transparent view above the whole Flutter view, so a drag anywhere in the
+/// window is a drop anywhere in the window, and the highlight should say so
+/// rather than implying some smaller target.
+class _DropOverlay extends StatelessWidget {
+  const _DropOverlay();
+
+  @override
+  Widget build(BuildContext context) => Positioned.fill(
+        child: IgnorePointer(
+          child: ValueListenableBuilder<bool>(
+            valueListenable: MediaAccess.isDragOver,
+            builder: (context, over, _) => AnimatedOpacity(
+              opacity: over ? 1 : 0,
+              duration: const Duration(milliseconds: 90),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: VdColors.accent.withValues(alpha: 0.10),
+                  border: Border.all(color: VdColors.accent, width: 2),
+                ),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: VdColors.panel,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: VdColors.accent),
+                    ),
+                    child: const Text('Drop to import',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
 /// The preview, at the project's aspect, with the "there is nothing here yet"
-/// state that M1 will have until import lands.
+/// state and the one button that fixes it.
 class _Stage extends StatelessWidget {
   const _Stage({
     required this.engine,
     required this.store,
-    required this.onAddSamples,
+    required this.onImport,
   });
 
   final PreviewEngine engine;
   final DocumentStore store;
-  final VoidCallback? onAddSamples;
+  final VoidCallback onImport;
 
   @override
   Widget build(BuildContext context) {
@@ -178,14 +332,15 @@ class _Stage extends StatelessWidget {
                   children: [
                     const Text('Nothing on the timeline yet',
                         style: TextStyle(color: VdColors.dim)),
-                    if (onAddSamples != null) ...[
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: onAddSamples,
-                        icon: const Icon(Icons.science_outlined, size: 18),
-                        label: const Text('Add sample clips'),
-                      ),
-                    ],
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: onImport,
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: const Text('Import media'),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text('or drop files anywhere in this window',
+                        style: TextStyle(fontSize: 11, color: VdColors.dim)),
                   ],
                 ),
               ),
@@ -196,11 +351,45 @@ class _Stage extends StatelessWidget {
   }
 }
 
+class _NoticeBar extends StatelessWidget {
+  const _NoticeBar({required this.message, required this.onDismiss});
+
+  final String message;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        color: VdColors.warn.withValues(alpha: 0.16),
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+        child: Row(
+          children: [
+            const Icon(Icons.warning_amber, size: 16, color: VdColors.warn),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(message, style: const TextStyle(fontSize: 12)),
+            ),
+            IconButton(
+              tooltip: 'Dismiss',
+              icon: const Icon(Icons.close, size: 15),
+              visualDensity: VisualDensity.compact,
+              onPressed: onDismiss,
+            ),
+          ],
+        ),
+      );
+}
+
 class _EditorBar extends StatelessWidget {
-  const _EditorBar({required this.open, required this.onClose});
+  const _EditorBar({
+    required this.open,
+    required this.onClose,
+    required this.onImport,
+  });
 
   final OpenProject open;
   final VoidCallback onClose;
+  final VoidCallback onImport;
 
   @override
   Widget build(BuildContext context) {
@@ -232,6 +421,12 @@ class _EditorBar extends StatelessWidget {
                 style: const TextStyle(fontSize: 11, color: VdColors.dim),
               ),
             ],
+          ),
+          const SizedBox(width: 20),
+          OutlinedButton.icon(
+            onPressed: onImport,
+            icon: const Icon(Icons.download_outlined, size: 16),
+            label: const Text('Import'),
           ),
           const Spacer(),
           IconButton(
@@ -372,6 +567,7 @@ class _StatsStrip extends StatelessWidget {
     final project = store.project;
     final entries = <String, String>{
       'clips': '${project.mainTrack.clips.length}',
+      'media': '${project.media.length}',
       'state': s?.state.name ?? '—',
       'fps': s == null ? '—' : s.presentFps.toStringAsFixed(1),
       'gpu': s == null ? '—' : '${s.compositeMsAvg.toStringAsFixed(2)} ms',

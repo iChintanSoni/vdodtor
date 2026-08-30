@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../commands/document_store.dart';
+import '../media/file_access.dart';
 import '../model/ids.dart';
 import '../model/project.dart';
 import '../model/time.dart';
@@ -77,6 +78,10 @@ final class OpenProject {
 
   Project get project => store.project;
   String get name => store.project.name;
+
+  /// Assets whose file the app cannot currently reach — moved, deleted, or on
+  /// a volume that is not mounted. The bin greys these out.
+  Set<String> unreachableMediaIds = const {};
 }
 
 /// The app shell: which project is open, and everything about getting there.
@@ -89,14 +94,25 @@ class Workspace extends ChangeNotifier {
   Workspace({
     AppPaths? paths,
     IdGen? ids,
+    FileAccess? access,
     Future<AppPaths> Function()? resolvePaths,
     this.autosaveDebounce = const Duration(milliseconds: 400),
   })  : _ids = ids ?? IdGen(),
+        _access = access ?? const SystemFileAccess(),
         _resolvePaths = resolvePaths ?? AppPaths.resolve {
     _paths = paths;
   }
 
   final IdGen _ids;
+
+  /// How the app gets at the user's own media. Injected so opening a project
+  /// full of bookmarked footage is testable without a sandbox.
+  final FileAccess _access;
+
+  /// Paths whose security scope this run has opened, to be closed when the
+  /// project does. Not a leak worth ignoring: macOS caps how many a process
+  /// may hold at once, and an editor opened and closed all day would run out.
+  final Set<String> _granted = {};
 
   /// Injected so the "cannot reach storage" path has a test.
   final Future<AppPaths> Function() _resolvePaths;
@@ -132,6 +148,9 @@ class Workspace extends ChangeNotifier {
   Object? get failure => _failure;
 
   AppPaths get paths => _paths!;
+
+  /// How the app reaches the user's own media. The editor imports through it.
+  FileAccess get fileAccess => _access;
 
   /// Resolves storage, reads the recents list, and works out whether the last
   /// run ended badly.
@@ -260,6 +279,7 @@ class Workspace extends ChangeNotifier {
     await open.autosaver.flush();
     open.autosaver.dispose();
     open.store.dispose();
+    await _releaseMediaAccess();
     await _session.close();
 
     await _refreshProjects();
@@ -276,10 +296,25 @@ class Workspace extends ChangeNotifier {
       open.autosaver.dispose();
       open.store.dispose();
     }
+    await _releaseMediaAccess();
     await _session.close();
   }
 
-  Future<void> _adopt(ProjectFile file, Project project) async {
+  Future<void> _adopt(ProjectFile file, Project opened) async {
+    final unreachable = <String>{};
+    final project = await _restoreMediaAccess(opened, unreachable);
+    if (!identical(project, opened)) {
+      // Where the media moved to is a fact about the disk, not an edit the
+      // user made, so it is written straight through rather than pushed onto
+      // the undo stack — and written now, so the next launch does not have to
+      // resolve the same stale bookmarks again.
+      try {
+        await file.save(project);
+      } catch (error) {
+        _notice = 'Could not record where the media moved to: $error';
+      }
+    }
+
     final store = DocumentStore(project);
     final autosaver = Autosaver(
       store: store,
@@ -296,13 +331,81 @@ class Workspace extends ChangeNotifier {
       store: store,
       file: file,
       autosaver: autosaver,
-    );
+    )..unreachableMediaIds = unreachable;
     _recovery = null;
     _stage = WorkspaceStage.editing;
 
     await _recents.record(file.path, project.name);
     await _session.open(file.path);
     notifyListeners();
+  }
+
+  /// Opens the security scope of every asset the project remembers, and
+  /// relinks the ones that moved.
+  ///
+  /// This is the moment the sandbox and the document meet. A project file
+  /// records a path *and* a bookmark; the path is advisory and the bookmark is
+  /// the permission, so the bookmark is what gets resolved and the path is
+  /// what gets corrected. Files whose bookmark will not resolve at all are
+  /// named in [unreachable] rather than dropped: an asset the user has to
+  /// point at again is worth keeping, and a clip that quietly vanished is not.
+  Future<Project> _restoreMediaAccess(
+      Project project, Set<String> unreachable) async {
+    var result = project;
+
+    for (final asset in project.media.values) {
+      final bookmark = asset.bookmark;
+      if (bookmark == null) {
+        // Nothing was ever minted — a project made before bookmarks, or a
+        // file the sandbox refused one for. The path is all there is.
+        if (!File(asset.path).existsSync()) unreachable.add(asset.id);
+        continue;
+      }
+
+      final resolved = await _access.resolve(bookmark);
+      if (resolved == null) {
+        if (!File(asset.path).existsSync()) unreachable.add(asset.id);
+        continue;
+      }
+
+      _granted.add(resolved.path);
+      if (!resolved.granted && !File(resolved.path).existsSync()) {
+        unreachable.add(asset.id);
+      }
+
+      final movedTo = resolved.path == asset.path ? null : resolved.path;
+      final refreshed = resolved.refreshedBookmark;
+      if (movedTo != null || refreshed != null) {
+        result = result.addMedia(asset.copyWith(
+          path: movedTo ?? asset.path,
+          bookmark: refreshed ?? bookmark,
+        ));
+      }
+    }
+
+    if (unreachable.isNotEmpty) {
+      final names = [
+        for (final asset in project.media.values)
+          if (unreachable.contains(asset.id)) asset.displayName,
+      ];
+      _notice = names.length == 1
+          ? 'vdodtor cannot find "${names.single}". Its clips will play black '
+              'until you import it again.'
+          : 'vdodtor cannot find ${names.length} of this project\'s media '
+              'files, starting with "${names.first}".';
+    }
+    return result;
+  }
+
+  /// Closes every scope this run opened. Called when a project closes and
+  /// when the app quits, because the sandbox counts them per process.
+  Future<void> _releaseMediaAccess() async {
+    if (_granted.isEmpty) return;
+    final paths = _granted.toList();
+    _granted.clear();
+    for (final path in paths) {
+      await _access.release(path);
+    }
   }
 
   Future<void> _refreshProjects() async {

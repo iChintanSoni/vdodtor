@@ -2,6 +2,8 @@
 
 #import <CoreVideo/CoreVideo.h>
 
+#import "VdMediaAccess.h"
+
 #include "vdodtor/vd_engine.h"
 
 // One registered preview surface: a Flutter texture backed by whatever the
@@ -44,6 +46,11 @@ static void vd_on_frame(void *context) {
   VdodtorEnginePlugin *instance =
       [[VdodtorEnginePlugin alloc] initWithRegistrar:registrar];
   [registrar addMethodCallDelegate:instance channel:channel];
+
+  // The generated registrant only knows about one plugin class per package,
+  // so the file-access half registers from here rather than growing a second
+  // entry in someone's build file.
+  [VdMediaAccess registerWithRegistrar:registrar];
 }
 
 - (instancetype)initWithRegistrar:

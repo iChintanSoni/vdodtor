@@ -498,6 +498,37 @@ class VdEngineBindings {
         )
       >();
 
+  /// Copies the last composited frame into `out` as tightly packed BGRA —
+  /// width * height * 4 bytes, no row padding. The output buffer the GPU writes
+  /// into is padded to a stride of its own choosing, and every consumer outside
+  /// this file (Flutter's decodeImageFromPixels, an encoder, a PNG writer) wants
+  /// it packed, so the unpacking happens once, here.
+  ///
+  /// Returns VD_ERR_INVALID_ARG if `capacity` is short of that. A compositor
+  /// that has not rendered yet copies out black, the same thing it would show.
+  int vd_compositor_copy_pixels(
+    ffi.Pointer<VdCompositor> compositor,
+    ffi.Pointer<ffi.Uint8> out,
+    int capacity,
+  ) {
+    return _vd_compositor_copy_pixels(compositor, out, capacity);
+  }
+
+  late final _vd_compositor_copy_pixelsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdCompositor>,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Int64,
+          )
+        >
+      >('vd_compositor_copy_pixels');
+  late final _vd_compositor_copy_pixels = _vd_compositor_copy_pixelsPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Uint8>, int)
+      >();
+
   VdEngineOptions vd_engine_default_options() {
     return _vd_engine_default_options();
   }
@@ -754,6 +785,65 @@ class VdEngineBindings {
       .asFunction<
         void Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdEngineStats>)
       >();
+
+  /// Renders the frame covering `t` in `path`, scaled to fit inside
+  /// `max_width` x `max_height`.
+  ///
+  /// The result carries the source's *display* aspect — rotation and sample
+  /// aspect already applied — and is not letterboxed, so a caller can lay it out
+  /// without knowing anything about the file. Both dimensions come back even,
+  /// and at least 2.
+  ///
+  /// Returns VD_OK, or a negative VdResult: VD_ERR_INVALID_ARG for the arguments,
+  /// VD_ERR_OPEN for a file that will not open, VD_ERR_UNSUPPORTED for one with
+  /// no video stream — which is where an audio file lands, and is a fact about
+  /// the file rather than a failure — and VD_ERR_DECODE when there is a video
+  /// stream but no frame came out of it. `out` is zeroed on every failure.
+  int vd_thumbnail_render(
+    ffi.Pointer<ffi.Char> path,
+    int t,
+    int max_width,
+    int max_height,
+    ffi.Pointer<VdThumbnail> out,
+  ) {
+    return _vd_thumbnail_render(path, t, max_width, max_height, out);
+  }
+
+  late final _vd_thumbnail_renderPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Char>,
+            VdTick,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<VdThumbnail>,
+          )
+        >
+      >('vd_thumbnail_render');
+  late final _vd_thumbnail_render = _vd_thumbnail_renderPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Char>,
+          int,
+          int,
+          int,
+          ffi.Pointer<VdThumbnail>,
+        )
+      >();
+
+  /// Frees the pixels and zeroes the struct. Safe on a zeroed thumbnail, and
+  /// safe twice.
+  void vd_thumbnail_free(ffi.Pointer<VdThumbnail> thumb) {
+    return _vd_thumbnail_free(thumb);
+  }
+
+  late final _vd_thumbnail_freePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdThumbnail>)>>(
+        'vd_thumbnail_free',
+      );
+  late final _vd_thumbnail_free = _vd_thumbnail_freePtr
+      .asFunction<void Function(ffi.Pointer<VdThumbnail>)>();
 
   /// Opens the audio stream of `path`. Returns NULL and sets `out_result` when
   /// there is no audio to decode — which is not an error the caller should treat
@@ -1624,6 +1714,18 @@ final class VdEngineStats extends ffi.Struct {
   /// frame boundary would republish a frame that has already been shown.
   @ffi.Int64()
   external int clock_regressions;
+}
+
+final class VdThumbnail extends ffi.Struct {
+  @ffi.Int32()
+  external int width;
+
+  @ffi.Int32()
+  external int height;
+
+  /// Tightly packed BGRA, width * height * 4 bytes. Owned by the caller;
+  /// release with vd_thumbnail_free.
+  external ffi.Pointer<ffi.Uint8> pixels;
 }
 
 final class VdAudioSource extends ffi.Opaque {}

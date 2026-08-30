@@ -116,6 +116,7 @@ class _VdodtorAppState extends State<VdodtorApp> {
           // and a different playhead: rebuild the state rather than migrate it.
           key: ValueKey(open.path),
           open: open,
+          access: workspace.fileAccess,
           onClose: () => unawaited(workspace.close()),
         );
     }

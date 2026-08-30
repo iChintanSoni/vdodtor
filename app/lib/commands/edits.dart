@@ -18,6 +18,35 @@ final class AddMedia extends EditCommand {
   Project apply(Project project) => project.addMedia(asset);
 }
 
+/// Takes a file out of the media bin, and every clip that came from it off
+/// the timeline with it.
+///
+/// The alternative — refusing while clips still refer to it — makes the bin a
+/// place things get stuck. Removing the clips too is one undo entry away from
+/// being wrong, and undo is right there.
+final class RemoveMedia extends EditCommand {
+  const RemoveMedia(this.mediaId);
+
+  final String mediaId;
+
+  @override
+  String get label => 'Remove media';
+
+  @override
+  Project apply(Project project) {
+    if (!project.media.containsKey(mediaId)) return project;
+
+    var next = project;
+    for (final track in project.tracks) {
+      final remaining =
+          track.clips.where((c) => c.mediaId != mediaId).toList();
+      if (remaining.length == track.clips.length) continue;
+      next = next.replaceTrack(track.withClips(remaining).repacked());
+    }
+    return next.removeMedia(mediaId);
+  }
+}
+
 /// Places a clip on a track.
 ///
 /// On a magnetic track the clip is appended and the track repacked, so it

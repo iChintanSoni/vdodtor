@@ -9,6 +9,49 @@ import 'package:vdodtor/model/track.dart';
 import '../fixtures.dart';
 
 void main() {
+  group('RemoveMedia', () {
+    test('takes the asset and every clip that came from it', () {
+      final store = DocumentStore(projectWithThreeClips());
+
+      store.run(const RemoveMedia('m1'));
+
+      // a and b came from m1; c came from m2 and stays.
+      expect(store.project.media.keys, ['m2']);
+      expect(store.project.mainTrack.clips.map((c) => c.id), ['c']);
+    });
+
+    test('closes the gap the clips left on a magnetic track', () {
+      final store = DocumentStore(projectWithThreeClips());
+
+      store.run(const RemoveMedia('m1'));
+
+      expect(store.project.mainTrack.clips.single.start, Tick.zero);
+      expect(store.project.duration, secs(1));
+    });
+
+    test('is one undo away from never having happened', () {
+      final store = DocumentStore(projectWithThreeClips());
+      final before = encodeProject(store.project);
+
+      store.run(const RemoveMedia('m1'));
+      store.undo();
+
+      expect(encodeProject(store.project), before);
+    });
+
+    test('an asset nothing refers to just goes', () {
+      final store = DocumentStore(emptyProject());
+      store.run(const RemoveMedia('m2'));
+      expect(store.project.media.keys, ['m1']);
+    });
+
+    test('an id the project never had is a no-op', () {
+      final store = DocumentStore(projectWithThreeClips());
+      store.run(const RemoveMedia('ghost'));
+      expect(store.canUndo, isFalse);
+    });
+  });
+
   group('InsertClip', () {
     test('appends flush on a magnetic track, ignoring the requested start', () {
       final store = DocumentStore(emptyProject());
