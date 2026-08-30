@@ -13,6 +13,49 @@ enum PlaybackState { idle, playing, paused, ended }
 /// How a clip is placed when its aspect does not match the project's.
 enum FitMode { contain, cover, stretch }
 
+/// Where a clip sits inside the frame, and how much of it shows.
+///
+/// Plain numbers, like everything else that crosses this boundary. The
+/// defaults are the identity, and they match what the engine does with a
+/// transform nobody set.
+@immutable
+class EngineTransform {
+  const EngineTransform({
+    this.offsetX = 0,
+    this.offsetY = 0,
+    this.scale = 1,
+    this.rotationDegrees = 0,
+    this.cropX = 0,
+    this.cropY = 0,
+    this.cropWidth = 1,
+    this.cropHeight = 1,
+    this.flipHorizontal = false,
+    this.flipVertical = false,
+  });
+
+  static const identity = EngineTransform();
+
+  /// Offset from the centre of the output, as a fraction of its own width and
+  /// height.
+  final double offsetX;
+  final double offsetY;
+
+  /// Multiplier on the fitted size.
+  final double scale;
+
+  /// Extra clockwise rotation, on top of the source's own orientation.
+  final double rotationDegrees;
+
+  /// The part of the display-oriented source to show, normalised.
+  final double cropX;
+  final double cropY;
+  final double cropWidth;
+  final double cropHeight;
+
+  final bool flipHorizontal;
+  final bool flipVertical;
+}
+
 /// One clip on the render list the engine composites from.
 ///
 /// This is deliberately not the document model: the engine gets flat clips
@@ -28,6 +71,7 @@ class EngineClip {
     this.track = 0,
     this.opacity = 1.0,
     this.fit = FitMode.contain,
+    this.transform = EngineTransform.identity,
   });
 
   final String path;
@@ -40,6 +84,7 @@ class EngineClip {
 
   final double opacity;
   final FitMode fit;
+  final EngineTransform transform;
 }
 
 /// The render list plus the output format.
@@ -175,6 +220,18 @@ class PreviewEngine extends ChangeNotifier {
         entry.track = clip.track;
         entry.opacity = clip.opacity;
         entry.fitAsInt = clip.fit.index;
+
+        final transform = clip.transform;
+        entry.transform.offset_x = transform.offsetX;
+        entry.transform.offset_y = transform.offsetY;
+        entry.transform.scale = transform.scale;
+        entry.transform.rotation_degrees = transform.rotationDegrees;
+        entry.transform.crop_x = transform.cropX;
+        entry.transform.crop_y = transform.cropY;
+        entry.transform.crop_w = transform.cropWidth;
+        entry.transform.crop_h = transform.cropHeight;
+        entry.transform.flip_h = transform.flipHorizontal;
+        entry.transform.flip_v = transform.flipVertical;
       }
 
       final native = arena<VdTimeline>();

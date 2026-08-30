@@ -28,6 +28,7 @@ typedef struct {
   int32_t track;
   float opacity;
   VdFitMode fit;
+  VdTransform transform;
 
   VdDecoder* decoder;  // opened lazily
   int64_t last_used;
@@ -246,6 +247,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->full_range = frames[layer_count].full_range;
     layer->fit = clip->fit;
     layer->opacity = clip->opacity;
+    layer->transform = clip->transform;
     layer_count++;
   }
 
@@ -501,6 +503,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->track = src->track;
     dst->opacity = src->opacity;
     dst->fit = src->fit;
+    dst->transform = src->transform;
 
     for (int32_t j = 0; j < previous_count; j++) {
       VdClipEntry* old = &previous[j];

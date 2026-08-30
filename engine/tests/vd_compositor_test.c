@@ -454,6 +454,256 @@ static void test_copy_pixels_is_packed(void) {
   vd_frame_release(&frame);
 }
 
+// --- transforms ------------------------------------------------------------
+// A transform is the one part of the compositor a user drives directly, so
+// every one of these is checked on pixels: where the image ends up, and where
+// it stops.
+
+static void test_a_zeroed_transform_is_the_identity(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* zeroed = vd_compositor_create(320, 240, NULL);
+  VdCompositor* spelled = vd_compositor_create(320, 240, NULL);
+  if (zeroed && spelled) {
+    VdLayer a = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);  // memset to zero
+    VdLayer b = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    b.transform = vd_transform_identity();
+
+    VD_CHECK_EQ(vd_compositor_render(zeroed, &a, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_render(spelled, &b, 1), VD_OK);
+
+    // The whole point of defining the fields this way: a caller that never
+    // heard of transforms gets the same picture as one that spelled it out.
+    int32_t differences = 0;
+    for (int32_t y = 10; y < 240; y += 37) {
+      for (int32_t x = 10; x < 320; x += 41) {
+        uint8_t p[4], q[4];
+        if (vd_compositor_read_pixel(zeroed, x, y, p) &&
+            vd_compositor_read_pixel(spelled, x, y, q) &&
+            memcmp(p, q, 4) != 0) {
+          differences++;
+        }
+      }
+    }
+    VD_CHECK_EQ(differences, 0);
+  }
+  vd_compositor_destroy(zeroed);
+  vd_compositor_destroy(spelled);
+  vd_frame_release(&frame);
+}
+
+static void test_scale_shrinks_about_the_centre(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;  // 320x240, 4:3
+
+  VdCompositor* c = vd_compositor_create(400, 400, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    layer.transform = vd_transform_identity();
+    layer.transform.scale = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    // Contained, 4:3 in a square is 400x300 centred; halved it is 200x150,
+    // spanning x 100..300 and y 125..275.
+    check_pixel_is(c, 200, 200, SOLID_R, SOLID_G, SOLID_B, "scaled centre");
+    check_pixel_is(c, 110, 200, SOLID_R, SOLID_G, SOLID_B, "scaled inside");
+    check_pixel_is(c, 60, 200, 0, 0, 0, "left of the scaled clip");
+    check_pixel_is(c, 200, 60, 0, 0, 0, "above the scaled clip");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_offset_moves_it(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(400, 400, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.transform = vd_transform_identity();
+    layer.transform.offset_x = 0.25f;  // a quarter of the output's width
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    check_pixel_is(c, 40, 200, 0, 0, 0, "vacated left quarter");
+    check_pixel_is(c, 200, 200, SOLID_R, SOLID_G, SOLID_B, "moved into");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_rotation_turns_the_picture_not_the_sampling(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(400, 400, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.transform = vd_transform_identity();
+    layer.transform.rotation_degrees = 45.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    // Stretched, the clip filled the square; turned an eighth it is a diamond,
+    // so the corners are empty and the middle is not.
+    check_pixel_is(c, 200, 200, SOLID_R, SOLID_G, SOLID_B, "diamond centre");
+    check_pixel_is(c, 8, 8, 0, 0, 0, "corner vacated by the turn");
+    check_pixel_is(c, 391, 391, 0, 0, 0, "opposite corner");
+    check_pixel_is(c, 200, 12, SOLID_R, SOLID_G, SOLID_B, "diamond point");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// Counts sampled pixels where `c` differs from `reference` under `map`, which
+// says where in the reference each pixel of `c` should have come from.
+static int32_t mismatches(VdCompositor* c, VdCompositor* reference,
+                          void (*map)(int32_t, int32_t, int32_t*, int32_t*),
+                          int32_t w, int32_t h, int32_t* sampled) {
+  int32_t bad = 0, total = 0;
+  for (int32_t y = 12; y < h - 12; y += 17) {
+    for (int32_t x = 12; x < w - 12; x += 19) {
+      int32_t rx = x, ry = y;
+      map(x, y, &rx, &ry);
+      uint8_t a[4], b[4];
+      if (!vd_compositor_read_pixel(c, x, y, a)) continue;
+      if (!vd_compositor_read_pixel(reference, rx, ry, b)) continue;
+      total++;
+      // Generous: the source is a sharp test pattern and one sample either
+      // side of an edge legitimately differs after filtering.
+      if (!near_enough(a[0], b[0]) || !near_enough(a[1], b[1]) ||
+          !near_enough(a[2], b[2])) {
+        bad++;
+      }
+    }
+  }
+  *sampled = total;
+  return bad;
+}
+
+static void mirror_x(int32_t x, int32_t y, int32_t* rx, int32_t* ry) {
+  *rx = 319 - x;
+  *ry = y;
+}
+
+static void test_flip_mirrors_the_picture(void) {
+  VdFrame frame;
+  if (!first_frame("cfr_30fps_stereo.mp4", &frame)) return;  // a pattern
+
+  VdCompositor* plain = vd_compositor_create(320, 240, NULL);
+  VdCompositor* flipped = vd_compositor_create(320, 240, NULL);
+  if (plain && flipped) {
+    VdLayer a = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VdLayer b = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    b.transform = vd_transform_identity();
+    b.transform.flip_h = true;
+    VD_CHECK_EQ(vd_compositor_render(plain, &a, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_render(flipped, &b, 1), VD_OK);
+
+    int32_t sampled = 0;
+    const int32_t bad =
+        mismatches(flipped, plain, mirror_x, 320, 240, &sampled);
+    VD_CHECK(sampled > 50);
+    // A flip that did nothing would leave most of a test pattern mismatched.
+    VD_CHECK(bad * 20 < sampled);
+    if (bad * 20 >= sampled) {
+      fprintf(stderr, "FAIL flip: %d of %d sampled pixels differ\n", bad,
+              sampled);
+    }
+  }
+  vd_compositor_destroy(plain);
+  vd_compositor_destroy(flipped);
+  vd_frame_release(&frame);
+}
+
+static void test_crop_selects_part_of_the_source(void) {
+  VdFrame frame;
+  if (!first_frame("cfr_30fps_stereo.mp4", &frame)) return;
+
+  // Uncropped and stretched, the output maps one-to-one onto the source.
+  // Cropped to the right half and stretched again, the same source content
+  // is spread over the whole output, so a point half way across the crop is
+  // three quarters of the way across the original.
+  VdCompositor* whole = vd_compositor_create(320, 240, NULL);
+  VdCompositor* right = vd_compositor_create(160, 240, NULL);
+  if (whole && right) {
+    VdLayer a = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VdLayer b = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    b.transform = vd_transform_identity();
+    b.transform.crop_x = 0.5f;
+    b.transform.crop_w = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(whole, &a, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_render(right, &b, 1), VD_OK);
+
+    int32_t bad = 0, total = 0;
+    for (int32_t y = 12; y < 228; y += 17) {
+      for (int32_t x = 8; x < 152; x += 11) {
+        uint8_t p[4], q[4];
+        if (!vd_compositor_read_pixel(right, x, y, p)) continue;
+        if (!vd_compositor_read_pixel(whole, 160 + x, y, q)) continue;
+        total++;
+        if (!near_enough(p[0], q[0]) || !near_enough(p[1], q[1]) ||
+            !near_enough(p[2], q[2])) {
+          bad++;
+        }
+      }
+    }
+    VD_CHECK(total > 50);
+    VD_CHECK(bad * 20 < total);
+    if (bad * 20 >= total) {
+      fprintf(stderr, "FAIL crop: %d of %d sampled pixels differ\n", bad,
+              total);
+    }
+  }
+  vd_compositor_destroy(whole);
+  vd_compositor_destroy(right);
+  vd_frame_release(&frame);
+}
+
+static void test_a_crop_running_off_the_edge_is_pulled_back(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.transform = vd_transform_identity();
+    layer.transform.crop_x = 0.8f;
+    layer.transform.crop_w = 0.5f;  // would reach 1.3
+    // Clamped rather than left to sample the same edge column forever.
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B, "clamped crop");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_a_square_stays_square_on_a_wide_output(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  // Rotating in normalised space, where x and y measure different distances,
+  // turns a square into a rhombus. A quarter turn is the case that catches it:
+  // contained and turned 90 degrees, a 4:3 clip is 3:4 and still centred.
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    layer.transform = vd_transform_identity();
+    layer.transform.rotation_degrees = 90.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    // Contained, 4:3 in 640x360 is 480x360 centred: x 80..560. Turned a
+    // quarter about that centre it becomes 360 wide and 480 tall, so it now
+    // runs off the top and bottom and is narrower than it was.
+    check_pixel_is(c, 320, 180, SOLID_R, SOLID_G, SOLID_B, "turned centre");
+    check_pixel_is(c, 320, 8, SOLID_R, SOLID_G, SOLID_B, "turned, full height");
+    check_pixel_is(c, 100, 180, 0, 0, 0, "vacated by the turn");
+    check_pixel_is(c, 540, 180, 0, 0, 0, "vacated on the other side");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
 int main(void) {
   test_lifecycle();
   test_no_layers_is_black();
@@ -468,6 +718,14 @@ int main(void) {
   test_output_and_png();
   test_repeated_renders_stay_correct();
   test_copy_pixels_is_packed();
+  test_a_zeroed_transform_is_the_identity();
+  test_scale_shrinks_about_the_centre();
+  test_offset_moves_it();
+  test_rotation_turns_the_picture_not_the_sampling();
+  test_flip_mirrors_the_picture();
+  test_crop_selects_part_of_the_source();
+  test_a_crop_running_off_the_edge_is_pulled_back();
+  test_a_square_stays_square_on_a_wide_output();
   test_software_frames_composite_the_same();
   return VD_REPORT();
 }

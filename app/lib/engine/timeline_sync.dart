@@ -22,6 +22,7 @@ EngineTimeline engineTimelineFor(Project project) {
       if (asset == null) continue;
       if (!asset.probe.hasVideo) continue;
 
+      final transform = clip.transform;
       clips.add(EngineClip(
         path: asset.path,
         startTicks: clip.start.raw,
@@ -29,7 +30,23 @@ EngineTimeline engineTimelineFor(Project project) {
         sourceInTicks: clip.sourceIn.raw,
         // List order is z-order: the main track is first, so it renders first.
         track: index,
+        opacity: transform.opacity,
         fit: FitMode.contain,
+        // Insets become a rectangle here rather than in the model: the
+        // document says what the user dragged, the engine wants where to
+        // sample, and this is the one place that knows both.
+        transform: EngineTransform(
+          offsetX: transform.offsetX,
+          offsetY: transform.offsetY,
+          scale: transform.scale,
+          rotationDegrees: transform.rotationDegrees,
+          cropX: transform.cropLeft,
+          cropY: transform.cropTop,
+          cropWidth: transform.cropWidth,
+          cropHeight: transform.cropHeight,
+          flipHorizontal: transform.flipHorizontal,
+          flipVertical: transform.flipVertical,
+        ),
       ));
     }
   }

@@ -23,14 +23,35 @@ namespace {
 // match exactly.
 struct LayerUniforms {
   float rect[4];
+  float crop[4];
+  float rotation[2];
+  float aspect;
   float opacity;
   uint32_t quarter_turns;
   uint32_t full_range;
-  uint32_t pad;
+  uint32_t flip_h;
+  uint32_t flip_v;
   float kr;
   float kb;
-  float pad2[2];
+  float pad[2];
 };
+
+// A transform with its "unset means identity" fields filled in.
+//
+// Every field is defined so a zeroed struct is the identity, which means the
+// zeros have to be turned back into ones exactly here and nowhere else.
+VdTransform normalise(VdTransform t) {
+  if (!(t.scale > 0.0f)) t.scale = 1.0f;
+  if (!(t.crop_w > 0.0f)) { t.crop_x = 0.0f; t.crop_w = 1.0f; }
+  if (!(t.crop_h > 0.0f)) { t.crop_y = 0.0f; t.crop_h = 1.0f; }
+  // A crop that runs off the edge would sample clamped rows forever; pull it
+  // back inside instead of letting it smear.
+  if (t.crop_x < 0.0f) t.crop_x = 0.0f;
+  if (t.crop_y < 0.0f) t.crop_y = 0.0f;
+  if (t.crop_x + t.crop_w > 1.0f) t.crop_w = 1.0f - t.crop_x;
+  if (t.crop_y + t.crop_h > 1.0f) t.crop_h = 1.0f - t.crop_y;
+  return t;
+}
 
 // The only numbers that differ between the standard YCbCr matrices.
 void luma_coefficients(VdColorMatrix matrix, float* kr, float* kb) {
@@ -295,13 +316,42 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       const int32_t disp_w = (turns % 2 == 0) ? src_w : src_h;
       const int32_t disp_h = (turns % 2 == 0) ? src_h : src_w;
 
-      FitRect fit = compute_fit(disp_w, disp_h, c->width, c->height, layer.fit);
+      const VdTransform transform = normalise(layer.transform);
+
+      // Cropping changes the aspect ratio, so it has to be known before the
+      // fit is computed — fitting first would letterbox the part that was
+      // about to be thrown away.
+      const double crop_w = (double)disp_w * transform.crop_w;
+      const double crop_h = (double)disp_h * transform.crop_h;
+      FitRect fit = compute_fit((int32_t)(crop_w + 0.5),
+                                (int32_t)(crop_h + 0.5), c->width, c->height,
+                                layer.fit);
+
+      // Scale about the fitted centre, then move. Both are pure arithmetic on
+      // the destination rectangle; only rotation needs the vertex shader.
+      const float cx = fit.x + fit.w * 0.5f + transform.offset_x;
+      const float cy = fit.y + fit.h * 0.5f + transform.offset_y;
+      fit.w *= transform.scale;
+      fit.h *= transform.scale;
+      fit.x = cx - fit.w * 0.5f;
+      fit.y = cy - fit.h * 0.5f;
+
+      const double radians = (double)transform.rotation_degrees * M_PI / 180.0;
 
       LayerUniforms uniforms = {};
       uniforms.rect[0] = fit.x;
       uniforms.rect[1] = fit.y;
       uniforms.rect[2] = fit.w;
       uniforms.rect[3] = fit.h;
+      uniforms.crop[0] = transform.crop_x;
+      uniforms.crop[1] = transform.crop_y;
+      uniforms.crop[2] = transform.crop_w;
+      uniforms.crop[3] = transform.crop_h;
+      uniforms.rotation[0] = (float)cos(radians);
+      uniforms.rotation[1] = (float)sin(radians);
+      uniforms.aspect = c->height > 0 ? (float)c->width / (float)c->height : 1.0f;
+      uniforms.flip_h = transform.flip_h ? 1u : 0u;
+      uniforms.flip_v = transform.flip_v ? 1u : 0u;
       uniforms.opacity = layer.opacity < 0.0f
                              ? 0.0f
                              : (layer.opacity > 1.0f ? 1.0f : layer.opacity);
@@ -362,6 +412,14 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
     (void)alive;
   }
   return VD_OK;
+}
+
+VdTransform vd_transform_identity(void) {
+  VdTransform t = {};
+  t.scale = 1.0f;
+  t.crop_w = 1.0f;
+  t.crop_h = 1.0f;
+  return t;
 }
 
 void* vd_compositor_copy_output(VdCompositor* c) {

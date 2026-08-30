@@ -90,6 +90,39 @@ final class InsertClip extends EditCommand {
     return project.replaceTrack(track.withClips([...track.clips, clip]));
   }
 }
+/// Changes where a clip sits inside the frame.
+///
+/// One command for the whole transform rather than one per property: the
+/// inspector's controls are dragged, and a drag has to be one undo entry.
+/// Merging on the clip id alone means a run of nudges to *any* of the fields
+/// folds together, which is what someone adjusting a shot actually does.
+final class SetClipTransform extends EditCommand {
+  const SetClipTransform(this.clipId, this.transform);
+
+  final String clipId;
+  final ClipTransform transform;
+
+  @override
+  String get label => 'Adjust clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    if (clip.transform == transform) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(transform: transform) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipTransform && next.clipId == clipId ? next : null;
+}
+
 /// Puts a clip somewhere: along its lane, and — with [toTrackId] — onto a
 /// different one.
 ///

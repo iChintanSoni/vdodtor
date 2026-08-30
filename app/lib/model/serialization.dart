@@ -86,9 +86,50 @@ Map<String, Object?> _trackToJson(Track t) => {
             'sourceIn': c.sourceIn.raw,
             if (c.label.isNotEmpty) 'label': c.label,
             if (!c.enabled) 'enabled': false,
+            // Left out entirely when nothing was changed, which is almost
+            // every clip. A project file should read like the edit that made
+            // it, not like a dump of every field that exists.
+            if (!c.transform.isIdentity)
+              'transform': _transformToJson(c.transform),
           },
       ],
     };
+
+/// Only what differs from the identity, so a transform someone nudged in one
+/// axis does not write out eleven numbers.
+Map<String, Object?> _transformToJson(ClipTransform t) => {
+      if (t.offsetX != 0) 'offsetX': t.offsetX,
+      if (t.offsetY != 0) 'offsetY': t.offsetY,
+      if (t.scale != 1) 'scale': t.scale,
+      if (t.rotationDegrees != 0) 'rotation': t.rotationDegrees,
+      if (t.cropLeft != 0) 'cropLeft': t.cropLeft,
+      if (t.cropTop != 0) 'cropTop': t.cropTop,
+      if (t.cropRight != 0) 'cropRight': t.cropRight,
+      if (t.cropBottom != 0) 'cropBottom': t.cropBottom,
+      if (t.opacity != 1) 'opacity': t.opacity,
+      if (t.flipHorizontal) 'flipH': true,
+      if (t.flipVertical) 'flipV': true,
+    };
+
+ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
+    ClipTransform(
+      offsetX: _double(json, 'offsetX', 0),
+      offsetY: _double(json, 'offsetY', 0),
+      scale: _double(json, 'scale', 1),
+      rotationDegrees: _double(json, 'rotation', 0),
+      cropLeft: _double(json, 'cropLeft', 0),
+      cropTop: _double(json, 'cropTop', 0),
+      cropRight: _double(json, 'cropRight', 0),
+      cropBottom: _double(json, 'cropBottom', 0),
+      opacity: _double(json, 'opacity', 1),
+      flipHorizontal: _bool(json, 'flipH', false),
+      flipVertical: _bool(json, 'flipV', false),
+    );
+
+double _double(Map<String, Object?> json, String key, double fallback) {
+  final value = json[key];
+  return value is num ? value.toDouble() : fallback;
+}
 
 /// Rebuilds a project from [projectToJson]'s output.
 Project projectFromJson(Map<String, Object?> json) {
@@ -184,6 +225,10 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
       sourceIn: Tick(_int(c, 'sourceIn', '$where.sourceIn')),
       label: (c['label'] as String?) ?? '',
       enabled: _bool(c, 'enabled', true),
+      transform: c['transform'] == null
+          ? ClipTransform.identity
+          : _transformFromJson(
+              _asMap(c['transform'], '$where.transform'), '$where.transform'),
     ));
   }
 
