@@ -9,12 +9,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - A milestone is complete only when all its **exit criteria** pass — checkboxes alone don't count.
 - Keep the status line below current whenever a milestone starts or finishes.
 
-> **Status: M1 all but done — engine, app shell, import and the timeline are in;
-> the exit criteria need one run by hand.**
+> **Status: M1's build items are all done and its exit criteria need one run by hand.
+> M2 has started: the timeline cuts.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 268 Dart tests), and the **media probe** through the full
+> crash recovery, import — 332 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -47,7 +47,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > Editing clips — trim, split, move, ripple-delete — is deliberately **not** here. That is
 > M2's first bullet, and this milestone only ever needed to show the document and scrub it.
 >
-> Next: M2, starting with the edits the timeline is now the surface for.
+> **M2 is under way.** Clips now move, trim, split, duplicate and delete on the timeline,
+> each drag a single undo entry, each edge stopping where it should — at a frame of length,
+> at the end of the source, at the neighbour. Snapping lands edges on cuts and on the
+> playhead.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -259,7 +262,27 @@ audio, scrub anywhere, quit and reopen with everything restored.
 
 ## M2 — "It cuts" (editing core)
 
-- [ ] Trim in/out, split at playhead, move, delete-with-ripple (magnetic main track), duplicate
+- [x] Trim in/out, split at playhead, move, delete-with-ripple (magnetic main track), duplicate
+      — `TrimClip`, `SplitClip` and `DuplicateClip` join the move and ripple-delete the
+      model already had. A trim is not a resize: the head edge takes `sourceIn` with it, so
+      the frames stay where they are and fewer of them show. Every edge **clamps rather
+      than refuses** — a drag that stops at the limit is right where one that snaps back is
+      not — and the limits are one frame of length, the source's own extent, and, on a
+      free-form lane, the neighbours. A split snaps its cut to a frame before making it,
+      because a cut between two frames is a cut at neither and every length downstream
+      inherits the rounding.
+      Dragging a clip body moves it, dragging within 9 px of an edge trims it, and a clip
+      too narrow to hold handles is all body — an edit you cannot start is worse than one
+      you have to zoom in for. Edges snap to any cut on any lane and to the playhead, and a
+      moved clip snaps by whichever of *its own* edges lands closer.
+      **`DocumentStore.run(fromGestureStart:)`** came out of this, and is the part worth
+      remembering: a drag is one edit that keeps changing its mind, not a run of edits that
+      accumulate, so each move re-applies to the document as it stood when the gesture
+      began. Without it a magnetic lane is a trap — committing a move repacks the
+      *neighbours*, so the next move compares the clip against positions the drag itself
+      created, and dragging back the way you came does not undo the reorder.
+      Split, duplicate and delete are on ⌘B, ⌘D and Delete for now; the full shortcut pass
+      is still its own item below
 - [ ] Multi-select, copy/paste
 - [ ] Parallel overlay video tracks (up to 3) with per-clip transform:
       position, scale, rotation, crop, opacity, flip

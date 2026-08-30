@@ -66,6 +66,7 @@ class TimelinePainter extends CustomPainter {
       _paintTrack(canvas, size, i, project.tracks[i]);
     }
     _paintRulerLabels(canvas, size, step);
+    _paintSnapGuide(canvas, size);
     _paintPlayhead(canvas, size);
     canvas.restore();
 
@@ -179,6 +180,8 @@ class TimelinePainter extends CustomPainter {
           ..color = VdColors.warn.withValues(alpha: 0.8),
       );
     }
+    final width = x1 - x0;
+
     if (selected) {
       canvas.drawRRect(
         rect,
@@ -187,9 +190,14 @@ class TimelinePainter extends CustomPainter {
           ..strokeWidth = 1.5
           ..color = VdColors.text,
       );
+      // Handles only on the selected clip. Drawing them on every clip would
+      // put a grab target on every cut in the project and make a busy lane
+      // unreadable; the edges stay grabbable either way.
+      if (width >= TimelineController.minimumBodyPx) {
+        _paintHandles(canvas, rect, x0, x1, top);
+      }
     }
 
-    final width = x1 - x0;
     if (width < 34) return;
 
     canvas.save();
@@ -208,6 +216,49 @@ class TimelinePainter extends CustomPainter {
       ).paint(canvas, Offset(x0 + 7, top + 25));
     }
     canvas.restore();
+  }
+
+  void _paintHandles(
+      Canvas canvas, RRect clipRect, double x0, double x1, double top) {
+    final paint = Paint()..color = VdColors.text.withValues(alpha: 0.9);
+    const handle = TimelineController.handleWidthPx;
+    const height = TimelineGeometry.trackHeight - 6;
+
+    canvas.save();
+    canvas.clipRRect(clipRect);
+    for (final left in [x0, x1 - handle]) {
+      canvas.drawRect(Rect.fromLTWH(left, top + 3, handle, height), paint);
+      // Two grip lines, so a handle reads as something to grab rather than as
+      // a white edge on the clip.
+      final grip = Paint()
+        ..color = VdColors.rail
+        ..strokeWidth = 1;
+      for (final offset in [handle / 2 - 1.5, handle / 2 + 1.5]) {
+        canvas.drawLine(
+          Offset(left + offset, top + height / 2 - 4),
+          Offset(left + offset, top + height / 2 + 10),
+          grip,
+        );
+      }
+    }
+    canvas.restore();
+  }
+
+  /// The edge a drag has snapped to. Amber rather than red, so it is never
+  /// mistaken for the playhead it is sometimes sitting exactly on top of.
+  void _paintSnapGuide(Canvas canvas, Size size) {
+    final guide = controller.snapGuide;
+    if (guide == null || !controller.isEditing) return;
+    final x = controller.geometry.xOfTick(guide);
+    if (x < TimelineGeometry.headerWidth || x > size.width) return;
+
+    canvas.drawLine(
+      Offset(x, TimelineGeometry.rulerHeight),
+      Offset(x, size.height),
+      Paint()
+        ..color = VdColors.warn
+        ..strokeWidth = 1.5,
+    );
   }
 
   String _clipDetail(Clip clip, MediaAsset? asset) {

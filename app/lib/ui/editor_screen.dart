@@ -221,6 +221,17 @@ class _EditorScreenState extends State<EditorScreen> {
             _timeline?.nudge(1),
         const SingleActivator(LogicalKeyboardKey.home): () =>
             _timeline?.seekTo(Tick.zero),
+        // The three edits with no pointer gesture of their own. The full
+        // shortcut pass is its own item; these are here because without them
+        // there is no way to reach the commands at all.
+        const SingleActivator(LogicalKeyboardKey.keyB, meta: true): () =>
+            _timeline?.splitAtPlayhead(),
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true): () =>
+            _timeline?.duplicateSelected(),
+        const SingleActivator(LogicalKeyboardKey.delete): () =>
+            _timeline?.deleteSelected(),
+        const SingleActivator(LogicalKeyboardKey.backspace): () =>
+            _timeline?.deleteSelected(),
       },
       child: Focus(
         autofocus: true,
