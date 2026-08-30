@@ -18,9 +18,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
 > app at 1920x1080/30, audio-driven: **30.0 fps exactly, 0 late frames, 0 underruns**,
-> ~0.9 ms GPU composite, ~28 ms scrub, media time accurate to 0.1% of wall time over three
-> seconds. Measure with the screen awake: a locked display throttles the compositor to
-> ~5 ms and makes the numbers look four times worse than they are.
+> ~0.9 ms GPU composite, media time accurate to 0.1% of wall time over three seconds.
+> Measure with the screen awake: a locked display throttles the compositor to ~5 ms and
+> makes the numbers look four times worse than they are. Scrub is ~28 ms on the committed
+> fixtures and **100–380 ms on real long-GOP footage** — see the risk register.
 >
 > The app launches into a **project chooser**: make a project (aspect + frame rate), reopen
 > one, or take back the one the app died with. Projects live in `~/Movies/vdodtor` and save
@@ -299,6 +300,7 @@ buy Pro, and export 4K — with no help.
 | ~~Timeline performance at scale~~ | **Retired in M0** — 121 fps with 1002 clips, cost flat in clip count |
 | Timeline interaction doesn't feel "easy" | Still open — perf is proven, taste is not. Owner runs `spikes/s2_timeline`; M2 exit criteria are the real test |
 | Performance on low-end hardware is unknown | M0 measured only an M3 Pro. Name a low-end reference machine (PERF-06) and re-measure before promising anything |
+| **Scrub latency on long-GOP media** | **Open, and now measured.** A seek decodes forward from the preceding keyframe, so its cost is set by keyframe spacing, not resolution. A real 1080p25 stock clip with keyframes only at 0 s and 10 s seeks in 91–380 ms (mean 215) where the committed fixtures take 36 ms — and M0's 13 ms p50 came from denser media. Ordinary exported footage looks like this, so scrubbing needs a strategy of its own (proxies are already in the brief's fast-follow) before it can be called good |
 | FFmpeg LGPL compliance in a sold, notarized app | **Half retired in M1** — a universal LGPL 2.1 build is vendored and dynamically linked, and the build script fails rather than emit a GPL or non-free configuration. Still open: the written source offer and signing the nested dylibs, both in M4 packaging |
 | Preview/export parity drift | One compositor + golden-frame CI from M2, parity tests in M4 |
 | Solo-dev scope creep | Milestone exit criteria are the guardrails; anything not in the brief goes to Post-v1 |
