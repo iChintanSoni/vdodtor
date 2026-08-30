@@ -14,7 +14,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 357 Dart tests), and the **media probe** through the full
+> crash recovery, import — 378 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -50,8 +50,9 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > **M2 is under way.** Clips move, trim, split, duplicate and delete on the timeline, each
 > drag a single undo entry, each edge stopping where it should — at a frame of length, at
 > the end of the source, at the neighbour. Snapping lands edges on cuts and on the playhead.
-> A selection is now a *set*: ⌘-click to add, ⌘A for everything, and cut, copy and paste
-> move clips around with their source windows and their spacing intact.
+> A selection is a *set*: ⌘-click to add, ⌘A for everything, and cut, copy and paste move
+> clips around with their source windows and their spacing intact. Overlay lanes exist and
+> take clips dragged up onto them — verified compositing two layers over the main track.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -315,8 +316,29 @@ audio, scrub anywhere, quit and reopen with everything restored.
       Not included, and worth saying: dragging does not move a whole selection. Group drag
       on a magnetic lane is a different problem — non-contiguous clips reflowing around each
       other — and belongs with a bullet of its own rather than smuggled into this one
-- [ ] Parallel overlay video tracks (up to 3) with per-clip transform:
+- [~] Parallel overlay video tracks (up to 3) with per-clip transform:
       position, scale, rotation, crop, opacity, flip
+      — **the lanes are in; the per-clip transform is not.** A project may hold three
+      overlay lanes, capped in the model rather than in the UI, and a new one is inserted
+      *above* the visual lanes already there. That placement is not cosmetic: list order in
+      the document is compositing order, so where a lane is inserted decides what it renders
+      on top of.
+      The timeline shows lanes in the reverse of that order, because an editor shows what is
+      on top at the top. Those two orders being opposites is the thing most likely to be got
+      quietly wrong, so the tests are mostly about which is which.
+      `MoveClip` gained a destination lane — one command for both axes, because a drag moves
+      in both at once and two commands would make one gesture two undo entries. A lane
+      refuses clips it cannot play: sound goes on audio lanes, pictures on visual ones, and
+      a video clip dragged over the audio lane slides along its own instead of landing
+      somewhere it would be silent. Removing a lane takes its clips with it, one undo away,
+      and the main track cannot go at all.
+      Confirmed on screen: an overlay lane appears above Video with Audio below it, a clip
+      dragged up lands on the overlay while the magnetic lane ripples closed behind it, and
+      the engine then reports **`layers 2`** with the overlay composited over the main track
+      in the preview. Nothing was needed in the engine — `timeline_sync` already used
+      document order as z-order, and this is the first time anything exercised it.
+      Still to do for this bullet: the per-clip transform, which needs the compositor to
+      take a full 2D transform rather than a fit mode, and an inspector to set it from
 - [ ] GPU compositor: multi-layer render graph, alpha blend, fit modes
       (blur-fill default / fit / fill / stretch)
 - [ ] Golden-frame tests for the compositor in CI (fixed scenes, fixed timestamps, strict tolerance)

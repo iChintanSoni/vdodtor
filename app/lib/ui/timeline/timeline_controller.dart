@@ -100,6 +100,7 @@ class TimelineController extends ChangeNotifier {
   Set<String> _unreachableMediaIds = const {};
 
   String? _dragClipId;
+  String? _dragOriginTrackId;
   Tick _dragOriginStart = Tick.zero;
   Tick _dragOriginEnd = Tick.zero;
   double _dragAnchorX = 0;
@@ -153,6 +154,28 @@ class TimelineController extends ChangeNotifier {
 
   Project get project => store.project;
   Rational get frameRate => project.format.frameRate;
+
+  /// The lanes as the timeline shows them, top to bottom.
+  ///
+  /// Deliberately *not* document order. Order in the document is compositing
+  /// order — later renders on top — and an editor shows what is on top at the
+  /// top, so the visual lanes are reversed here. Audio follows underneath in
+  /// its own order, because it composites nothing and its order means nothing.
+  List<Track> get lanes {
+    final visual = <Track>[];
+    final rest = <Track>[];
+    for (final track in project.tracks) {
+      (track.kind.isVisual ? visual : rest).add(track);
+    }
+    return [...visual.reversed, ...rest];
+  }
+
+  /// The lane at [y], or null for the ruler and the gaps.
+  Track? laneAt(double y) {
+    final all = lanes;
+    final index = _geometry.trackIndexAt(y, all.length);
+    return index == null ? null : all[index];
+  }
 
   /// Where the playhead is. The transport owns it; this is a read.
   Tick get playhead => Tick(transport.positionTicks);
@@ -293,9 +316,8 @@ class TimelineController extends ChangeNotifier {
   /// Returns the clip at [position], or null. Later clips win, which matches
   /// what is drawn on top when two somehow overlap.
   ({Clip clip, Track track})? clipAt(Offset position) {
-    final index = _geometry.trackIndexAt(position.dy, project.tracks.length);
-    if (index == null) return null;
-    final track = project.tracks[index];
+    final track = laneAt(position.dy);
+    if (track == null) return null;
     for (final clip in track.clips.reversed) {
       final x0 = _geometry.xOfTick(clip.start);
       final x1 = _geometry.xOfTick(clip.end);
@@ -341,6 +363,7 @@ class TimelineController extends ChangeNotifier {
     // under the pointer, and measuring from the current position would let
     // that feed back into the next move.
     _dragClipId = hit.clip.id;
+    _dragOriginTrackId = hit.track.id;
     _dragOriginStart = hit.clip.start;
     _dragOriginEnd = hit.clip.end;
     _dragAnchorX = position.dx;
@@ -377,7 +400,10 @@ class TimelineController extends ChangeNotifier {
         // Both edges snap: lining a clip's end up with the next cut is as
         // much of an edit as lining its start up with the last one.
         wanted = _snapMove(wanted, duration, clipId);
-        store.run(MoveClip(clipId, wanted), fromGestureStart: true);
+        store.run(
+          MoveClip(clipId, wanted, toTrackId: _laneTargetFor(clipId, position)),
+          fromGestureStart: true,
+        );
 
       case TimelineDrag.trimStart:
         final wanted =
@@ -395,10 +421,26 @@ class TimelineController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Which lane a move should land the clip on, given where the pointer is.
+  ///
+  /// Null means "leave it where it started" — which is also the answer for a
+  /// lane that will not have it, so dragging a video clip over the audio lane
+  /// slides it along its own lane rather than dropping it somewhere it cannot
+  /// play.
+  String? _laneTargetFor(String clipId, Offset position) {
+    final lane = laneAt(position.dy);
+    if (lane == null) return _dragOriginTrackId;
+    final clip = project.clipById(clipId);
+    final asset = clip == null ? null : project.assetFor(clip);
+    if (!MoveClip.accepts(lane, asset)) return _dragOriginTrackId;
+    return lane.id;
+  }
+
   void pointerUp() {
     if (_drag == TimelineDrag.none) return;
     _drag = TimelineDrag.none;
     _dragClipId = null;
+    _dragOriginTrackId = null;
     _snapGuide = null;
     // Closes the undo entry, so the next edit does not fold into this drag.
     store.endGesture();
@@ -639,6 +681,36 @@ class TimelineController extends ChangeNotifier {
     _selectedClipIds
       ..clear()
       ..addAll(pasted);
+    notifyListeners();
+    return true;
+  }
+
+  // --- lanes ---------------------------------------------------------------
+
+  bool get canAddOverlayTrack => project.canAddTrackOfKind(TrackKind.overlay);
+
+  /// Adds an overlay lane above the visual lanes already there.
+  bool addOverlayTrack() {
+    if (!canAddOverlayTrack) return false;
+    final number = project.trackCountOfKind(TrackKind.overlay) + 1;
+    store.endGesture();
+    store.run(AddTrack(Track.of(
+      id: _ids.next('tr-'),
+      kind: TrackKind.overlay,
+      name: 'Overlay $number',
+    )));
+    store.endGesture();
+    return true;
+  }
+
+  /// Removes a lane and everything on it. One undo away, like every edit.
+  bool removeTrack(String trackId) {
+    final track = project.trackById(trackId);
+    if (track == null || track.kind == TrackKind.main) return false;
+    store.endGesture();
+    store.run(RemoveTrack(trackId));
+    store.endGesture();
+    _pruneSelection();
     notifyListeners();
     return true;
   }
