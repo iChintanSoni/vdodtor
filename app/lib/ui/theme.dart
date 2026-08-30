@@ -14,6 +14,17 @@ abstract final class VdColors {
   static const text = Color(0xFFE7E9EE);
   static const dim = Color(0xFF9AA1AE);
   static const warn = Color(0xFFE0A23C);
+
+  /// Clips, by the kind of track they sit on. Muted rather than saturated:
+  /// these sit under the picture all day, and a timeline that shouts is a
+  /// timeline that tires.
+  static const clipVideo = Color(0xFF3C5A8A);
+  static const clipOverlay = Color(0xFF4A4477);
+  static const clipAudio = Color(0xFF2F6152);
+  static const clipText = Color(0xFF7A4A5E);
+
+  /// The playhead. The one thing on screen allowed to be loud.
+  static const playhead = Color(0xFFFF5C5C);
 }
 
 ThemeData vdodtorTheme() {

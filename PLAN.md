@@ -9,12 +9,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - A milestone is complete only when all its **exit criteria** pass — checkboxes alone don't count.
 - Keep the status line below current whenever a milestone starts or finishes.
 
-> **Status: M1 in progress — engine done, the app shell and import are in, the
-> timeline is next.**
+> **Status: M1 all but done — engine, app shell, import and the timeline are in;
+> the exit criteria need one run by hand.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 212 Dart tests), and the **media probe** through the full
+> crash recovery, import — 268 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -37,11 +37,22 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > bin draws each asset through the *same compositor* as the preview, so a portrait clip
 > looks portrait in the bin.
 >
-> Next: the S2 timeline bound to the real document, and scrubbing that drives the engine.
+> **The timeline is real.** S2's canvas, rebuilt against the actual document: lanes, clips
+> with names and lengths, a ruler that labels frames when it is zoomed in and minutes when
+> it is not, and a playhead that *is* the engine's position rather than a copy kept in step
+> with it. Scrubbing the ruler seeks the engine on every pointer move, frame-snapped —
+> confirmed on screen, and playback drags the playhead along at 30 fps with **0 late
+> frames**, so repainting it once a vsync costs the preview nothing.
 >
-> **Owner check outstanding:** the drag itself. The panel, the bookmarks, the relink and
-> mouse-through were all verified end to end; dropping files on the window is the one thing
-> that cannot be driven without a person.
+> Editing clips — trim, split, move, ripple-delete — is deliberately **not** here. That is
+> M2's first bullet, and this milestone only ever needed to show the document and scrub it.
+>
+> Next: M2, starting with the edits the timeline is now the surface for.
+>
+> **Owner checks outstanding**, both needing hands rather than a script: dropping files on
+> the window (everything around the drop is verified — panel, bookmarks, relink, and that
+> the transparent drop view does not eat mouse input), and whether the timeline feels good
+> to scrub, which is the S2 question that was never a performance question.
 >
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
@@ -91,7 +102,8 @@ code; findings land in `docs/spike-notes.md`.*
 - [x] Pure-Flutter canvas timeline: 5 tracks, clips as blocks with drag / trim handles
 - [x] Zoom pinned to cursor, snapping to clip edges + playhead, ripple-close on main track
 - [x] 121 fps (display ceiling) with 1002 clips during a continuous drag — flat in clip count
-- [ ] **Owner check outstanding:** does it feel good in the hand? Run `spikes/s2_timeline`
+- [ ] **Owner check outstanding:** does it feel good in the hand? No longer a question for
+      the spike — the real timeline is in the app as of M1, so scrub *that*
 
 **Exit criteria:** met. S1 hits 4K60 with ~1.5 ms GPU cost and 13 ms median scrub;
 S2 is not a performance problem at any realistic scale. **GO on the PLAN.md stack.**
@@ -215,7 +227,20 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       spin its own run loop on the thread Flutter draws on.
       The bin keeps an asset whose file has gone missing, greyed and labelled, because an
       asset the user can point at again is worth more than a shorter list
-- [ ] Timeline (from S2) bound to the real document; scrubbing drives the engine
+- [x] Timeline (from S2) bound to the real document; scrubbing drives the engine
+      — one `CustomPainter` for the whole thing, not a widget per clip, which is what S2
+      was run to find out; offscreen clips are culled, so the cost stays flat in clip
+      count. The split is deliberate: `TimelineGeometry` is a pure value type holding all
+      the arithmetic (ticks to pixels, zoom pinned to the cursor, lane hit-testing, ruler
+      steps that always land on a real frame), so the part that can be subtly wrong is the
+      part that needs no window to test. The controller holds *view* state only — the
+      document stays in the store and the playhead stays in the engine, so there is one
+      copy of each and no way for them to disagree. A seek is frame-snapped, because a
+      playhead resting between two frames names a picture that does not exist.
+      Playback moves the playhead from a ticker that runs only while playing, dirtying one
+      `RepaintBoundary` — the same discipline `EnginePreview` needed, for the same reason.
+      The transport slider is gone: it scrubbed the same playhead over the same range as
+      the ruler now does, and two controls for one value is one of them always wrong
 - [x] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
       on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
       repaints from a ticker that runs only during playback and dirties a single

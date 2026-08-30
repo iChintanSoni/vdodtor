@@ -9,6 +9,7 @@ import '../app/workspace.dart';
 import '../commands/document_store.dart';
 import '../commands/edits.dart';
 import '../dev/self_test.dart';
+import '../engine/engine_transport.dart';
 import '../engine/media_probe.dart';
 import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
@@ -18,6 +19,10 @@ import '../model/media.dart';
 import '../model/time.dart';
 import 'media_bin.dart';
 import 'theme.dart';
+import 'timecode.dart';
+import 'timeline/timeline_controller.dart';
+import 'timeline/timeline_geometry.dart';
+import 'timeline/timeline_view.dart';
 
 /// The editor: one open document, synced to the engine, playing through the
 /// real compositor.
@@ -54,6 +59,7 @@ class _EditorScreenState extends State<EditorScreen> {
   EngineStats? _stats;
 
   late final MediaImporter _importer;
+  TimelineController? _timeline;
   final ThumbnailCache _thumbnails = ThumbnailCache();
   StreamSubscription<MediaDrop>? _drops;
   bool _importing = false;
@@ -82,7 +88,14 @@ class _EditorScreenState extends State<EditorScreen> {
         await engine.dispose();
         return;
       }
-      setState(() => _engine = engine);
+      final timeline = TimelineController(
+        store: _store,
+        transport: EngineTransport(engine),
+      )..unreachableMediaIds = widget.open.unreachableMediaIds;
+      setState(() {
+        _engine = engine;
+        _timeline = timeline;
+      });
       _statsTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
         if (mounted) setState(() => _stats = _engine?.stats);
       });
@@ -160,6 +173,11 @@ class _EditorScreenState extends State<EditorScreen> {
     _store.run(RemoveMedia(asset.id));
     _store.endGesture();
     _thumbnails.forget(asset.id);
+    final timeline = _timeline;
+    if (timeline != null) {
+      timeline.unreachableMediaIds =
+          timeline.unreachableMediaIds.difference({asset.id});
+    }
   }
 
   void _togglePlayback() {
@@ -174,6 +192,7 @@ class _EditorScreenState extends State<EditorScreen> {
     unawaited(_drops?.cancel());
     _store.removeListener(_onDocumentChanged);
     _engine?.removeListener(_onEngineChanged);
+    _timeline?.dispose();
     unawaited(_engine?.dispose());
     _thumbnails.dispose();
     super.dispose();
@@ -194,6 +213,14 @@ class _EditorScreenState extends State<EditorScreen> {
             meta: true, shift: true): _store.redo,
         const SingleActivator(LogicalKeyboardKey.keyW, meta: true):
             widget.onClose,
+        // A frame at a time, which is the unit the playhead moves in and the
+        // only way to land on an exact cut with a pointer that cannot.
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+            _timeline?.nudge(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+            _timeline?.nudge(1),
+        const SingleActivator(LogicalKeyboardKey.home): () =>
+            _timeline?.seekTo(Tick.zero),
       },
       child: Focus(
         autofocus: true,
@@ -242,8 +269,17 @@ class _EditorScreenState extends State<EditorScreen> {
                       ],
                     ),
                   ),
-                  if (engine != null) ...[
-                    _TransportBar(engine: engine, store: _store),
+                  if (engine != null && _timeline != null) ...[
+                    _TransportBar(
+                      engine: engine,
+                      store: _store,
+                      timeline: _timeline!,
+                    ),
+                    SizedBox(
+                      height:
+                          timelineHeightFor(_store.project.tracks.length),
+                      child: TimelineView(controller: _timeline!),
+                    ),
                     _StatsStrip(stats: _stats, store: _store),
                   ],
                 ],
@@ -496,63 +532,70 @@ class _EngineFailure extends StatelessWidget {
       );
 }
 
+/// Play, position, and how far in the timeline below is zoomed.
+///
+/// The slider that used to live here is gone. It scrubbed the same playhead
+/// the timeline's ruler now scrubs, over the same range, and two controls for
+/// one value is two things to keep in step and one of them always wrong.
 class _TransportBar extends StatelessWidget {
-  const _TransportBar({required this.engine, required this.store});
+  const _TransportBar({
+    required this.engine,
+    required this.store,
+    required this.timeline,
+  });
 
   final PreviewEngine engine;
   final DocumentStore store;
+  final TimelineController timeline;
 
   @override
   Widget build(BuildContext context) {
+    final fps = store.project.format.frameRate;
     final duration = engine.durationTicks;
-    final position = engine.positionTicks.clamp(0, duration).toDouble();
+    final position = engine.positionTicks.clamp(0, duration);
 
     return Container(
       color: VdColors.panel,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Row(
         children: [
           IconButton(
-            iconSize: 32,
+            iconSize: 28,
             tooltip: engine.isPlaying ? 'Pause (space)' : 'Play (space)',
             icon: Icon(engine.isPlaying ? Icons.pause : Icons.play_arrow),
             onPressed: () => engine.isPlaying ? engine.pause() : engine.play(),
           ),
           IconButton(
-            tooltip: 'Back to start',
+            tooltip: 'Back to start (home)',
             icon: const Icon(Icons.skip_previous),
-            onPressed: () => engine.seek(0),
+            onPressed: () => timeline.seekTo(Tick.zero),
           ),
-          const SizedBox(width: 8),
-          Text(timecode(position.round(), store.project.format.frameRate),
-              style: vdMono),
-          Expanded(
-            child: Slider(
-              value: position,
-              max: duration == 0 ? 1 : duration.toDouble(),
-              // Scrubbing drives the engine directly: every drag update is a
-              // seek, and the engine renders a frame even while paused.
-              onChanged: (value) => engine.seek(value.round()),
-            ),
+          const SizedBox(width: 10),
+          Text(timecode(position, fps), style: vdMono),
+          Text('  /  ${timecode(duration, fps)}',
+              style: vdMono.copyWith(color: VdColors.dim)),
+          const Spacer(),
+          IconButton(
+            tooltip: 'Zoom out',
+            icon: const Icon(Icons.zoom_out, size: 20),
+            onPressed: () => timeline.zoomAround(
+                TimelineGeometry.headerWidth, 1 / 1.4),
           ),
-          Text(timecode(duration, store.project.format.frameRate),
-              style: vdMono),
+          IconButton(
+            tooltip: 'Zoom in',
+            icon: const Icon(Icons.zoom_in, size: 20),
+            onPressed: () =>
+                timeline.zoomAround(TimelineGeometry.headerWidth, 1.4),
+          ),
+          TextButton(
+            onPressed: () => timeline.zoomToFit(
+                MediaQuery.sizeOf(context).width - 240),
+            child: const Text('Fit'),
+          ),
         ],
       ),
     );
   }
-}
-
-/// mm:ss:ff on the project's own frame rate.
-String timecode(int ticks, Rational fps) {
-  final totalFrames = Timebase.project.frameOfTick(Tick(ticks), fps);
-  final perSecond = (fps.numerator / fps.denominator).round();
-  final frames = totalFrames % perSecond;
-  final totalSeconds = totalFrames ~/ perSecond;
-  final seconds = totalSeconds % 60;
-  final minutes = totalSeconds ~/ 60;
-  String two(int v) => v.toString().padLeft(2, '0');
-  return '${two(minutes)}:${two(seconds)}:${two(frames)}';
 }
 
 class _StatsStrip extends StatelessWidget {
