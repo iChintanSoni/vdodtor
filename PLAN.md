@@ -9,19 +9,25 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - A milestone is complete only when all its **exit criteria** pass — checkboxes alone don't count.
 - Keep the status line below current whenever a milestone starts or finishes.
 
-> **Status: M1 in progress — foundation landed, engine and UI next.**
+> **Status: M1 in progress — engine done, the app shell is in, import is next.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery — 128 Dart tests), and the **media probe** through the full
+> crash recovery — 159 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
-> Preview plays with sound. Measured in the running app at 1920x1080/30, audio-driven:
-> **30.0 fps exactly, 0 late frames, 0 underruns**, 1.2 ms GPU composite, ~29 ms scrub,
-> media time accurate to 1% of wall time over three seconds.
+> Preview plays with sound, and someone has now watched it do it. Measured in the running
+> app at 1920x1080/30, audio-driven: **30.0 fps exactly, 0 late frames, 0 underruns**,
+> ~0.9 ms GPU composite, ~28 ms scrub, media time accurate to 0.1% of wall time over three
+> seconds. Measure with the screen awake: a locked display throttles the compositor to
+> ~5 ms and makes the numbers look four times worse than they are.
 >
-> Next: the app. Project create/open/recents, import, and binding the S2 timeline to the
-> real document — everything left in M1 is UI.
+> The app launches into a **project chooser**: make a project (aspect + frame rate), reopen
+> one, or take back the one the app died with. Projects live in `~/Movies/vdodtor` and save
+> themselves on every edit — there is no Save command and never will be.
+>
+> Next: import. Drag-drop and the file picker, which is also where security-scoped
+> bookmarks finally land, and then the S2 timeline bound to the real document.
 >
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
@@ -93,10 +99,14 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       `CONFIG_NONFREE` or `CONFIG_VERSION3` is set. The dylibs ride inside
       `vdodtor_engine.framework/Versions/A/Frameworks`, resolved by `@loader_path`
 - [~] Re-enable the App Sandbox; security-scoped bookmarks for user media
-      — sandbox is on and verified (it blocks arbitrary paths; the app reads its own bundle);
-      `files.user-selected.read-write` and `files.bookmarks.app-scope` are granted, and
-      `MediaAsset.bookmark` is modelled and persisted. **Minting and resolving the bookmark
-      still needs native code** — nothing calls it yet
+      — sandbox is on and verified (it blocks arbitrary paths; the app reads its own bundle).
+      Project files need no bookmark and no panel: they live in `~/Movies/vdodtor` under
+      `com.apple.security.assets.movies.read-write`, which grants the whole tree, so the
+      atomic write's `.tmp` and `.bak` siblings are legal and a project always reopens.
+      `files.user-selected.read-write` and `files.bookmarks.app-scope` are granted and
+      `MediaAsset.bookmark` is modelled and persisted, but **minting and resolving the
+      bookmark still needs native code**. It belongs with import — the first thing that
+      reaches a file the app did not choose
 - [~] CI (**self-hosted** macOS runner): engine unit tests, `dart analyze`, `dart test`, app builds
       — `.github/workflows/ci.yml` runs on `[self-hosted, macOS, ARM64]`, so a green build
       means what a local build means: same Xcode, same Flutter, same signing identity.
@@ -155,17 +165,27 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       untagged files. Checked on pixels against ffmpeg's own conversion
 
 ### App
-- [ ] Project create (aspect: 9:16/16:9/1:1/4:5 + fps: 24/25/30/60) / open / recents
-      — the model and the recents store are done; there is no UI
+- [x] Project create (aspect: 9:16/16:9/1:1/4:5 + fps: 24/25/30/60) / open / recents
+      — a chooser window, a New Project dialog that draws the shape it is about to make,
+      and one list that is the library and the recents merged, newest-opened first. Creating
+      a project asks nothing but the name: no file panel, no location, no "where did it go".
+      A project that has been moved or deleted stays on the list, greyed out, because
+      "where did my project go" deserves an answer rather than a shorter list. A run that
+      ended in a crash is offered back by name at the next launch — every edit was already
+      written. The whole lifecycle lives in `Workspace`, outside the widget tree, so the part
+      where losing someone's work is possible is the part that has tests
 - [ ] Import via drag-drop + file picker; media bin with thumbnails
 - [ ] Timeline (from S2) bound to the real document; scrubbing drives the engine
-- [~] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
+- [x] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
       on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
       repaints from a ticker that runs only during playback and dirties a single
       `RepaintBoundary` containing only the `Texture` — no rebuilds, nothing else in the
-      tree repaints. **Built but not yet confirmed on screen**: the engine's own output is
-      verified by PNG dump, and the on-screen half still needs an eyeball on an unlocked
-      display.
+      tree repaints. **Confirmed on screen**, on an unlocked display: playback advances
+      frame by frame and across a clip boundary at 30.1 fps with 0 late frames, and the
+      paused case — where the ticker is stopped by design and the frame arrives on the
+      engine's own notification — leaves the correct, *different* frame on screen at each
+      seek position. The rotated sample is visibly upright and pillarboxed inside the 16:9
+      project, so rotation and contain-fit are right on screen and not just in the PNG dump.
 
 **Exit criteria:** create a project, drop 3 clips onto the main track, play end-to-end with
 audio, scrub anywhere, quit and reopen with everything restored.
