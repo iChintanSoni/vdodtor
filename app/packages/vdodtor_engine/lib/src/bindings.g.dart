@@ -498,6 +498,17 @@ class VdEngineBindings {
         )
       >();
 
+  VdEngineOptions vd_engine_default_options() {
+    return _vd_engine_default_options();
+  }
+
+  late final _vd_engine_default_optionsPtr =
+      _lookup<ffi.NativeFunction<VdEngineOptions Function()>>(
+        'vd_engine_default_options',
+      );
+  late final _vd_engine_default_options = _vd_engine_default_optionsPtr
+      .asFunction<VdEngineOptions Function()>();
+
   ffi.Pointer<VdEngine> vd_engine_create(ffi.Pointer<ffi.Int32> out_result) {
     return _vd_engine_create(out_result);
   }
@@ -510,6 +521,46 @@ class VdEngineBindings {
       >('vd_engine_create');
   late final _vd_engine_create = _vd_engine_createPtr
       .asFunction<ffi.Pointer<VdEngine> Function(ffi.Pointer<ffi.Int32>)>();
+
+  ffi.Pointer<VdEngine> vd_engine_create_with_options(
+    VdEngineOptions options,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_engine_create_with_options(options, out_result);
+  }
+
+  late final _vd_engine_create_with_optionsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdEngine> Function(
+            VdEngineOptions,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_engine_create_with_options');
+  late final _vd_engine_create_with_options = _vd_engine_create_with_optionsPtr
+      .asFunction<
+        ffi.Pointer<VdEngine> Function(VdEngineOptions, ffi.Pointer<ffi.Int32>)
+      >();
+
+  /// The engine's audio renderer, for pulling frames when no device is attached.
+  /// Owned by the engine; valid until vd_engine_destroy.
+  ffi.Pointer<VdAudioRenderer> vd_engine_audio_renderer(
+    ffi.Pointer<VdEngine> engine,
+  ) {
+    return _vd_engine_audio_renderer(engine);
+  }
+
+  late final _vd_engine_audio_rendererPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdAudioRenderer> Function(ffi.Pointer<VdEngine>)
+        >
+      >('vd_engine_audio_renderer');
+  late final _vd_engine_audio_renderer = _vd_engine_audio_rendererPtr
+      .asFunction<
+        ffi.Pointer<VdAudioRenderer> Function(ffi.Pointer<VdEngine>)
+      >();
 
   /// Stops the render thread, waits for it, and only then tears anything down.
   /// The S1 spike freed the engine while GPU completion handlers still held it,
@@ -703,6 +754,472 @@ class VdEngineBindings {
       .asFunction<
         void Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdEngineStats>)
       >();
+
+  /// Opens the audio stream of `path`. Returns NULL and sets `out_result` when
+  /// there is no audio to decode — which is not an error the caller should treat
+  /// as fatal, since plenty of video has no sound.
+  ffi.Pointer<VdAudioSource> vd_audio_source_open(
+    ffi.Pointer<ffi.Char> path,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_audio_source_open(path, out_result);
+  }
+
+  late final _vd_audio_source_openPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdAudioSource> Function(
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_audio_source_open');
+  late final _vd_audio_source_open = _vd_audio_source_openPtr
+      .asFunction<
+        ffi.Pointer<VdAudioSource> Function(
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  void vd_audio_source_close(ffi.Pointer<VdAudioSource> source) {
+    return _vd_audio_source_close(source);
+  }
+
+  late final _vd_audio_source_closePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioSource>)>
+      >('vd_audio_source_close');
+  late final _vd_audio_source_close = _vd_audio_source_closePtr
+      .asFunction<void Function(ffi.Pointer<VdAudioSource>)>();
+
+  /// Moves to `source_time` in the file. The next read starts there.
+  int vd_audio_source_seek(ffi.Pointer<VdAudioSource> source, int source_time) {
+    return _vd_audio_source_seek(source, source_time);
+  }
+
+  late final _vd_audio_source_seekPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<VdAudioSource>, VdTick)
+        >
+      >('vd_audio_source_seek');
+  late final _vd_audio_source_seek = _vd_audio_source_seekPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioSource>, int)>();
+
+  /// Reads up to `frames` interleaved stereo float frames. Returns the number
+  /// actually written; fewer than asked for means the source ended.
+  int vd_audio_source_read(
+    ffi.Pointer<VdAudioSource> source,
+    ffi.Pointer<ffi.Float> out,
+    int frames,
+  ) {
+    return _vd_audio_source_read(source, out, frames);
+  }
+
+  late final _vd_audio_source_readPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioSource>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_source_read');
+  late final _vd_audio_source_read = _vd_audio_source_readPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdAudioSource>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  /// Source time of the next frame that will be read.
+  int vd_audio_source_position(ffi.Pointer<VdAudioSource> source) {
+    return _vd_audio_source_position(source);
+  }
+
+  late final _vd_audio_source_positionPtr =
+      _lookup<ffi.NativeFunction<VdTick Function(ffi.Pointer<VdAudioSource>)>>(
+        'vd_audio_source_position',
+      );
+  late final _vd_audio_source_position = _vd_audio_source_positionPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioSource>)>();
+
+  int vd_audio_source_duration(ffi.Pointer<VdAudioSource> source) {
+    return _vd_audio_source_duration(source);
+  }
+
+  late final _vd_audio_source_durationPtr =
+      _lookup<ffi.NativeFunction<VdTick Function(ffi.Pointer<VdAudioSource>)>>(
+        'vd_audio_source_duration',
+      );
+  late final _vd_audio_source_duration = _vd_audio_source_durationPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioSource>)>();
+
+  ffi.Pointer<VdAudioRing> vd_audio_ring_create(int capacity_frames) {
+    return _vd_audio_ring_create(capacity_frames);
+  }
+
+  late final _vd_audio_ring_createPtr =
+      _lookup<ffi.NativeFunction<ffi.Pointer<VdAudioRing> Function(ffi.Int32)>>(
+        'vd_audio_ring_create',
+      );
+  late final _vd_audio_ring_create = _vd_audio_ring_createPtr
+      .asFunction<ffi.Pointer<VdAudioRing> Function(int)>();
+
+  void vd_audio_ring_destroy(ffi.Pointer<VdAudioRing> ring) {
+    return _vd_audio_ring_destroy(ring);
+  }
+
+  late final _vd_audio_ring_destroyPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioRing>)>>(
+        'vd_audio_ring_destroy',
+      );
+  late final _vd_audio_ring_destroy = _vd_audio_ring_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRing>)>();
+
+  /// Producer side. Returns frames actually written.
+  int vd_audio_ring_write(
+    ffi.Pointer<VdAudioRing> ring,
+    ffi.Pointer<ffi.Float> frames,
+    int count,
+  ) {
+    return _vd_audio_ring_write(ring, frames, count);
+  }
+
+  late final _vd_audio_ring_writePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioRing>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_ring_write');
+  late final _vd_audio_ring_write = _vd_audio_ring_writePtr
+      .asFunction<
+        int Function(ffi.Pointer<VdAudioRing>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  /// Consumer side. Returns frames actually read; the rest of `out` is untouched.
+  int vd_audio_ring_read(
+    ffi.Pointer<VdAudioRing> ring,
+    ffi.Pointer<ffi.Float> out,
+    int count,
+  ) {
+    return _vd_audio_ring_read(ring, out, count);
+  }
+
+  late final _vd_audio_ring_readPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioRing>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_ring_read');
+  late final _vd_audio_ring_read = _vd_audio_ring_readPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdAudioRing>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  int vd_audio_ring_available(ffi.Pointer<VdAudioRing> ring) {
+    return _vd_audio_ring_available(ring);
+  }
+
+  late final _vd_audio_ring_availablePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdAudioRing>)>>(
+        'vd_audio_ring_available',
+      );
+  late final _vd_audio_ring_available = _vd_audio_ring_availablePtr
+      .asFunction<int Function(ffi.Pointer<VdAudioRing>)>();
+
+  int vd_audio_ring_space(ffi.Pointer<VdAudioRing> ring) {
+    return _vd_audio_ring_space(ring);
+  }
+
+  late final _vd_audio_ring_spacePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdAudioRing>)>>(
+        'vd_audio_ring_space',
+      );
+  late final _vd_audio_ring_space = _vd_audio_ring_spacePtr
+      .asFunction<int Function(ffi.Pointer<VdAudioRing>)>();
+
+  int vd_audio_ring_capacity(ffi.Pointer<VdAudioRing> ring) {
+    return _vd_audio_ring_capacity(ring);
+  }
+
+  late final _vd_audio_ring_capacityPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdAudioRing>)>>(
+        'vd_audio_ring_capacity',
+      );
+  late final _vd_audio_ring_capacity = _vd_audio_ring_capacityPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioRing>)>();
+
+  /// Drops everything buffered. Called from the producer side on a seek; the
+  /// consumer will read silence until the ring refills.
+  void vd_audio_ring_clear(ffi.Pointer<VdAudioRing> ring) {
+    return _vd_audio_ring_clear(ring);
+  }
+
+  late final _vd_audio_ring_clearPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioRing>)>>(
+        'vd_audio_ring_clear',
+      );
+  late final _vd_audio_ring_clear = _vd_audio_ring_clearPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRing>)>();
+
+  ffi.Pointer<VdAudioRenderer> vd_audio_renderer_create(
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_audio_renderer_create(out_result);
+  }
+
+  late final _vd_audio_renderer_createPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdAudioRenderer> Function(ffi.Pointer<ffi.Int32>)
+        >
+      >('vd_audio_renderer_create');
+  late final _vd_audio_renderer_create = _vd_audio_renderer_createPtr
+      .asFunction<
+        ffi.Pointer<VdAudioRenderer> Function(ffi.Pointer<ffi.Int32>)
+      >();
+
+  void vd_audio_renderer_destroy(ffi.Pointer<VdAudioRenderer> renderer) {
+    return _vd_audio_renderer_destroy(renderer);
+  }
+
+  late final _vd_audio_renderer_destroyPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioRenderer>)>
+      >('vd_audio_renderer_destroy');
+  late final _vd_audio_renderer_destroy = _vd_audio_renderer_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRenderer>)>();
+
+  /// Takes the same render list the video side gets, and picks out the clips
+  /// whose sources actually carry audio.
+  int vd_audio_renderer_set_timeline(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    ffi.Pointer<VdTimelineClip> clips,
+    int clip_count,
+  ) {
+    return _vd_audio_renderer_set_timeline(renderer, clips, clip_count);
+  }
+
+  late final _vd_audio_renderer_set_timelinePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioRenderer>,
+            ffi.Pointer<VdTimelineClip>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_renderer_set_timeline');
+  late final _vd_audio_renderer_set_timeline =
+      _vd_audio_renderer_set_timelinePtr
+          .asFunction<
+            int Function(
+              ffi.Pointer<VdAudioRenderer>,
+              ffi.Pointer<VdTimelineClip>,
+              int,
+            )
+          >();
+
+  /// True when any clip in the timeline has audio. When false the engine keeps
+  /// using its wall clock, because there is nothing to synchronise to.
+  bool vd_audio_renderer_has_audio(ffi.Pointer<VdAudioRenderer> renderer) {
+    return _vd_audio_renderer_has_audio(renderer);
+  }
+
+  late final _vd_audio_renderer_has_audioPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdAudioRenderer>)>
+      >('vd_audio_renderer_has_audio');
+  late final _vd_audio_renderer_has_audio = _vd_audio_renderer_has_audioPtr
+      .asFunction<bool Function(ffi.Pointer<VdAudioRenderer>)>();
+
+  void vd_audio_renderer_start(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    int position,
+  ) {
+    return _vd_audio_renderer_start(renderer, position);
+  }
+
+  late final _vd_audio_renderer_startPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdAudioRenderer>, VdTick)
+        >
+      >('vd_audio_renderer_start');
+  late final _vd_audio_renderer_start = _vd_audio_renderer_startPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRenderer>, int)>();
+
+  void vd_audio_renderer_stop(ffi.Pointer<VdAudioRenderer> renderer) {
+    return _vd_audio_renderer_stop(renderer);
+  }
+
+  late final _vd_audio_renderer_stopPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioRenderer>)>
+      >('vd_audio_renderer_stop');
+  late final _vd_audio_renderer_stop = _vd_audio_renderer_stopPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRenderer>)>();
+
+  void vd_audio_renderer_seek(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    int position,
+  ) {
+    return _vd_audio_renderer_seek(renderer, position);
+  }
+
+  late final _vd_audio_renderer_seekPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdAudioRenderer>, VdTick)
+        >
+      >('vd_audio_renderer_seek');
+  late final _vd_audio_renderer_seek = _vd_audio_renderer_seekPtr
+      .asFunction<void Function(ffi.Pointer<VdAudioRenderer>, int)>();
+
+  /// The audio clock: the timeline position the device is playing right now.
+  ///
+  /// This is the master clock during playback. Audio cannot be stretched or
+  /// skipped without the listener hearing it, whereas a video frame arriving a
+  /// millisecond late is invisible — so video follows audio, never the reverse.
+  int vd_audio_renderer_position(ffi.Pointer<VdAudioRenderer> renderer) {
+    return _vd_audio_renderer_position(renderer);
+  }
+
+  late final _vd_audio_renderer_positionPtr =
+      _lookup<
+        ffi.NativeFunction<VdTick Function(ffi.Pointer<VdAudioRenderer>)>
+      >('vd_audio_renderer_position');
+  late final _vd_audio_renderer_position = _vd_audio_renderer_positionPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioRenderer>)>();
+
+  /// Whether that position means anything yet.
+  ///
+  /// An audio clock only tells the time while something is draining it. With no
+  /// device attached, or before the first pull after starting, the counter is
+  /// standing still — and a caller that trusted it would freeze the picture.
+  bool vd_audio_renderer_clock_valid(ffi.Pointer<VdAudioRenderer> renderer) {
+    return _vd_audio_renderer_clock_valid(renderer);
+  }
+
+  late final _vd_audio_renderer_clock_validPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdAudioRenderer>)>
+      >('vd_audio_renderer_clock_valid');
+  late final _vd_audio_renderer_clock_valid = _vd_audio_renderer_clock_validPtr
+      .asFunction<bool Function(ffi.Pointer<VdAudioRenderer>)>();
+
+  /// Fills `out` with `frames` of interleaved stereo, writing silence where the
+  /// timeline has none. This is what the device callback calls; tests call it
+  /// directly, which is why the device is not baked into the renderer.
+  int vd_audio_renderer_pull(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    ffi.Pointer<ffi.Float> out,
+    int frames,
+  ) {
+    return _vd_audio_renderer_pull(renderer, out, frames);
+  }
+
+  late final _vd_audio_renderer_pullPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioRenderer>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_renderer_pull');
+  late final _vd_audio_renderer_pull = _vd_audio_renderer_pullPtr
+      .asFunction<
+        int Function(ffi.Pointer<VdAudioRenderer>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  void vd_audio_renderer_stats(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    ffi.Pointer<VdAudioStats> out,
+  ) {
+    return _vd_audio_renderer_stats(renderer, out);
+  }
+
+  late final _vd_audio_renderer_statsPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdAudioRenderer>,
+            ffi.Pointer<VdAudioStats>,
+          )
+        >
+      >('vd_audio_renderer_stats');
+  late final _vd_audio_renderer_stats = _vd_audio_renderer_statsPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdAudioRenderer>, ffi.Pointer<VdAudioStats>)
+      >();
+
+  ffi.Pointer<VdAudioDevice> vd_audio_device_open(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_audio_device_open(renderer, out_result);
+  }
+
+  late final _vd_audio_device_openPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdAudioDevice> Function(
+            ffi.Pointer<VdAudioRenderer>,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_audio_device_open');
+  late final _vd_audio_device_open = _vd_audio_device_openPtr
+      .asFunction<
+        ffi.Pointer<VdAudioDevice> Function(
+          ffi.Pointer<VdAudioRenderer>,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  void vd_audio_device_close(ffi.Pointer<VdAudioDevice> device) {
+    return _vd_audio_device_close(device);
+  }
+
+  late final _vd_audio_device_closePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdAudioDevice>)>
+      >('vd_audio_device_close');
+  late final _vd_audio_device_close = _vd_audio_device_closePtr
+      .asFunction<void Function(ffi.Pointer<VdAudioDevice>)>();
+
+  int vd_audio_device_start(ffi.Pointer<VdAudioDevice> device) {
+    return _vd_audio_device_start(device);
+  }
+
+  late final _vd_audio_device_startPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdAudioDevice>)>
+      >('vd_audio_device_start');
+  late final _vd_audio_device_start = _vd_audio_device_startPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioDevice>)>();
+
+  int vd_audio_device_stop(ffi.Pointer<VdAudioDevice> device) {
+    return _vd_audio_device_stop(device);
+  }
+
+  late final _vd_audio_device_stopPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdAudioDevice>)>
+      >('vd_audio_device_stop');
+  late final _vd_audio_device_stop = _vd_audio_device_stopPtr
+      .asFunction<int Function(ffi.Pointer<VdAudioDevice>)>();
 }
 
 /// An instant or a duration, in ticks. Signed: negative offsets are legal.
@@ -962,6 +1479,8 @@ final class VdLayer extends ffi.Struct {
 
 final class VdEngine extends ffi.Opaque {}
 
+final class VdAudioRenderer extends ffi.Opaque {}
+
 enum VdPlaybackState {
   VD_STATE_IDLE(0),
   VD_STATE_PLAYING(1),
@@ -1025,6 +1544,15 @@ final class VdTimeline extends ffi.Struct {
   external int clip_count;
 }
 
+final class VdEngineOptions extends ffi.Struct {
+  /// 0 to skip opening an output device. The audio path still decodes and
+  /// mixes, and vd_engine_audio_renderer can still be pulled — which is how
+  /// the tests exercise A/V sync without making a noise, and how a headless
+  /// export will avoid touching the sound card.
+  @ffi.Int32()
+  external int audio_output;
+}
+
 typedef VdFrameCallbackFunction = ffi.Void Function(
   ffi.Pointer<ffi.Void> context,
 );
@@ -1070,8 +1598,60 @@ final class VdEngineStats extends ffi.Struct {
 
   @ffi.Double()
   external double last_seek_ms;
+
+  /// True when the timeline has audio, and therefore when the audio clock is
+  /// the one driving playback.
+  @ffi.Bool()
+  external bool audio_available;
+
+  /// Times the device asked for audio that had not been decoded yet. Unlike a
+  /// late video frame, every one of these is audible.
+  @ffi.Int64()
+  external int audio_underruns;
+
+  @ffi.Int32()
+  external int audio_buffered_frames;
+
+  /// Renders that happened because something asked for one rather than because
+  /// the playhead reached a new frame. A seek is one; a steady stream of them
+  /// during playback means something is spuriously repainting.
+  @ffi.Int64()
+  external int forced_renders;
+
+  /// Times the playhead was seen to move backwards during playback. The audio
+  /// clock and the wall clock do not tick at quite the same rate, so a position
+  /// read that falls back from one to the other can dip — and a dip across a
+  /// frame boundary would republish a frame that has already been shown.
+  @ffi.Int64()
+  external int clock_regressions;
 }
+
+final class VdAudioSource extends ffi.Opaque {}
+
+final class VdAudioRing extends ffi.Opaque {}
+
+final class VdAudioStats extends ffi.Struct {
+  @ffi.Int64()
+  external int frames_rendered;
+
+  /// Times the device asked for audio that had not been decoded yet. Any
+  /// number above zero here is audible.
+  @ffi.Int64()
+  external int underruns;
+
+  @ffi.Int32()
+  external int buffered_frames;
+
+  @ffi.Int32()
+  external int open_sources;
+}
+
+final class VdAudioDevice extends ffi.Opaque {}
 
 const int VD_TICKS_PER_SECOND = 120000;
 
 const int VD_NANOS_PER_SECOND = 1000000000;
+
+const int VD_AUDIO_SAMPLE_RATE = 48000;
+
+const int VD_AUDIO_CHANNELS = 2;

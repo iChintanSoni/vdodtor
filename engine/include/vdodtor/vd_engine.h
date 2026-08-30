@@ -24,6 +24,7 @@ extern "C" {
 #endif
 
 typedef struct VdEngine VdEngine;
+struct VdAudioRenderer;
 
 typedef enum {
   VD_STATE_IDLE = 0,
@@ -57,7 +58,23 @@ typedef struct {
   int32_t clip_count;
 } VdTimeline;
 
+typedef struct {
+  // 0 to skip opening an output device. The audio path still decodes and
+  // mixes, and vd_engine_audio_renderer can still be pulled — which is how
+  // the tests exercise A/V sync without making a noise, and how a headless
+  // export will avoid touching the sound card.
+  int32_t audio_output;
+} VdEngineOptions;
+
+VD_EXPORT VdEngineOptions vd_engine_default_options(void);
+
 VD_EXPORT VdEngine* vd_engine_create(int32_t* out_result);
+VD_EXPORT VdEngine* vd_engine_create_with_options(VdEngineOptions options,
+                                                  int32_t* out_result);
+
+// The engine's audio renderer, for pulling frames when no device is attached.
+// Owned by the engine; valid until vd_engine_destroy.
+VD_EXPORT struct VdAudioRenderer* vd_engine_audio_renderer(VdEngine* engine);
 
 // Stops the render thread, waits for it, and only then tears anything down.
 // The S1 spike freed the engine while GPU completion handlers still held it,
@@ -113,6 +130,25 @@ typedef struct {
   int32_t open_decoders;
   int32_t active_layers;
   double last_seek_ms;
+
+  // True when the timeline has audio, and therefore when the audio clock is
+  // the one driving playback.
+  bool audio_available;
+  // Times the device asked for audio that had not been decoded yet. Unlike a
+  // late video frame, every one of these is audible.
+  int64_t audio_underruns;
+  int32_t audio_buffered_frames;
+
+  // Renders that happened because something asked for one rather than because
+  // the playhead reached a new frame. A seek is one; a steady stream of them
+  // during playback means something is spuriously repainting.
+  int64_t forced_renders;
+
+  // Times the playhead was seen to move backwards during playback. The audio
+  // clock and the wall clock do not tick at quite the same rate, so a position
+  // read that falls back from one to the other can dip — and a dip across a
+  // frame boundary would republish a frame that has already been shown.
+  int64_t clock_regressions;
 } VdEngineStats;
 
 VD_EXPORT void vd_engine_stats(VdEngine* engine, VdEngineStats* out);

@@ -16,11 +16,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > crash recovery — 128 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
-> The preview pipeline is closed end to end: document → render list → decode → Metal
-> composite → Flutter texture. Measured in the running app: 30 fps with 0 late frames,
-> 1.0 ms GPU composite, 13 ms scrub.
+> Preview plays with sound. Measured in the running app at 1920x1080/30, audio-driven:
+> **30.0 fps exactly, 0 late frames, 0 underruns**, 1.2 ms GPU composite, ~29 ms scrub,
+> media time accurate to 1% of wall time over three seconds.
 >
-> Next: audio out and the A/V sync clock, then bind the S2 timeline to the real document.
+> Next: the app. Project create/open/recents, import, and binding the S2 timeline to the
+> real document — everything left in M1 is UI.
 >
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
@@ -137,8 +138,16 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       Sessions are pooled per clip (not per path — two clips from one file need separate
       decode positions), capped at 8 open, LRU-evicted, and carried across timeline edits
       so nudging a clip does not reopen every decoder
-- [ ] Audio: decode → resample to 48 kHz stereo → device output (single-track mix)
-- [ ] A/V sync clock
+- [x] Audio: decode → resample to 48 kHz stereo → device output (single-track mix)
+      — the shape is dictated by one fact: the device calls back on a real-time thread
+      that may not lock, allocate or touch a file. So decoding happens on an ordinary
+      thread and reaches the device through a lock-free SPSC ring. Seeks land 200 ms
+      early and decode into the target, because a cold AAC decoder and a warm one
+      produce different samples for the same packet, and scrubbing has to be repeatable
+- [x] A/V sync clock — audio is the master whenever there is audio being consumed.
+      A video frame a millisecond late is invisible; audio cannot be stretched or
+      skipped without the listener hearing it. The clock is the device's own frame
+      counter, so drift is impossible by construction rather than corrected for
 - [x] **GPU compositor** (pulled forward from M2 — preview needs it) — one compositor for
       preview and export, precompiled `.metallib` embedded in the binary, N alpha-blended
       layers, contain/cover/stretch fit, rotation. The YCbCr matrix is read from the

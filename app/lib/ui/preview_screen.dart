@@ -86,10 +86,26 @@ class _PreviewScreenState extends State<PreviewScreen> {
     }
 
     engine.seek(0);
+    // Measure the delta across the play, not the counters since launch: the
+    // seek pass above already rendered a dozen frames, and folding those into
+    // a frame rate reports a number nothing actually ran at.
+    final before = engine.stats;
+    final clock = Stopwatch()..start();
     engine.play();
     await Future<void>.delayed(const Duration(seconds: 3));
     final playing = engine.stats;
+    clock.stop();
     engine.pause();
+
+    final rendered = playing.framesPresented - before.framesPresented;
+    final seconds = clock.elapsedMilliseconds / 1000.0;
+    stdout.writeln('[selftest] rendered $rendered frames in '
+        '${seconds.toStringAsFixed(2)}s wall = '
+        '${(rendered / seconds).toStringAsFixed(1)} fps, '
+        'forced=${playing.forcedRenders - before.forcedRenders} '
+        'regressions=${playing.clockRegressions - before.clockRegressions} '
+        'media advanced '
+        '${((playing.positionTicks - before.positionTicks) / 120000).toStringAsFixed(3)}s');
 
     stdout.writeln('[selftest] played 3s: '
         'state=${playing.state.name} '
@@ -97,6 +113,9 @@ class _PreviewScreenState extends State<PreviewScreen> {
         'gpu=${playing.compositeMsAvg.toStringAsFixed(2)}ms '
         'presented=${playing.framesPresented} '
         'late=${playing.framesLate} '
+        'audio=${playing.audioAvailable} '
+        'underruns=${playing.audioUnderruns} '
+        'buffered=${playing.audioBufferedFrames} '
         'seek=${playing.lastSeekMs.toStringAsFixed(1)}ms '
         'decoders=${playing.openDecoders} '
         'layers=${playing.activeLayers} '
@@ -305,6 +324,12 @@ class _StatsStrip extends StatelessWidget {
       'gpu': s == null ? '—' : '${s.compositeMsAvg.toStringAsFixed(2)} ms',
       'seek': s == null ? '—' : '${s.lastSeekMs.toStringAsFixed(1)} ms',
       'late': '${s?.framesLate ?? 0}',
+      'audio': s == null
+          ? '—'
+          : (s.audioAvailable
+              ? 'clock · ${s.audioBufferedFrames} buffered'
+              : 'none'),
+      'underruns': '${s?.audioUnderruns ?? 0}',
       'decoders': '${s?.openDecoders ?? 0}',
       'layers': '${s?.activeLayers ?? 0}',
     };

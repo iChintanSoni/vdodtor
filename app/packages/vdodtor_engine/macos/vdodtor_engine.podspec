@@ -69,7 +69,13 @@ drives it through.
       "${CMAKE_BIN}" --build "${BUILD_DIR}" --target vdodtor_engine
     SH
     :execution_position => :before_compile,
-    :output_files => ["#{engine_build}/libvdodtor_engine.a"],
+    # Deliberately no output_files. Declaring the archive as an output without
+    # also declaring every engine source as an input makes Xcode consider the
+    # phase up to date as soon as the file exists — so it stops running, and
+    # engine changes silently never reach the app. Listing every source as an
+    # input would work until someone adds a file and forgets. Running the
+    # script every time and letting CMake decide what is stale costs a few
+    # hundred milliseconds and cannot go quietly wrong.
   }
 
   # The FFmpeg dylibs ride inside this framework rather than the app bundle, so

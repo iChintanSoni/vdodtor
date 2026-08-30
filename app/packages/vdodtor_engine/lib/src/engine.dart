@@ -74,6 +74,11 @@ class EngineStats {
     required this.openDecoders,
     required this.activeLayers,
     required this.lastSeekMs,
+    required this.audioAvailable,
+    required this.audioUnderruns,
+    required this.audioBufferedFrames,
+    required this.forcedRenders,
+    required this.clockRegressions,
   });
 
   final int framesPresented;
@@ -90,6 +95,23 @@ class EngineStats {
   final int openDecoders;
   final int activeLayers;
   final double lastSeekMs;
+
+  /// True when the timeline has audio, and therefore when the audio clock is
+  /// what playback is following.
+  final bool audioAvailable;
+
+  /// Times the device asked for audio that had not been decoded yet. Unlike a
+  /// late video frame, every one of these is audible.
+  final int audioUnderruns;
+
+  final int audioBufferedFrames;
+
+  /// Renders that something asked for rather than the playhead reaching a new
+  /// frame. A steady stream during playback means spurious repainting.
+  final int forcedRenders;
+
+  /// Times the playhead was seen to move backwards during playback.
+  final int clockRegressions;
 }
 
 /// Drives the native preview engine and owns its Flutter texture.
@@ -222,6 +244,11 @@ class PreviewEngine extends ChangeNotifier {
         openDecoders: 0,
         activeLayers: 0,
         lastSeekMs: 0,
+        audioAvailable: false,
+        audioUnderruns: 0,
+        audioBufferedFrames: 0,
+        forcedRenders: 0,
+        clockRegressions: 0,
       );
     }
     final out = calloc<VdEngineStats>();
@@ -241,6 +268,11 @@ class PreviewEngine extends ChangeNotifier {
         openDecoders: s.open_decoders,
         activeLayers: s.active_layers,
         lastSeekMs: s.last_seek_ms,
+        audioAvailable: s.audio_available,
+        audioUnderruns: s.audio_underruns,
+        audioBufferedFrames: s.audio_buffered_frames,
+        forcedRenders: s.forced_renders,
+        clockRegressions: s.clock_regressions,
       );
     } finally {
       calloc.free(out);
