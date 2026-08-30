@@ -90,42 +90,91 @@ final class InsertClip extends EditCommand {
     return project.replaceTrack(track.withClips([...track.clips, clip]));
   }
 }
-
-/// Slides a clip along its track. Magnetic tracks repack afterwards, which
-/// turns a drag past a neighbour into a reorder.
+/// Puts a clip somewhere: along its lane, and — with [toTrackId] — onto a
+/// different one.
+///
+/// One command for both axes rather than two, because a drag moves in both at
+/// once and two commands would coalesce into two undo entries for one gesture.
+///
+/// Magnetic tracks repack afterwards, which turns a drag past a neighbour into
+/// a reorder.
 final class MoveClip extends EditCommand {
-  const MoveClip(this.clipId, this.newStart);
+  const MoveClip(this.clipId, this.newStart, {this.toTrackId});
 
   final String clipId;
   final Tick newStart;
+
+  /// The lane the clip should end up on. Null leaves it where it is.
+  final String? toTrackId;
 
   @override
   String get label => 'Move clip';
 
   @override
   Project apply(Project project) {
-    final track = project.trackOfClip(clipId);
-    if (track == null) throw EditException('no clip $clipId');
-    final clip = track.clipById(clipId)!;
-
+    final from = project.trackOfClip(clipId);
+    if (from == null) throw EditException('no clip $clipId');
+    final clip = from.clipById(clipId)!;
     final target = newStart.raw < 0 ? Tick.zero : newStart;
-    if (target == clip.start && !track.isMagnetic) return project;
 
-    final moved = clip.movedTo(target);
-
-    if (track.isMagnetic) {
-      // The moved clip may overlap its neighbours right now; repackedFrom is
-      // what resolves that into an order and closes the lane up.
-      final others = track.clips.where((c) => c.id != clipId).toList();
-      return project.replaceTrack(track.repackedFrom([...others, moved]));
+    if (toTrackId != null && toTrackId != from.id) {
+      return _moveAcross(project, from, clip, target);
     }
 
-    for (final other in track.clips) {
+    if (target == clip.start && !from.isMagnetic) return project;
+    final moved = clip.movedTo(target);
+
+    if (from.isMagnetic) {
+      // The moved clip may overlap its neighbours right now; repackedFrom is
+      // what resolves that into an order and closes the lane up.
+      final others = from.clips.where((c) => c.id != clipId).toList();
+      return project.replaceTrack(from.repackedFrom([...others, moved]));
+    }
+
+    for (final other in from.clips) {
       if (other.id == clipId) continue;
       if (other.span.overlaps(moved.span)) return project; // refuse, silently
     }
-    final next = track.clips.map((c) => c.id == clipId ? moved : c).toList();
-    return project.replaceTrack(track.withClips(next));
+    final next = from.clips.map((c) => c.id == clipId ? moved : c).toList();
+    return project.replaceTrack(from.withClips(next));
+  }
+
+  Project _moveAcross(Project project, Track from, Clip clip, Tick target) {
+    final to = project.trackById(toTrackId!);
+    if (to == null) throw EditException('no track $toTrackId');
+    if (!accepts(to, project.assetFor(clip))) return project;
+
+    final moved = clip.movedTo(target);
+    final emptied = from
+        .withClips(from.clips.where((c) => c.id != clipId).toList())
+        .repacked();
+    var next = project.replaceTrack(emptied);
+
+    final destination = next.trackById(to.id)!;
+    if (destination.isMagnetic) {
+      return next.replaceTrack(
+          destination.repackedFrom([...destination.clips, moved]));
+    }
+    // A free-form lane will not take an overlapping clip. Refusing the whole
+    // move keeps the clip where it was, which reads as the lane declining it
+    // rather than as the clip disappearing.
+    for (final other in destination.clips) {
+      if (other.span.overlaps(moved.span)) return project;
+    }
+    next = next
+        .replaceTrack(destination.withClips([...destination.clips, moved]));
+    return next;
+  }
+
+  /// Whether a clip could land on [track].
+  ///
+  /// Sound goes on audio lanes and pictures go on visual ones. Detaching a
+  /// video clip's audio onto an audio lane is a real edit, but it is a
+  /// different one — it makes a new clip rather than moving this one.
+  static bool accepts(Track track, MediaAsset? asset) {
+    if (track.locked) return false;
+    if (asset == null) return track.kind.isVisual;
+    return track.kind.isVisual ? asset.probe.hasVideo : !asset.probe.hasVideo;
   }
 
   /// A drag is one undo entry: fold consecutive moves of the same clip.
@@ -133,7 +182,6 @@ final class MoveClip extends EditCommand {
   EditCommand? mergeWith(EditCommand next) =>
       next is MoveClip && next.clipId == clipId ? next : null;
 }
-
 /// Moves one edge of a clip without moving the other.
 ///
 /// A trim is not a resize. The head edge takes [Clip.sourceIn] with it, so the
@@ -415,7 +463,12 @@ final class DeleteClips extends EditCommand {
   }
 }
 
-/// Adds an empty track. Used when a drop needs a lane that does not exist yet.
+/// Adds an empty track.
+///
+/// With no [at], the lane goes where its kind belongs: a new overlay lands
+/// above every visual lane already there and below the audio ones. That is not
+/// cosmetic — list order is compositing order, so where a lane is inserted
+/// decides what it renders on top of.
 final class AddTrack extends EditCommand {
   const AddTrack(this.track, {this.at});
 
@@ -430,7 +483,35 @@ final class AddTrack extends EditCommand {
     if (project.trackById(track.id) != null) {
       throw EditException('track ${track.id} is already in the project');
     }
-    return project.addTrack(track, at: at);
+    if (!project.canAddTrackOfKind(track.kind)) {
+      throw EditException('a project may hold at most '
+          '${Project.maxTracksOfKind(track.kind)} ${track.kind.name} tracks');
+    }
+    return project.addTrack(track,
+        at: at ?? project.insertIndexFor(track.kind));
+  }
+}
+
+/// Removes a track, and everything on it.
+///
+/// The main track cannot go: it is the one lane the document guarantees, and
+/// half the model asks for it by name.
+final class RemoveTrack extends EditCommand {
+  const RemoveTrack(this.trackId);
+
+  final String trackId;
+
+  @override
+  String get label => 'Remove track';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackById(trackId);
+    if (track == null) return project;
+    if (track.kind == TrackKind.main) {
+      throw EditException('the main track cannot be removed');
+    }
+    return project.removeTrack(trackId);
   }
 }
 

@@ -203,6 +203,37 @@ final class Project {
     return replaceTrack(edit(track));
   }
 
+  /// How many lanes of [kind] the project has.
+  int trackCountOfKind(TrackKind kind) =>
+      tracks.where((t) => t.kind == kind).length;
+
+  /// The most lanes of each kind a project may hold (product brief §4):
+  /// one magnetic main video track, three parallel overlays, six audio.
+  static int maxTracksOfKind(TrackKind kind) => switch (kind) {
+        TrackKind.main => 1,
+        TrackKind.overlay => 3,
+        TrackKind.audio => 6,
+        // Text lanes arrive in M3 and have no stated limit yet.
+        TrackKind.text => 64,
+      };
+
+  bool canAddTrackOfKind(TrackKind kind) =>
+      trackCountOfKind(kind) < maxTracksOfKind(kind);
+
+  /// Where a new lane of [kind] belongs in [tracks].
+  ///
+  /// List order *is* compositing order — later renders on top — so this is not
+  /// a cosmetic decision. A new overlay goes above every visual lane already
+  /// there and below the audio ones, which composite nothing.
+  int insertIndexFor(TrackKind kind) {
+    if (!kind.isVisual) return tracks.length;
+    var index = 0;
+    for (var i = 0; i < tracks.length; i++) {
+      if (tracks[i].kind.isVisual) index = i + 1;
+    }
+    return index;
+  }
+
   Project addTrack(Track track, {int? at}) {
     final next = List<Track>.of(tracks);
     next.insert(at ?? next.length, track);

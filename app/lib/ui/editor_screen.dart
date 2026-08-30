@@ -297,8 +297,7 @@ class _EditorScreenState extends State<EditorScreen> {
                       timeline: _timeline!,
                     ),
                     SizedBox(
-                      height:
-                          timelineHeightFor(_store.project.tracks.length),
+                      height: timelineHeightFor(_store.project.tracks.length),
                       child: TimelineView(controller: _timeline!),
                     ),
                     _StatsStrip(stats: _stats, store: _store),
@@ -596,6 +595,16 @@ class _TransportBar extends StatelessWidget {
           Text('  /  ${timecode(duration, fps)}',
               style: vdMono.copyWith(color: VdColors.dim)),
           const Spacer(),
+          IconButton(
+            tooltip: timeline.canAddOverlayTrack
+                ? 'Add an overlay track'
+                : 'A project may have three overlay tracks',
+            icon: const Icon(Icons.layers_outlined, size: 20),
+            onPressed: timeline.canAddOverlayTrack
+                ? timeline.addOverlayTrack
+                : null,
+          ),
+          const SizedBox(width: 4),
           IconButton(
             tooltip: 'Zoom out',
             icon: const Icon(Icons.zoom_out, size: 20),

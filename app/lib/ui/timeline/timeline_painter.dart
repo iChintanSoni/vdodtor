@@ -57,13 +57,14 @@ class TimelinePainter extends CustomPainter {
     canvas.drawRect(Offset.zero & size, Paint()..color = VdColors.rail);
 
     final step = geometry.rulerStep(project.format.frameRate);
+    final lanes = controller.lanes;
     _paintGrid(canvas, size, step);
 
     canvas.save();
     canvas.clipRect(Rect.fromLTWH(TimelineGeometry.headerWidth, 0,
         size.width - TimelineGeometry.headerWidth, size.height));
-    for (var i = 0; i < project.tracks.length; i++) {
-      _paintTrack(canvas, size, i, project.tracks[i]);
+    for (var i = 0; i < lanes.length; i++) {
+      _paintTrack(canvas, size, i, lanes[i]);
     }
     _paintRulerLabels(canvas, size, step);
     _paintSnapGuide(canvas, size);
@@ -276,8 +277,9 @@ class TimelinePainter extends CustomPainter {
       Paint()..color = VdColors.panel,
     );
 
-    for (var i = 0; i < controller.project.tracks.length; i++) {
-      final track = controller.project.tracks[i];
+    final lanes = controller.lanes;
+    for (var i = 0; i < lanes.length; i++) {
+      final track = lanes[i];
       final top = geometry.topOfTrack(i);
       if (top > size.height) break;
 

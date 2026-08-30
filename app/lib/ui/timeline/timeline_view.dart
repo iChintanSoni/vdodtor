@@ -1,8 +1,10 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/widgets.dart';
 
+import '../../model/track.dart';
+import '../theme.dart';
 import 'timeline_controller.dart';
 import 'timeline_painter.dart';
 import 'timeline_geometry.dart';
@@ -107,12 +109,21 @@ class _TimelineViewState extends State<TimelineView>
             onPointerSignal: _onSignal,
             child: MouseRegion(
               cursor: SystemMouseCursors.basic,
-              child: RepaintBoundary(
-                child: CustomPaint(
-                  painter: TimelinePainter(widget.controller),
-                  size: Size(constraints.maxWidth, constraints.maxHeight),
-                  child: const SizedBox.expand(),
-                ),
+              child: Stack(
+                children: [
+                  RepaintBoundary(
+                    child: CustomPaint(
+                      painter: TimelinePainter(widget.controller),
+                      size: Size(constraints.maxWidth, constraints.maxHeight),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                  // Real widgets over the painted headers. The names and marks
+                  // stay on the canvas — they are cheap and never interactive —
+                  // but a button has to be a button, for its hit box, its
+                  // cursor and its tooltip.
+                  _LaneControls(controller: widget.controller),
+                ],
               ),
             ),
           );
@@ -120,7 +131,83 @@ class _TimelineViewState extends State<TimelineView>
       );
 }
 
+/// A remove button per lane, laid over the header column.
+class _LaneControls extends StatelessWidget {
+  const _LaneControls({required this.controller});
+
+  final TimelineController controller;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: controller,
+        builder: (context, _) {
+          final lanes = controller.lanes;
+          return Positioned(
+            left: 0,
+            top: 0,
+            width: TimelineGeometry.headerWidth,
+            bottom: 0,
+            child: Stack(
+              children: [
+                for (var i = 0; i < lanes.length; i++)
+                  if (lanes[i].kind != TrackKind.main)
+                    Positioned(
+                      left: TimelineGeometry.headerWidth - 26,
+                      top: controller.geometry.topOfTrack(i) +
+                          (TimelineGeometry.trackHeight - 22) / 2,
+                      width: 22,
+                      height: 22,
+                      child: _RemoveLaneButton(
+                        track: lanes[i],
+                        onRemove: () => controller.removeTrack(lanes[i].id),
+                      ),
+                    ),
+              ],
+            ),
+          );
+        },
+      );
+}
+
+class _RemoveLaneButton extends StatefulWidget {
+  const _RemoveLaneButton({required this.track, required this.onRemove});
+
+  final Track track;
+  final VoidCallback onRemove;
+
+  @override
+  State<_RemoveLaneButton> createState() => _RemoveLaneButtonState();
+}
+
+class _RemoveLaneButtonState extends State<_RemoveLaneButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final clips = widget.track.clips.length;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: Tooltip(
+        message: clips == 0
+            ? 'Remove ${widget.track.name}'
+            : 'Remove ${widget.track.name} and its '
+                '$clips clip${clips == 1 ? '' : 's'}',
+        waitDuration: const Duration(milliseconds: 500),
+        child: GestureDetector(
+          onTap: widget.onRemove,
+          child: Opacity(
+            opacity: _hovered ? 1 : 0.35,
+            child: const Icon(Icons.close, size: 14, color: VdColors.dim),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// How tall the timeline wants to be for [trackCount] lanes, bounded so a
 /// project with many tracks does not eat the preview.
 double timelineHeightFor(int trackCount) =>
-    TimelineGeometry.heightFor(trackCount).clamp(120.0, 300.0);
+    TimelineGeometry.heightFor(trackCount).clamp(120.0, 320.0);

@@ -160,9 +160,10 @@ void main() {
       store2.run(InsertClip(overlayTrackId,
           clipOf('ov', 'm1', start: secs(4), duration: secs(2))));
 
-      c.pointerDown(Offset(c.geometry.xOfTick(secs(5)), c.geometry.topOfTrack(2) + 10));
-      c.pointerMove(Offset(c.geometry.xOfTick(secs(5)) - 900,
-          c.geometry.topOfTrack(2) + 10));
+      final lane = c.lanes.indexWhere((t) => t.id == overlayTrackId);
+      final y = c.geometry.topOfTrack(lane) + 10;
+      c.pointerDown(Offset(c.geometry.xOfTick(secs(5)), y));
+      c.pointerMove(Offset(c.geometry.xOfTick(secs(5)) - 900, y));
       c.pointerUp();
 
       expect(store2.project.clipById('ov')!.start, Tick.zero);
@@ -262,7 +263,9 @@ void main() {
       store2.run(InsertClip(overlayTrackId,
           clipOf('ov', 'm1', start: secs(12), duration: secs(1))));
 
-      final y = c.geometry.topOfTrack(2) + 10;
+      final y = c.geometry.topOfTrack(
+              c.lanes.indexWhere((t) => t.id == overlayTrackId)) +
+          10;
       final grab = c.geometry.xOfTick(secs(12.5));
       c.pointerDown(Offset(grab, y));
       // Aim so the clip's *end* lands four pixels past the cut at 8 s: near
