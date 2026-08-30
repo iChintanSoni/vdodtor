@@ -98,6 +98,7 @@ Map<String, Object?> _trackToJson(Track t) => {
 /// Only what differs from the identity, so a transform someone nudged in one
 /// axis does not write out eleven numbers.
 Map<String, Object?> _transformToJson(ClipTransform t) => {
+      if (t.fit != ClipFit.blurFill) 'fit': t.fit.name,
       if (t.offsetX != 0) 'offsetX': t.offsetX,
       if (t.offsetY != 0) 'offsetY': t.offsetY,
       if (t.scale != 1) 'scale': t.scale,
@@ -113,6 +114,11 @@ Map<String, Object?> _transformToJson(ClipTransform t) => {
 
 ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
     ClipTransform(
+      // A file written before fit modes existed gets the default, which is
+      // the whole point of the default being the one most clips want.
+      fit: json['fit'] == null
+          ? ClipFit.blurFill
+          : _enum(ClipFit.values, json, 'fit', '$where.fit'),
       offsetX: _double(json, 'offsetX', 0),
       offsetY: _double(json, 'offsetY', 0),
       scale: _double(json, 'scale', 1),

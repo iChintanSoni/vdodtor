@@ -3,6 +3,24 @@ import 'package:flutter/foundation.dart';
 import 'media.dart';
 import 'time.dart';
 
+/// What fills the frame when a clip's shape does not match the project's.
+enum ClipFit {
+  /// The whole picture, with the space around it filled by a blurred,
+  /// enlarged copy of itself. The default, because black bars make a clip
+  /// look like a mistake and this makes it look deliberate.
+  blurFill,
+
+  /// The whole picture, on black.
+  contain,
+
+  /// Fills the frame; the edges that do not fit are cropped away.
+  cover,
+
+  /// Fills the frame by distorting the picture. Rarely what anyone wants,
+  /// and never a default.
+  stretch,
+}
+
 /// Where a clip sits inside the frame, and how much of it shows.
 ///
 /// Everything here is relative rather than absolute: offsets are fractions of
@@ -17,6 +35,7 @@ import 'time.dart';
 @immutable
 final class ClipTransform {
   const ClipTransform({
+    this.fit = ClipFit.blurFill,
     this.offsetX = 0,
     this.offsetY = 0,
     this.scale = 1,
@@ -33,6 +52,9 @@ final class ClipTransform {
   /// A clip that has not been touched. The default for every clip, and the
   /// value serialisation leaves out of the file entirely.
   static const identity = ClipTransform();
+
+  /// How the picture fills a frame it does not match.
+  final ClipFit fit;
 
   /// Offset from centre, as a fraction of the output's width and height.
   final double offsetX;
@@ -65,6 +87,7 @@ final class ClipTransform {
   bool get isIdentity => this == identity;
 
   ClipTransform copyWith({
+    ClipFit? fit,
     double? offsetX,
     double? offsetY,
     double? scale,
@@ -78,6 +101,7 @@ final class ClipTransform {
     bool? flipVertical,
   }) =>
       ClipTransform(
+        fit: fit ?? this.fit,
         offsetX: offsetX ?? this.offsetX,
         offsetY: offsetY ?? this.offsetY,
         scale: scale ?? this.scale,
@@ -94,6 +118,7 @@ final class ClipTransform {
   @override
   bool operator ==(Object other) =>
       other is ClipTransform &&
+      other.fit == fit &&
       other.offsetX == offsetX &&
       other.offsetY == offsetY &&
       other.scale == scale &&
@@ -107,7 +132,7 @@ final class ClipTransform {
       other.flipVertical == flipVertical;
 
   @override
-  int get hashCode => Object.hash(offsetX, offsetY, scale, rotationDegrees,
+  int get hashCode => Object.hash(fit, offsetX, offsetY, scale, rotationDegrees,
       cropLeft, cropTop, cropRight, cropBottom, opacity, flipHorizontal,
       flipVertical);
 

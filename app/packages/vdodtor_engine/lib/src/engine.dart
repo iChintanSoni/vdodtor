@@ -11,7 +11,10 @@ import 'native.dart';
 enum PlaybackState { idle, playing, paused, ended }
 
 /// How a clip is placed when its aspect does not match the project's.
-enum FitMode { contain, cover, stretch }
+///
+/// Order matches `VdFitMode` in vd_compositor.h — the index crosses the FFI
+/// boundary as an integer, so these may be appended to and never reordered.
+enum FitMode { contain, cover, stretch, blurFill }
 
 /// Where a clip sits inside the frame, and how much of it shows.
 ///

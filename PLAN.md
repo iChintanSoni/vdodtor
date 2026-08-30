@@ -14,7 +14,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
-> crash recovery, import — 409 Dart tests), and the **media probe** through the full
+> crash recovery, import — 416 Dart tests), and the **media probe** through the full
 > Dart → FFI → engine → FFmpeg chain, verified running under the App Sandbox.
 >
 > Preview plays with sound, and someone has now watched it do it. Measured in the running
@@ -53,7 +53,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > A selection is a *set*: ⌘-click to add, ⌘A for everything, and cut, copy and paste move
 > clips around with their source windows and their spacing intact. Overlay lanes take clips
 > dragged onto them, and every clip carries a transform — offset, scale, rotation, crop,
-> opacity, flip — so a picture-in-picture is a thing the editor can now make.
+> opacity, flip — so a picture-in-picture is a thing the editor can now make. A clip whose
+> shape does not match the project gets **blur fill** by default rather than black bars.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -359,8 +360,27 @@ audio, scrub anywhere, quit and reopen with everything restored.
       Verified headlessly rather than by hand: a project with an overlay clip at 35% scale
       offset into the corner renders as a **picture-in-picture** over the main track — which
       is the shape this milestone's exit criteria asks for
-- [ ] GPU compositor: multi-layer render graph, alpha blend, fit modes
+- [x] GPU compositor: multi-layer render graph, alpha blend, fit modes
       (blur-fill default / fit / fill / stretch)
+      — the multi-layer pass and premultiplied alpha have been there since M1; what this
+      bullet was really missing was **blur fill**, and it is the default because black bars
+      make a clip look like a mistake where a blurred backdrop makes it look deliberate.
+      It is the first thing here that needs more than one pass: the clip is drawn
+      cover-fitted into a small offscreen texture, blurred across and then down — separable,
+      because two cheap passes beat one dear one — and drawn under the contained picture.
+      The blur runs at an eighth of the output: a background about to become a wash does not
+      need four million pixels, and every one of them costs a tap in each direction.
+      Two things keep it honest. A clip that already reaches every edge takes the ordinary
+      path, so the common case — a 16:9 clip in a 16:9 project — pays one comparison and
+      nothing else. And the backdrop ignores the clip's own scale and offset, because moving
+      a clip should not drag its backdrop around with it.
+      Five pixel tests: something in the bars, contain still leaving them black (the
+      contrast that makes the first one mean anything), the picture inside the frame
+      unchanged to the pixel, no extra work when there are no bars, and the background
+      actually being *blurred* — measured as the biggest step between neighbouring samples,
+      which a sharp test pattern would fail by a mile.
+      Confirmed on a real render: a portrait clip in a 16:9 project comes out with its
+      pillars filled
 - [ ] Golden-frame tests for the compositor in CI (fixed scenes, fixed timestamps, strict tolerance)
 - [ ] Audio: 6 tracks; per-clip volume, mute, fade in/out; detach audio from video
 - [ ] Waveforms rendered from multi-resolution peak files at every zoom level

@@ -1,5 +1,7 @@
 #include "vdodtor/vd_compositor.h"
 
+#include <algorithm>
+
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
@@ -33,7 +35,7 @@ struct LayerUniforms {
   uint32_t flip_v;
   float kr;
   float kb;
-  float pad[2];
+  float blur_step[2];
 };
 
 // A transform with its "unset means identity" fields filled in.
@@ -114,6 +116,15 @@ struct VdCompositor {
   id<MTLCommandQueue> queue = nil;
   id<MTLRenderPipelineState> pipeline_nv12 = nil;
   id<MTLRenderPipelineState> pipeline_yuv420p = nil;
+  id<MTLRenderPipelineState> pipeline_blur = nil;
+  id<MTLRenderPipelineState> pipeline_texture = nil;
+
+  // Ping-pong pair for the blur-fill background, at a fraction of the output
+  // size. Allocated on first use: most projects never letterbox anything.
+  id<MTLTexture> blur_a = nil;
+  id<MTLTexture> blur_b = nil;
+  int32_t blur_width = 0;
+  int32_t blur_height = 0;
 
   CVPixelBufferRef output = nullptr;
   id<MTLTexture> output_texture = nil;
@@ -127,7 +138,8 @@ struct VdCompositor {
 
 static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
                                                 id<MTLLibrary> library,
-                                                NSString* fragment_name) {
+                                                NSString* fragment_name,
+                                                bool blending = true) {
   MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
   desc.vertexFunction = [library newFunctionWithName:@"vd_vertex"];
   desc.fragmentFunction = [library newFunctionWithName:fragment_name];
@@ -136,7 +148,7 @@ static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
   MTLRenderPipelineColorAttachmentDescriptor* colour = desc.colorAttachments[0];
   colour.pixelFormat = MTLPixelFormatBGRA8Unorm;
   // Premultiplied source-over: the shaders already multiply by opacity.
-  colour.blendingEnabled = YES;
+  colour.blendingEnabled = blending;
   colour.rgbBlendOperation = MTLBlendOperationAdd;
   colour.alphaBlendOperation = MTLBlendOperationAdd;
   colour.sourceRGBBlendFactor = MTLBlendFactorOne;
@@ -183,7 +195,13 @@ VdCompositor* vd_compositor_create(int32_t width, int32_t height,
   c->pipeline_nv12 = make_pipeline(c->device, library, @"vd_fragment_nv12");
   c->pipeline_yuv420p =
       make_pipeline(c->device, library, @"vd_fragment_yuv420p");
-  if (!c->pipeline_nv12 || !c->pipeline_yuv420p) {
+  // The blur passes own their whole target, so they replace rather than blend.
+  c->pipeline_blur =
+      make_pipeline(c->device, library, @"vd_fragment_blur", false);
+  c->pipeline_texture =
+      make_pipeline(c->device, library, @"vd_fragment_texture");
+  if (!c->pipeline_nv12 || !c->pipeline_yuv420p || !c->pipeline_blur ||
+      !c->pipeline_texture) {
     if (out_result) *out_result = VD_ERR_UNSUPPORTED;
     vd_compositor_destroy(c);
     return nullptr;
@@ -245,8 +263,12 @@ void vd_compositor_destroy(VdCompositor* c) {
   }
   if (c->output) CVPixelBufferRelease(c->output);
   c->output_texture = nil;
+  c->blur_a = nil;
+  c->blur_b = nil;
   c->pipeline_nv12 = nil;
   c->pipeline_yuv420p = nil;
+  c->pipeline_blur = nil;
+  c->pipeline_texture = nil;
   c->queue = nil;
   c->device = nil;
   delete c;
@@ -278,6 +300,73 @@ static id<MTLTexture> plane_texture(VdCompositor* c, CVPixelBufferRef buffer,
   return CVMetalTextureGetTexture(ref);
 }
 
+// The blur runs at a fraction of the output. A background that is about to be
+// blurred into a wash does not need four million pixels to do it, and every
+// one of them costs a tap in each of two passes.
+static const int32_t kBlurDivisor = 8;
+static const int32_t kBlurMinimum = 16;
+
+static bool ensure_blur_textures(VdCompositor* c) {
+  const int32_t w = std::max(c->width / kBlurDivisor, kBlurMinimum);
+  const int32_t h = std::max(c->height / kBlurDivisor, kBlurMinimum);
+  if (c->blur_a && c->blur_width == w && c->blur_height == h) return true;
+
+  MTLTextureDescriptor* desc = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                   width:(NSUInteger)w
+                                  height:(NSUInteger)h
+                               mipmapped:NO];
+  desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  desc.storageMode = MTLStorageModePrivate;
+
+  c->blur_a = [c->device newTextureWithDescriptor:desc];
+  c->blur_b = [c->device newTextureWithDescriptor:desc];
+  c->blur_width = w;
+  c->blur_height = h;
+  return c->blur_a != nil && c->blur_b != nil;
+}
+
+static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> commands,
+                                              id<MTLTexture> target,
+                                              bool clear) {
+  MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = target;
+  pass.colorAttachments[0].loadAction =
+      clear ? MTLLoadActionClear : MTLLoadActionLoad;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  // Opaque black: a timeline gap is black, not transparent.
+  pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+  return [commands renderCommandEncoderWithDescriptor:pass];
+}
+
+// A full-frame quad sampling `source`, at `opacity`. `step` is the blur offset
+// per tap, or zero for a plain draw.
+static void draw_full_frame(id<MTLRenderCommandEncoder> encoder,
+                            id<MTLRenderPipelineState> pipeline,
+                            id<MTLTexture> source, float opacity,
+                            float step_x, float step_y) {
+  LayerUniforms u = {};
+  u.rect[0] = 0.0f;
+  u.rect[1] = 0.0f;
+  u.rect[2] = 1.0f;
+  u.rect[3] = 1.0f;
+  u.crop[2] = 1.0f;
+  u.crop[3] = 1.0f;
+  u.rotation[0] = 1.0f;  // no turn
+  u.aspect = 1.0f;
+  u.opacity = opacity;
+  u.blur_step[0] = step_x;
+  u.blur_step[1] = step_y;
+
+  [encoder setRenderPipelineState:pipeline];
+  [encoder setVertexBytes:&u length:sizeof(u) atIndex:0];
+  [encoder setFragmentBytes:&u length:sizeof(u) atIndex:0];
+  [encoder setFragmentTexture:source atIndex:0];
+  [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+              vertexStart:0
+              vertexCount:4];
+}
+
 int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
                              int32_t layer_count) {
   if (!c) return VD_ERR_INVALID_ARG;
@@ -286,21 +375,13 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
   }
 
   @autoreleasepool {
-    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = c->output_texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    // Opaque black: a timeline gap is black, not transparent.
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-
     id<MTLCommandBuffer> commands = [c->queue commandBuffer];
     id<MTLRenderCommandEncoder> encoder =
-        [commands renderCommandEncoderWithDescriptor:pass];
+        begin_pass(commands, c->output_texture, true);
 
     // Held until commit; releasing a CVMetalTextureRef before the GPU has read
     // it is exactly the kind of lifetime bug that shows up as corruption
     // rather than a crash.
-    NSMutableArray* alive = [NSMutableArray array];
     std::vector<CVMetalTextureRef> refs;
 
     for (int32_t i = 0; i < layer_count; i++) {
@@ -321,11 +402,22 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       // Cropping changes the aspect ratio, so it has to be known before the
       // fit is computed — fitting first would letterbox the part that was
       // about to be thrown away.
-      const double crop_w = (double)disp_w * transform.crop_w;
-      const double crop_h = (double)disp_h * transform.crop_h;
-      FitRect fit = compute_fit((int32_t)(crop_w + 0.5),
-                                (int32_t)(crop_h + 0.5), c->width, c->height,
-                                layer.fit);
+      const int32_t crop_w = (int32_t)((double)disp_w * transform.crop_w + 0.5);
+      const int32_t crop_h = (int32_t)((double)disp_h * transform.crop_h + 0.5);
+
+      // Blur fill shows the whole frame, like contain, and fills what is left
+      // over with a blurred copy instead of black.
+      const bool wants_blur = layer.fit == VD_FIT_BLUR;
+      const VdFitMode foreground_fit =
+          wants_blur ? VD_FIT_CONTAIN : layer.fit;
+
+      FitRect fit =
+          compute_fit(crop_w, crop_h, c->width, c->height, foreground_fit);
+
+      // Nothing to fill when the picture already reaches every edge, and the
+      // common case is exactly that — a 16:9 clip in a 16:9 project. Three
+      // passes skipped for the price of one comparison.
+      const bool has_bars = fit.w < 0.999f || fit.h < 0.999f;
 
       // Scale about the fitted centre, then move. Both are pure arithmetic on
       // the destination rectangle; only rotation needs the vertex shader.
@@ -337,6 +429,9 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       fit.y = cy - fit.h * 0.5f;
 
       const double radians = (double)transform.rotation_degrees * M_PI / 180.0;
+      const float opacity = layer.opacity < 0.0f
+                                ? 0.0f
+                                : (layer.opacity > 1.0f ? 1.0f : layer.opacity);
 
       LayerUniforms uniforms = {};
       uniforms.rect[0] = fit.x;
@@ -352,9 +447,7 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       uniforms.aspect = c->height > 0 ? (float)c->width / (float)c->height : 1.0f;
       uniforms.flip_h = transform.flip_h ? 1u : 0u;
       uniforms.flip_v = transform.flip_v ? 1u : 0u;
-      uniforms.opacity = layer.opacity < 0.0f
-                             ? 0.0f
-                             : (layer.opacity > 1.0f ? 1.0f : layer.opacity);
+      uniforms.opacity = opacity;
       uniforms.quarter_turns = (uint32_t)turns;
       // The decoder read the range from the stream; the pixel buffer's own
       // format type is the fallback for buffers that did not come from it.
@@ -387,6 +480,56 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       }
       if (!planes[0] || !planes[1]) continue;
 
+      if (wants_blur && has_bars && ensure_blur_textures(c)) {
+        // The background is the same picture, cover-fitted so it reaches the
+        // edges, and untouched by the layer's own scale or offset — moving a
+        // clip should not drag its backdrop around with it.
+        LayerUniforms background = uniforms;
+        const FitRect cover =
+            compute_fit(crop_w, crop_h, c->width, c->height, VD_FIT_COVER);
+        background.rect[0] = cover.x;
+        background.rect[1] = cover.y;
+        background.rect[2] = cover.w;
+        background.rect[3] = cover.h;
+        background.rotation[0] = 1.0f;  // the extra turn belongs to the clip
+        background.rotation[1] = 0.0f;
+        background.opacity = 1.0f;      // applied once, at the final draw
+
+        [encoder endEncoding];
+
+        id<MTLRenderCommandEncoder> into =
+            begin_pass(commands, c->blur_a, true);
+        [into setRenderPipelineState:pipeline];
+        [into setVertexBytes:&background length:sizeof(background) atIndex:0];
+        [into setFragmentBytes:&background length:sizeof(background) atIndex:0];
+        [into setFragmentTexture:planes[0] atIndex:0];
+        [into setFragmentTexture:planes[1] atIndex:1];
+        if (planes[2]) [into setFragmentTexture:planes[2] atIndex:2];
+        [into drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                 vertexStart:0
+                 vertexCount:4];
+        [into endEncoding];
+
+        // Separable: across, then down. Two cheap passes where a square kernel
+        // would be one dear one.
+        const float step_x = 1.0f / (float)c->blur_width;
+        const float step_y = 1.0f / (float)c->blur_height;
+        id<MTLRenderCommandEncoder> across =
+            begin_pass(commands, c->blur_b, true);
+        draw_full_frame(across, c->pipeline_blur, c->blur_a, 1.0f, step_x, 0.0f);
+        [across endEncoding];
+
+        id<MTLRenderCommandEncoder> down =
+            begin_pass(commands, c->blur_a, true);
+        draw_full_frame(down, c->pipeline_blur, c->blur_b, 1.0f, 0.0f, step_y);
+        [down endEncoding];
+
+        // Back to the output, keeping whatever earlier layers drew.
+        encoder = begin_pass(commands, c->output_texture, false);
+        draw_full_frame(encoder, c->pipeline_texture, c->blur_a, opacity, 0.0f,
+                        0.0f);
+      }
+
       [encoder setRenderPipelineState:pipeline];
       [encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
       [encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -409,7 +552,6 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
     c->last_gpu_ms = (CACurrentMediaTime() - started) * 1000.0;
 
     for (CVMetalTextureRef ref : refs) CFRelease(ref);
-    (void)alive;
   }
   return VD_OK;
 }

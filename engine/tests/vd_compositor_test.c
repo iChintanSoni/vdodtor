@@ -704,6 +704,133 @@ static void test_a_square_stays_square_on_a_wide_output(void) {
   vd_frame_release(&frame);
 }
 
+// --- blur fill -------------------------------------------------------------
+// The product default. What makes it worth having is that a clip whose aspect
+// does not match the project stops looking like a mistake, so the tests are
+// about the bars: what is in them, and that the picture itself is untouched.
+
+static void test_blur_fill_puts_something_in_the_bars(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;  // 4:3
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);  // 16:9
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    // Contained, a 4:3 clip in 16:9 leaves pillars either side of x 80..560.
+    check_pixel_is(c, 320, 180, SOLID_R, SOLID_G, SOLID_B, "blur fill centre");
+    // The bars are the same colour as the picture, because a blurred copy of
+    // a flat colour is that colour — which is exactly why a flat fixture is
+    // the right one to prove the fill happened at all.
+    check_pixel_is(c, 20, 180, SOLID_R, SOLID_G, SOLID_B, "left bar filled");
+    check_pixel_is(c, 620, 180, SOLID_R, SOLID_G, SOLID_B, "right bar filled");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_contain_still_leaves_the_bars_black(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  // The contrast that makes the previous test mean something.
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 20, 180, 0, 0, 0, "contain leaves black");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_blur_fill_does_not_disturb_the_picture(void) {
+  VdFrame frame;
+  if (!first_frame("cfr_30fps_stereo.mp4", &frame)) return;
+
+  // Inside the contained rectangle, blur fill has to be pixel-for-pixel what
+  // contain would have drawn. The background goes behind, not through.
+  VdCompositor* plain = vd_compositor_create(640, 360, NULL);
+  VdCompositor* blurred = vd_compositor_create(640, 360, NULL);
+  if (plain && blurred) {
+    VdLayer a = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    VdLayer b = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(plain, &a, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_render(blurred, &b, 1), VD_OK);
+
+    int32_t differences = 0;
+    // 4:3 contained in 16:9 spans x 80..560; stay well inside it.
+    for (int32_t y = 20; y < 340; y += 23) {
+      for (int32_t x = 100; x < 540; x += 29) {
+        uint8_t p[4], q[4];
+        if (vd_compositor_read_pixel(plain, x, y, p) &&
+            vd_compositor_read_pixel(blurred, x, y, q) &&
+            memcmp(p, q, 4) != 0) {
+          differences++;
+        }
+      }
+    }
+    VD_CHECK_EQ(differences, 0);
+  }
+  vd_compositor_destroy(plain);
+  vd_compositor_destroy(blurred);
+  vd_frame_release(&frame);
+}
+
+static void test_blur_fill_costs_nothing_when_there_are_no_bars(void) {
+  VdFrame frame;
+  if (!first_frame("solid_hd_709.mp4", &frame)) return;  // 16:9
+
+  // A clip that already reaches every edge takes the ordinary path, and the
+  // common case in a project is exactly that.
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 4, 4, SOLID_R, SOLID_G, SOLID_B, "corner, no bars");
+    check_pixel_is(c, 320, 180, SOLID_R, SOLID_G, SOLID_B, "centre, no bars");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+static void test_the_background_is_actually_blurred(void) {
+  VdFrame frame;
+  if (!first_frame("cfr_30fps_stereo.mp4", &frame)) return;  // sharp pattern
+
+  // A cover-fitted copy of a test pattern has hard vertical edges. Blurred,
+  // neighbouring columns in the bar stop disagreeing sharply — so the biggest
+  // step between adjacent samples is the measure of whether it happened.
+  VdCompositor* c = vd_compositor_create(900, 300, NULL);  // 3:1, wide bars
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    int32_t biggest = 0;
+    uint8_t previous[4] = {0, 0, 0, 0};
+    for (int32_t x = 4; x < 180; x += 2) {  // inside the left bar
+      uint8_t p[4];
+      if (!vd_compositor_read_pixel(c, x, 150, p)) continue;
+      if (x > 4) {
+        for (int i = 0; i < 3; i++) {
+          const int delta = (int)p[i] - (int)previous[i];
+          const int magnitude = delta < 0 ? -delta : delta;
+          if (magnitude > biggest) biggest = magnitude;
+        }
+      }
+      memcpy(previous, p, 4);
+    }
+    // The unblurred pattern steps by well over a hundred between bars.
+    VD_CHECK(biggest < 40);
+    if (biggest >= 40) {
+      fprintf(stderr, "FAIL blur: neighbouring samples step by %d\n", biggest);
+    }
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
 int main(void) {
   test_lifecycle();
   test_no_layers_is_black();
@@ -726,6 +853,11 @@ int main(void) {
   test_crop_selects_part_of_the_source();
   test_a_crop_running_off_the_edge_is_pulled_back();
   test_a_square_stays_square_on_a_wide_output();
+  test_blur_fill_puts_something_in_the_bars();
+  test_contain_still_leaves_the_bars_black();
+  test_blur_fill_does_not_disturb_the_picture();
+  test_blur_fill_costs_nothing_when_there_are_no_bars();
+  test_the_background_is_actually_blurred();
   test_software_frames_composite_the_same();
   return VD_REPORT();
 }

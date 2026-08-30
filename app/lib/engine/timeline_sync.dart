@@ -1,5 +1,6 @@
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
+import '../model/clip.dart';
 import '../model/project.dart';
 
 /// Turns the document into the flat render list the engine composites from.
@@ -31,7 +32,12 @@ EngineTimeline engineTimelineFor(Project project) {
         // List order is z-order: the main track is first, so it renders first.
         track: index,
         opacity: transform.opacity,
-        fit: FitMode.contain,
+        fit: switch (transform.fit) {
+          ClipFit.blurFill => FitMode.blurFill,
+          ClipFit.contain => FitMode.contain,
+          ClipFit.cover => FitMode.cover,
+          ClipFit.stretch => FitMode.stretch,
+        },
         // Insets become a rectangle here rather than in the model: the
         // document says what the user dragged, the engine wants where to
         // sample, and this is the one place that knows both.

@@ -124,7 +124,17 @@ class _TransformControls extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 12, color: VdColors.text),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 12),
+        const _SectionLabel('FILL'),
+        _FitPicker(
+          fit: t.fit,
+          onChanged: (fit) {
+            onCommit();
+            onChanged(t.copyWith(fit: fit));
+            onCommit();
+          },
+        ),
+        const SizedBox(height: 6),
         _Slider(
           label: 'Scale',
           value: t.scale,
@@ -240,6 +250,67 @@ class _TransformControls extends StatelessWidget {
 }
 
 String _percentOfFrame(double v) => '${(v * 100).round()}%';
+
+/// How the picture fills a frame it does not match.
+///
+/// Four buttons rather than a dropdown: there are only four, the choice is
+/// visual, and a menu hides three of them behind a click.
+class _FitPicker extends StatelessWidget {
+  const _FitPicker({required this.fit, required this.onChanged});
+
+  final ClipFit fit;
+  final ValueChanged<ClipFit> onChanged;
+
+  static const _labels = {
+    ClipFit.blurFill: 'Blur',
+    ClipFit.contain: 'Fit',
+    ClipFit.cover: 'Fill',
+    ClipFit.stretch: 'Stretch',
+  };
+
+  static const _tooltips = {
+    ClipFit.blurFill: 'The whole picture, with a blurred copy behind it',
+    ClipFit.contain: 'The whole picture, on black',
+    ClipFit.cover: 'Fills the frame; the edges are cropped away',
+    ClipFit.stretch: 'Fills the frame by distorting the picture',
+  };
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: [
+          for (final option in ClipFit.values)
+            Tooltip(
+              message: _tooltips[option]!,
+              waitDuration: const Duration(milliseconds: 500),
+              child: GestureDetector(
+                onTap: () => onChanged(option),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(4),
+                    color: option == fit
+                        ? VdColors.accent.withValues(alpha: 0.18)
+                        : Colors.transparent,
+                    border: Border.all(
+                      color: option == fit ? VdColors.accent : VdColors.line,
+                    ),
+                  ),
+                  child: Text(
+                    _labels[option]!,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: option == fit ? VdColors.text : VdColors.dim,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+}
 
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
