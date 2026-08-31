@@ -32,6 +32,7 @@ EngineTimeline engineTimelineFor(Project project) {
           opacity: clip.transform.opacity,
           fit: FitMode.stretch,
           transform: _engineTransformFor(clip.transform),
+          animation: _engineAnimationFor(clip.animation),
         ));
         continue;
       }
@@ -89,6 +90,7 @@ EngineTimeline engineTimelineFor(Project project) {
           ClipFit.stretch => FitMode.stretch,
         },
         transform: _engineTransformFor(transform),
+        animation: _engineAnimationFor(clip.animation),
       ));
     }
   }
@@ -116,6 +118,20 @@ EngineTransform _engineTransformFor(ClipTransform transform) => EngineTransform(
       cropHeight: transform.cropHeight,
       flipHorizontal: transform.flipHorizontal,
       flipVertical: transform.flipVertical,
+    );
+
+/// The entrance and the exit. Only the halves that actually run cross over —
+/// a preset with no duration and a duration with no preset are both "nothing
+/// happens", and the engine should not have to work that out twice.
+EngineAnimation _engineAnimationFor(ClipAnimation animation) => EngineAnimation(
+      inPreset: animation.hasIn
+          ? EngineAnimPreset.values[animation.inPreset.index]
+          : EngineAnimPreset.none,
+      inTicks: animation.hasIn ? animation.inDuration.raw : 0,
+      outPreset: animation.hasOut
+          ? EngineAnimPreset.values[animation.outPreset.index]
+          : EngineAnimPreset.none,
+      outTicks: animation.hasOut ? animation.outDuration.raw : 0,
     );
 
 /// A caption, field for field. Every number is already a fraction on both

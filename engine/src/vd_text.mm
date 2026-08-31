@@ -177,6 +177,8 @@ Resolved resolve(const VdTextSpec* spec, int32_t width, int32_t height) {
 struct Block {
   CTFrameRef frame;
   CGRect ink;
+  // Where the frame was laid out, which the line origins are relative to.
+  CGRect path;
   bool valid;
 };
 
@@ -213,7 +215,7 @@ CGRect measure_ink(CTFrameRef frame, CGRect path_rect) {
 // Lays `string` out inside a box `wrap_width` wide, centred in the frame.
 Block layout(CFAttributedStringRef string, CGFloat wrap_width, int32_t width,
              int32_t height) {
-  Block block = {nullptr, CGRectNull, false};
+  Block block = {nullptr, CGRectNull, CGRectNull, false};
   CTFramesetterRef setter = CTFramesetterCreateWithAttributedString(string);
   if (!setter) return block;
 
@@ -237,9 +239,95 @@ Block layout(CFAttributedStringRef string, CGFloat wrap_width, int32_t width,
   if (!frame) return block;
 
   block.frame = frame;
+  block.path = path_rect;
   block.ink = measure_ink(frame, path_rect);
   block.valid = !CGRectIsNull(block.ink);
   return block;
+}
+
+// The UTF-16 index that `count` composed characters reach.
+//
+// Composed rather than code units, because that is how a person counts what
+// they typed: an accented letter is one character and a flag emoji is one, and
+// a typewriter that revealed half of either would draw something that is not a
+// character at all.
+CFIndex utf16_index_of_character(CFStringRef text, CFIndex count) {
+  const CFIndex length = CFStringGetLength(text);
+  CFIndex index = 0;
+  CFIndex seen = 0;
+  while (index < length && seen < count) {
+    const CFRange composed =
+        CFStringGetRangeOfComposedCharactersAtIndex(text, index);
+    index = composed.location + composed.length;
+    seen++;
+  }
+  return index;
+}
+
+CFIndex composed_length(CFStringRef text) {
+  const CFIndex length = CFStringGetLength(text);
+  CFIndex index = 0;
+  CFIndex count = 0;
+  while (index < length) {
+    const CFRange composed =
+        CFStringGetRangeOfComposedCharactersAtIndex(text, index);
+    index = composed.location + composed.length;
+    count++;
+  }
+  return count;
+}
+
+// Draws the block, but only the glyphs up to `limit` — a UTF-16 index into the
+// string the frame was laid out from.
+//
+// The layout is the *whole* caption's, and only the drawing is cut short. That
+// is what makes a typewriter reveal words where they will finally sit instead
+// of sliding them along as the line grows: a centred line that re-centred on
+// every character would be unreadable, and one that will wrap would reflow
+// under its own animation.
+//
+// Glyphs are assumed to run in the same order as the characters they came
+// from, which is true of every left-to-right script and not of Arabic or
+// Hebrew. A right-to-left caption reveals in glyph order rather than reading
+// order — visibly odd, but it draws the right glyphs in the right places,
+// which is the failure worth having until somebody asks for the other one.
+void draw_frame_prefix(CTFrameRef frame, CGRect path, CGContextRef ctx,
+                       CFIndex limit) {
+  CFArrayRef lines = CTFrameGetLines(frame);
+  const CFIndex line_count = CFArrayGetCount(lines);
+  if (line_count == 0) return;
+
+  std::vector<CGPoint> origins((size_t)line_count);
+  CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), origins.data());
+
+  for (CFIndex i = 0; i < line_count; i++) {
+    CTLineRef line = (CTLineRef)CFArrayGetValueAtIndex(lines, i);
+    const CFRange range = CTLineGetStringRange(line);
+    if (range.location >= limit) break;  // nothing on this line yet
+
+    CGContextSetTextPosition(ctx, path.origin.x + origins[(size_t)i].x,
+                             path.origin.y + origins[(size_t)i].y);
+    if (range.location + range.length <= limit) {
+      CTLineDraw(line, ctx);
+      continue;
+    }
+
+    CFArrayRef runs = CTLineGetGlyphRuns(line);
+    for (CFIndex r = 0; r < CFArrayGetCount(runs); r++) {
+      CTRunRef run = (CTRunRef)CFArrayGetValueAtIndex(runs, r);
+      const CFIndex glyphs = CTRunGetGlyphCount(run);
+      if (glyphs == 0) continue;
+
+      std::vector<CFIndex> indices((size_t)glyphs);
+      CTRunGetStringIndices(run, CFRangeMake(0, 0), indices.data());
+
+      CFIndex visible = 0;
+      while (visible < glyphs && indices[(size_t)visible] < limit) visible++;
+      if (visible == 0) continue;
+      CTRunDraw(run, ctx, CFRangeMake(0, visible));
+      if (visible < glyphs) break;
+    }
+  }
 }
 
 // The attributes both passes share. The stroke pass adds two of its own and
@@ -405,8 +493,20 @@ const char* vd_text_font_name(int32_t index) {
   return name;
 }
 
+int32_t vd_text_length(const VdTextSpec* spec) {
+  if (!spec || !spec->text || !*spec->text) return 0;
+  @autoreleasepool {
+    CFStringRef text = CFStringCreateWithCString(
+        kCFAllocatorDefault, spec->text, kCFStringEncodingUTF8);
+    if (!text) return 0;
+    const CFIndex count = composed_length(text);
+    CFRelease(text);
+    return (int32_t)count;
+  }
+}
+
 void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
-                     int32_t* out_result) {
+                     int32_t reveal, int32_t* out_result) {
   if (out_result) *out_result = VD_OK;
   if (!spec || width <= 0 || height <= 0) {
     if (out_result) *out_result = VD_ERR_INVALID_ARG;
@@ -466,6 +566,15 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
                                         kCFStringEncodingUTF8)
             : nullptr;
 
+    // Nothing revealed yet: a transparent frame, and not even the box. The
+    // box holds the caption's place once there is a caption to hold it for,
+    // and a rectangle that appears a beat before the first letter reads as a
+    // flash rather than as a backdrop.
+    if (text && reveal == 0) {
+      CFRelease(text);
+      text = nullptr;
+    }
+
     if (text) {
       const Resolved resolved = resolve(spec, width, height);
       CTFontRef font = create_font(spec->font, resolved.points);
@@ -478,6 +587,13 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
       CFAttributedStringRef fill_string =
           make_string(text, base, fill, nullptr, 0.0f);
       const Block block = layout(fill_string, resolved.wrap_width, width, height);
+
+      // Everything below draws at most this far into the string. The layout
+      // above used all of it, which is the point: the words that are already
+      // on screen do not move as the rest arrives.
+      const CFIndex limit = reveal < 0
+                                ? CFStringGetLength(text)
+                                : utf16_index_of_character(text, reveal);
 
       if (block.valid) {
         // The box first, so the ink's shadow falls across it rather than
@@ -523,7 +639,7 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
           const Block outline =
               layout(stroke_string, resolved.wrap_width, width, height);
           if (outline.frame) {
-            CTFrameDraw(outline.frame, ctx);
+            draw_frame_prefix(outline.frame, outline.path, ctx, limit);
             CFRelease(outline.frame);
           }
           CFRelease(stroke_string);
@@ -533,7 +649,7 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
           CGContextSetShadowWithColor(ctx, CGSizeZero, 0, nullptr);
         }
 
-        CTFrameDraw(block.frame, ctx);
+        draw_frame_prefix(block.frame, block.path, ctx, limit);
         CGContextSetShadowWithColor(ctx, CGSizeZero, 0, nullptr);
       }
 

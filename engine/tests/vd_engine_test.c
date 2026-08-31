@@ -585,6 +585,265 @@ static void test_a_caption_alone_is_a_timeline(void) {
   vd_engine_destroy(e);
 }
 
+
+// --- animation -------------------------------------------------------------
+
+// An animation is arithmetic, and vd_anim_test.c checks the arithmetic. What
+// is checked here is the wiring: that the number reaches the compositor, that
+// it composes with the transform the clip already had rather than replacing
+// it, and that a typewriter — the one preset the transform cannot express —
+// reaches the raster instead.
+
+static VdTimeline one_clip_timeline(VdTimelineClip* clip, const char* file) {
+  *clip = vd_timeline_clip_default();
+  clip->path = fixture(file);
+  clip->start = 0;
+  clip->duration = 2 * SECOND;
+  clip->fit = VD_FIT_STRETCH;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clip;
+  timeline.clip_count = 1;
+  return timeline;
+}
+
+static void test_an_entrance_fades_the_picture_up_from_black(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.anim = vd_clip_anim_none();
+  clip.anim.in_preset = VD_ANIM_FADE;
+  clip.anim.in_duration = SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // The first frame is the clip at zero opacity, which over the compositor's
+  // black is black. Nothing else in the engine could produce that.
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, BLACK, "the first frame of a fade in");
+
+  // Past the entrance it is the clip, exactly.
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "after the fade has finished");
+
+  vd_engine_seek(e, 2 * SECOND - 1);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the last frame, with no exit set");
+
+  vd_engine_destroy(e);
+}
+
+static void test_an_exit_is_measured_from_the_end(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.anim = vd_clip_anim_none();
+  clip.anim.out_preset = VD_ANIM_FADE;
+  clip.anim.out_duration = SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the head, with no entrance set");
+
+  // Deep into the exit the picture is nearly gone.
+  vd_engine_seek(e, 2 * SECOND - SECOND / 20);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  uint8_t nearly[4];
+  void* buffer = vd_engine_copy_output(e);
+  VD_CHECK(buffer != NULL);
+  if (buffer) {
+    CVPixelBufferRef pixels = (CVPixelBufferRef)buffer;
+    CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+    const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(pixels);
+    memcpy(nearly, base + 120 * CVPixelBufferGetBytesPerRow(pixels) + 160 * 4,
+           4);
+    CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferRelease(pixels);
+    // Well under the clip's own green, and not yet black.
+    VD_CHECK(nearly[1] < 100);
+  }
+
+  vd_engine_destroy(e);
+}
+
+static void test_an_animation_composes_with_the_transform(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // A clip pushed to the right half of the frame, then faded in. The fade
+  // must not move it back to the middle, and the offset must not stop it
+  // fading — replacing the transform instead of composing with it would do
+  // one or the other.
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.transform = vd_transform_identity();
+  clip.transform.scale = 0.4f;
+  clip.transform.offset_x = 0.25f;
+  clip.anim = vd_clip_anim_none();
+  clip.anim.in_preset = VD_ANIM_FADE;
+  clip.anim.in_duration = SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  // At rest: where the transform put it, and nowhere near the middle.
+  check_frame_pixel_is(e, 0.75, 0.5, GREEN, "the placed clip, animation over");
+  check_frame_pixel_is(e, 0.25, 0.5, BLACK, "and nothing on the other side");
+
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.75, 0.5, BLACK, "faded out at the start");
+
+  vd_engine_destroy(e);
+}
+
+static void test_a_zoom_keeps_the_clips_own_scale(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // The scale multiplies rather than replaces. A clip at 40% that zooms in
+  // has to end at 40%, not at 100% — and the check is a pixel just outside
+  // where 40% reaches.
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.transform = vd_transform_identity();
+  clip.transform.scale = 0.4f;
+  clip.anim = vd_clip_anim_none();
+  clip.anim.in_preset = VD_ANIM_ZOOM;
+  clip.anim.in_duration = SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the middle, at the clip's own scale");
+  check_frame_pixel_is(e, 0.05, 0.5, BLACK, "and no wider than 40%");
+
+  // Early in the zoom it is smaller still, so a point that the resting size
+  // covers is not covered yet.
+  vd_engine_seek(e, SECOND / 20);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.5 + 0.4 * 0.45, 0.5, BLACK,
+                       "the edge has not reached its resting size");
+
+  vd_engine_destroy(e);
+}
+
+static void test_a_typewriter_types_and_stops(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTextSpec spec = boxed_caption("Typing");
+  // No box: what is being counted here is how often the caption is laid out,
+  // and a box would make every frame look the same to the eye anyway.
+  spec.box_color = 0x00000000u;
+  spec.size = 0.3f;
+
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.text = &spec;
+  clip.duration = 2 * SECOND;
+  clip.gain = 0.0f;
+  clip.anim = vd_clip_anim_none();
+  clip.anim.in_preset = VD_ANIM_TYPEWRITER;
+  clip.anim.in_duration = SECOND;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // Nothing at the very start: no characters have been typed.
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, BLACK, "before the first character");
+
+  // A caption is re-drawn once per *character*, not once per frame. Thirty
+  // frames across a one-second typewriter over six characters is at most six
+  // more layouts, and the frames between them cost nothing.
+  VdEngineStats before;
+  vd_engine_stats(e, &before);
+  for (int i = 1; i <= 30; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND / 30);
+    vd_engine_render_now(e);
+  }
+  VdEngineStats after;
+  vd_engine_stats(e, &after);
+  const int64_t layouts = after.text_rasters - before.text_rasters;
+  vd_checks++;
+  if (layouts > 7) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL a typewriter laid out %lld times over 30 frames of 6 "
+            "characters\n",
+            (long long)layouts);
+  }
+  VD_CHECK(layouts >= 2);  // it did type
+
+  // And once it is finished it stops entirely: the rest of the clip is one
+  // raster, however much of it gets scrubbed.
+  vd_engine_stats(e, &before);
+  for (int i = 0; i < 10; i++) {
+    vd_engine_seek(e, SECOND + (VdTick)i * SECOND / 10);
+    vd_engine_render_now(e);
+  }
+  vd_engine_stats(e, &after);
+  VD_CHECK(after.text_rasters - before.text_rasters <= 1);
+
+  vd_engine_destroy(e);
+}
+
+static void test_an_animated_caption_that_is_not_a_typewriter_never_redraws(
+    void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // The point of doing animation as a transform: a caption that slides,
+  // scales, turns and fades is the *same pixels* moved about, so it is laid
+  // out once for its whole life however much it moves.
+  VdTextSpec spec = boxed_caption("Moving");
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.text = &spec;
+  clip.duration = 2 * SECOND;
+  clip.gain = 0.0f;
+  clip.anim = vd_clip_anim_none();
+  clip.anim.in_preset = VD_ANIM_SPIN;
+  clip.anim.in_duration = SECOND;
+  clip.anim.out_preset = VD_ANIM_SLIDE_UP;
+  clip.anim.out_duration = SECOND;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  for (int i = 0; i <= 40; i++) {
+    vd_engine_seek(e, (VdTick)i * 2 * SECOND / 40);
+    vd_engine_render_now(e);
+  }
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 1);
+
+  vd_engine_destroy(e);
+}
+
 static void test_a_missing_source_is_a_gap_not_a_stall(void) {
   VdEngine* e = make_engine();
   if (!e) return;
@@ -927,6 +1186,12 @@ int main(void) {
   test_a_caption_composites_over_the_picture();
   test_a_caption_is_laid_out_once();
   test_a_caption_alone_is_a_timeline();
+  test_an_entrance_fades_the_picture_up_from_black();
+  test_an_exit_is_measured_from_the_end();
+  test_an_animation_composes_with_the_transform();
+  test_a_zoom_keeps_the_clips_own_scale();
+  test_a_typewriter_types_and_stops();
+  test_an_animated_caption_that_is_not_a_typewriter_never_redraws();
   test_a_missing_source_is_a_gap_not_a_stall();
   test_an_empty_timeline_renders_black();
   test_scrubbing_stays_correct();

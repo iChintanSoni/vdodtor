@@ -496,4 +496,100 @@ void main() {
           'Text');
     });
   });
+
+  group('animation', () {
+    Future<void> scrollToAnimate(WidgetTester tester) async {
+      await tester.scrollUntilVisible(find.text('ANIMATE'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('every clip with a picture gets the two pickers',
+        (tester) async {
+      // An animation is the transform a clip already has, over time, so there
+      // is nothing about it only a caption can do.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToAnimate(tester);
+
+      expect(find.text('ANIMATE'), findsOneWidget);
+      expect(find.text('In'), findsOneWidget);
+      expect(find.text('Out'), findsOneWidget);
+      // Nothing chosen, so no lengths to drag.
+      expect(find.text('In length'), findsNothing);
+      expect(find.text('Out length'), findsNothing);
+    });
+
+    testWidgets('choosing a preset gives it a length to run in',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToAnimate(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<AnimationPreset>)
+          .first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(AnimationPreset.pop.label).last);
+      await tester.pumpAndSettle();
+
+      final animation = store.project.clipById('b')!.animation;
+      expect(animation.inPreset, AnimationPreset.pop);
+      expect(animation.inDuration.raw, greaterThan(0),
+          reason: 'a picker whose entries do nothing is a picker nobody '
+              'trusts');
+
+      await scrollToAnimate(tester);
+      expect(find.text('In length'), findsOneWidget);
+    });
+
+    testWidgets('the typewriter is offered only where it would do something',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToAnimate(tester);
+      await tester.tap(find.byType(DropdownButtonFormField<AnimationPreset>)
+          .first);
+      await tester.pumpAndSettle();
+      expect(find.text(AnimationPreset.typewriter.label), findsNothing);
+      await tester.tapAt(const Offset(5, 5));  // dismiss
+      await tester.pumpAndSettle();
+
+      controller.addTextClip();
+      await tester.pumpAndSettle();
+      await scrollToAnimate(tester);
+      await tester.tap(find.byType(DropdownButtonFormField<AnimationPreset>)
+          .first);
+      await tester.pumpAndSettle();
+      expect(find.text(AnimationPreset.typewriter.label), findsWidgets);
+    });
+
+    testWidgets('Reset takes both halves away in one press', (tester) async {
+      controller.select('b');
+      store.run(SetClipAnimation(
+        'b',
+        ClipAnimation(
+          inPreset: AnimationPreset.fade,
+          inDuration: secs(0.4),
+          outPreset: AnimationPreset.zoom,
+          outDuration: secs(0.4),
+        ),
+      ));
+      store.endGesture();
+      await pumpInspector(tester);
+      await scrollToAnimate(tester);
+
+      // Two Resets on screen — the transform's and this one — so it is the
+      // one inside the animation section that has to be pressed.
+      await tester.tap(find.descendant(
+        of: find.ancestor(
+          of: find.text('ANIMATE'),
+          matching: find.byType(Row),
+        ).first,
+        matching: find.text('Reset'),
+      ));
+      await tester.pump();
+
+      expect(store.project.clipById('b')!.animation, ClipAnimation.still);
+    });
+  });
 }

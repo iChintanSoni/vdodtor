@@ -131,16 +131,33 @@ VD_EXPORT int32_t vd_text_register_font(const void* data, int64_t size);
 VD_EXPORT int32_t vd_text_font_count(void);
 VD_EXPORT const char* vd_text_font_name(int32_t index);
 
+// How many characters `spec` would draw, counted the way a person counts
+// them: composed characters, so an accent or a flag is one and not two or
+// four. This is what a typewriter animation divides its time by.
+VD_EXPORT int32_t vd_text_length(const VdTextSpec* spec);
+
 // Rasterises `spec` into a new `width` x `height` CVPixelBufferRef: 32BGRA,
 // **premultiplied**, transparent everywhere the ink is not. IOSurface-backed
 // and Metal-compatible, so the compositor wraps it without a copy.
+//
+// `reveal` draws only the first that many composed characters; negative draws
+// all of them, and 0 draws nothing. It is a parameter rather than a field on
+// the spec on purpose: the spec is what the *document* says a caption looks
+// like, and how much of it has been typed so far is a fact about the playhead.
+// Keeping them apart is what lets vd_text_spec_equal stay a comparison of two
+// documents.
+//
+// Wrapping is computed on the whole string rather than on the prefix, so a
+// caption that will wrap does not reflow underneath the typewriter as it
+// arrives — the words that are already on screen have to stay where they are.
 //
 // The block is laid out centred in the frame; moving it is the clip
 // transform's job, not this function's. Caller releases with
 // CVPixelBufferRelease. NULL on failure, with `out_result` — which may be
 // NULL — set to a negative VdResult.
 VD_EXPORT void* vd_text_render(const VdTextSpec* spec, int32_t width,
-                               int32_t height, int32_t* out_result);
+                               int32_t height, int32_t reveal,
+                               int32_t* out_result);
 
 #ifdef __cplusplus
 }

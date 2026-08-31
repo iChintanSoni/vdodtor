@@ -537,33 +537,53 @@ Future<void> drawWaveformSelfTest(
 ///
 /// It also prints the raster count before and after a scrub, because the whole
 /// value of the cache is a number that does not move.
-Future<void> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
+/// Returns the caption it worked on, so the animation pass that follows
+/// animates *that* one rather than whichever it happens to find first.
+Future<Clip?> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
     TimelineController timeline) async {
   stdout.writeln('[selftest] caption: fonts registered — '
       '${BundledFonts.families.join(", ")}');
 
-  // Over the middle of what is already there, so the frame shows the caption
-  // on top of a picture rather than on black.
-  final duration = store.project.duration;
-  timeline.seekTo(Tick(duration.raw ~/ 3));
-  if (!timeline.addTextClip(
-    text: const ClipText(
-      text: 'vdodtor',
-      font: 'Anton',
-      size: 0.16,
-      strokeColor: 0xFF101010,
-      strokeWidth: 0.06,
-      shadowColor: 0xB3000000,
-      shadowOffsetY: 0.05,
-      shadowBlur: 0.05,
-      boxColor: 0x99000000,
-    ),
-  )) {
-    stdout.writeln('[selftest] caption: nowhere to put one');
-    return;
-  }
+  const styled = ClipText(
+    text: 'vdodtor',
+    font: 'Anton',
+    size: 0.16,
+    strokeColor: 0xFF101010,
+    strokeWidth: 0.06,
+    shadowColor: 0xB3000000,
+    shadowOffsetY: 0.05,
+    shadowBlur: 0.05,
+    boxColor: 0x99000000,
+  );
 
-  final clip = store.project.clipById(timeline.selectedClipId!)!;
+  // The sample project is the same one every run, so a pass that always added
+  // a caption would leave a lane behind every time until there were no lanes
+  // left — and two overlapping captions saying the same thing make every
+  // dumped frame ambiguous. Restyle the one that is there, or make one.
+  final existing = store.project.tracks
+      .expand((t) => t.clips)
+      .where((c) => c.isText)
+      .firstOrNull;
+  String? id;
+  if (existing != null) {
+    store.endGesture();
+    store.run(SetClipText(existing.id, styled));
+    store.endGesture();
+    id = existing.id;
+  } else {
+    // Over the middle of what is already there, so the frame shows the
+    // caption on top of a picture rather than on black.
+    final duration = store.project.duration;
+    timeline.seekTo(Tick(duration.raw ~/ 3));
+    if (!timeline.addTextClip(text: styled)) {
+      stdout.writeln('[selftest] caption: nowhere to put one');
+      return null;
+    }
+    id = timeline.selectedClipId;
+  }
+  if (id == null) return null;
+
+  final clip = store.project.clipById(id)!;
   final track = store.project.trackOfClip(clip.id)!;
   stdout.writeln('[selftest] caption: "${clip.text!.label}" on ${track.name} '
       'at ${clip.start.raw} for ${clip.duration.raw} ticks');
@@ -596,6 +616,76 @@ Future<void> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
   }
   stdout.writeln('[selftest] caption: after 8 seeks, rasters='
       '${engine.stats.textRasters} (was ${drawn.textRasters})');
+  return clip;
+}
+
+/// An animation, watched frame by frame in the running app.
+///
+/// The engine's own tests check the arithmetic and the wiring; what they
+/// cannot check is what it *looks like*, and a preset is a design decision
+/// before it is a function. So this puts one on a caption and dumps the
+/// entrance a few frames apart — four PNGs where the words arrive is the only
+/// way to tell a pop from a jolt.
+///
+/// It also prints what a typewriter costs, which is the one preset that is not
+/// free: every other animation is the same pixels moved about, and the
+/// typewriter redraws. Once per character is right; once per frame is the bug.
+Future<void> runAnimationSelfTest(
+    PreviewEngine engine, DocumentStore store, Clip? caption) async {
+  if (caption == null) {
+    stdout.writeln('[selftest] animation: no caption to animate');
+    return;
+  }
+
+  const animation = ClipAnimation(
+    inPreset: AnimationPreset.typewriter,
+    inDuration: Tick(120000),
+    outPreset: AnimationPreset.slideUp,
+    outDuration: Tick(48000),
+  );
+  store.endGesture();
+  store.run(SetClipAnimation(caption.id, animation));
+  store.endGesture();
+
+  final animated = store.project.clipById(caption.id)!;
+  stdout.writeln('[selftest] animation: '
+      'in ${animated.animation.inPreset.name} '
+      '${animated.animation.inDuration.raw} ticks, '
+      'out ${animated.animation.outPreset.name} '
+      '${animated.animation.outDuration.raw} ticks');
+
+  // Wait for the render list to reach the engine before asking it anything.
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  final before = engine.stats;
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_animation_');
+  for (final fraction in [0.0, 0.25, 0.5, 0.75, 1.0]) {
+    final at = animated.start.raw +
+        (animated.animation.inDuration.raw * fraction).round();
+    engine.seek(at);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    final percent = (fraction * 100).round();
+    engine.dumpPng('${out.path}/in_$percent.png');
+  }
+  // And one from the exit, which is a transform rather than a redraw.
+  engine.seek(animated.end.raw - animated.animation.outDuration.raw ~/ 2);
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/out_50.png');
+
+  final typed = engine.stats.textRasters - before.textRasters;
+  stdout.writeln('[selftest] animation: typing cost $typed layouts across '
+      '6 frames of a ${animated.text!.text.length}-character caption');
+
+  // The exit moves the same pixels, so scrubbing it must cost nothing at all.
+  final settled = engine.stats;
+  for (var i = 0; i < 8; i++) {
+    engine.seek(animated.end.raw -
+        animated.animation.outDuration.raw * i ~/ 8);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+  }
+  stdout.writeln('[selftest] animation: the exit cost '
+      '${engine.stats.textRasters - settled.textRasters} layouts');
+  stdout.writeln('[selftest] animation: frames in ${out.path}');
 }
 
 /// A playhead that never moves. The timeline needs one to draw; nothing here

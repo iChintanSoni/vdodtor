@@ -209,6 +209,89 @@ void main() {
           ClipText.maxSize);
     });
 
+    test('an animation round-trips', () {
+      var p = projectWithThreeClips();
+      p = p.updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          for (final c in t.clips)
+            c.id == 'b'
+                ? c.copyWith(
+                    animation: ClipAnimation(
+                      inPreset: AnimationPreset.spin,
+                      inDuration: secs(0.5),
+                      outPreset: AnimationPreset.typewriter,
+                      outDuration: secs(0.25),
+                    ),
+                  )
+                : c,
+        ]),
+      );
+
+      final back = decodeProject(encodeProject(p));
+      expectSameDocument(back, p);
+      expect(back.clipById('b')!.animation.inPreset, AnimationPreset.spin);
+      expect(back.clipById('b')!.animation.outDuration, secs(0.25));
+    });
+
+    test('a half that would not run is not written down', () {
+      // A preset with no length does nothing, so recording one would be
+      // recording a decision nobody made.
+      var p = projectWithThreeClips();
+      p = p.updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          for (final c in t.clips)
+            c.id == 'b'
+                ? c.copyWith(
+                    animation:
+                        const ClipAnimation(inPreset: AnimationPreset.pop),
+                  )
+                : c,
+        ]),
+      );
+      expect(encodeProject(p), isNot(contains('"animation"')));
+    });
+
+    test('a preset this build has never heard of opens without it', () {
+      // A project made by a newer version has to open. Unlike a colour there
+      // is nothing here to guess wrongly — the clip is on screen for the same
+      // length of time either way — so a missing entrance is a far smaller
+      // loss than a project that will not load.
+      var p = projectWithThreeClips();
+      p = p.updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          for (final c in t.clips)
+            c.id == 'b'
+                ? c.copyWith(
+                    animation: ClipAnimation(
+                      inPreset: AnimationPreset.pop,
+                      inDuration: secs(0.5),
+                      outPreset: AnimationPreset.fade,
+                      outDuration: secs(0.5),
+                    ),
+                  )
+                : c,
+        ]),
+      );
+
+      final json = jsonDecode(encodeProject(p)) as Map<String, Object?>;
+      final tracks = json['tracks']! as List<Object?>;
+      final main = tracks.first! as Map<String, Object?>;
+      final clips = main['clips']! as List<Object?>;
+      for (final entry in clips) {
+        final clip = entry! as Map<String, Object?>;
+        final animation = clip['animation'] as Map<String, Object?>?;
+        if (animation != null) animation['in'] = 'kaleidoscope';
+      }
+
+      final back = decodeProject(jsonEncode(json));
+      expect(back.clipById('b')!.animation.inPreset, AnimationPreset.none);
+      // And the half it does understand is untouched.
+      expect(back.clipById('b')!.animation.outPreset, AnimationPreset.fade);
+    });
+
     test('an empty project round-trips', () {
       final p = Project.empty(
         id: 'p',

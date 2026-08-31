@@ -696,6 +696,181 @@ final class ClipText {
       '${(size * 100).toStringAsFixed(1)}%)';
 }
 
+/// How a clip arrives and how it leaves.
+///
+/// **A preset names the direction the clip travels, not the edge it comes
+/// from.** [slideUp] moves upwards both times: on the way in it rises into
+/// place from below, and on the way out it carries on and leaves through the
+/// top. One rule for both halves, where "in from the left, out to the left"
+/// would be two — and the second one nobody can predict.
+///
+/// Order matches `VdAnimPreset` in `engine/include/vdodtor/vd_anim.h`; the
+/// index crosses the FFI boundary as an integer, so these may be appended to
+/// and never reordered.
+enum AnimationPreset {
+  none('None'),
+
+  /// Opacity alone. The one that suits anything.
+  fade('Fade'),
+  slideUp('Slide up'),
+  slideDown('Slide down'),
+  slideLeft('Slide left'),
+  slideRight('Slide right'),
+
+  /// Overshoots its resting size and settles back — the only preset that ever
+  /// does, and what makes it read as a pop rather than a grow.
+  pop('Pop'),
+
+  /// Grows from small. A pop without the overshoot.
+  zoom('Zoom'),
+
+  /// A turn and a grow together.
+  spin('Spin'),
+
+  /// Reveals the text a character at a time, and does nothing at all to a clip
+  /// that has none. It is in this list rather than a list of its own because
+  /// it is chosen from the same menu, and a preset that quietly does nothing
+  /// on a video clip beats a menu that changes shape with the selection.
+  typewriter('Typewriter');
+
+  const AnimationPreset(this.label);
+
+  /// What the picker calls it.
+  final String label;
+
+  bool get isNone => this == AnimationPreset.none;
+}
+
+/// The entrance and the exit on one clip.
+///
+/// The fourth thing that can hang off a clip, beside [ClipTransform],
+/// [ClipAudio] and [ClipText] — and the only one that is a function of *time*
+/// rather than a set of values. Which is why nothing here evaluates it: the
+/// engine does, once per layer per frame, because it is the thing that knows
+/// what time it is. See `vd_anim.h`.
+///
+/// The result composes with [ClipTransform] rather than replacing it: offsets
+/// add, scale multiplies, rotation adds, opacity multiplies. A caption parked
+/// at the bottom of the frame that slides up has to slide up from below *its
+/// own* position.
+@immutable
+final class ClipAnimation {
+  const ClipAnimation({
+    this.inPreset = AnimationPreset.none,
+    this.inDuration = Tick.zero,
+    this.outPreset = AnimationPreset.none,
+    this.outDuration = Tick.zero,
+  });
+
+  /// A clip nobody has animated. The default for every clip, and the value
+  /// serialisation leaves out of the file.
+  static const still = ClipAnimation();
+
+  final AnimationPreset inPreset;
+  final Tick inDuration;
+  final AnimationPreset outPreset;
+  final Tick outDuration;
+
+  /// How long an animation is when a preset is first chosen. Long enough to
+  /// read as a movement, short enough not to delay the words.
+  static const Tick defaultDuration = Tick(400 * 120000 ~/ 1000);
+
+  /// The longest either half may be. Beyond about a second an entrance stops
+  /// being an entrance and becomes the clip.
+  static const Tick maxDuration = Tick(2 * 120000);
+
+  bool get isStill => this == still;
+
+  /// True when either half actually runs. A preset with no time to run in is
+  /// not an animation, and neither is [AnimationPreset.none] with all the time
+  /// in the world.
+  bool get hasIn => !inPreset.isNone && inDuration.raw > 0;
+  bool get hasOut => !outPreset.isNone && outDuration.raw > 0;
+  bool get isAnimated => hasIn || hasOut;
+
+  /// The same animations, shortened so both fit inside a clip [duration] long.
+  ///
+  /// The same problem the audio fades have and the same answer: two
+  /// animations that overlap are not wrong so much as unaskable-for, and
+  /// trimming a clip shorter than its own entrance is the ordinary way to
+  /// arrive there. Shared in the proportion asked for, so a 1:3 request does
+  /// not come back as 3:4.
+  ClipAnimation clampedTo(Tick duration) {
+    var inTicks = inDuration.raw < 0 ? 0 : inDuration.raw;
+    var outTicks = outDuration.raw < 0 ? 0 : outDuration.raw;
+
+    // The share of the clip first, then the absolute cap. The other order
+    // turns a 1:3 request into something else: capping 1s and 3s at two
+    // seconds gives 1s and 2s, and *that* proportioned into a two-second clip
+    // is 2:1 — a ratio nobody asked for, arrived at by two clamps that were
+    // each reasonable alone.
+    if (duration.raw <= 0) {
+      inTicks = 0;
+      outTicks = 0;
+    } else {
+      final total = inTicks + outTicks;
+      if (total > duration.raw) {
+        inTicks = (inTicks * duration.raw) ~/ total;
+        outTicks = duration.raw - inTicks;
+      }
+    }
+    if (inTicks > maxDuration.raw) inTicks = maxDuration.raw;
+    if (outTicks > maxDuration.raw) outTicks = maxDuration.raw;
+    if (inTicks == inDuration.raw && outTicks == outDuration.raw) return this;
+    return copyWith(inDuration: Tick(inTicks), outDuration: Tick(outTicks));
+  }
+
+  ClipAnimation copyWith({
+    AnimationPreset? inPreset,
+    Tick? inDuration,
+    AnimationPreset? outPreset,
+    Tick? outDuration,
+  }) =>
+      ClipAnimation(
+        inPreset: inPreset ?? this.inPreset,
+        inDuration: inDuration ?? this.inDuration,
+        outPreset: outPreset ?? this.outPreset,
+        outDuration: outDuration ?? this.outDuration,
+      );
+
+  /// Choosing a preset gives it a length to run in, because a preset with no
+  /// duration does nothing and a picker whose entries do nothing is a picker
+  /// nobody trusts. Choosing [AnimationPreset.none] takes the length away
+  /// again, so the file does not carry a duration for an animation that is
+  /// not there.
+  ClipAnimation withInPreset(AnimationPreset preset) => copyWith(
+        inPreset: preset,
+        inDuration: preset.isNone
+            ? Tick.zero
+            : (inDuration.raw > 0 ? inDuration : defaultDuration),
+      );
+
+  ClipAnimation withOutPreset(AnimationPreset preset) => copyWith(
+        outPreset: preset,
+        outDuration: preset.isNone
+            ? Tick.zero
+            : (outDuration.raw > 0 ? outDuration : defaultDuration),
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipAnimation &&
+      other.inPreset == inPreset &&
+      other.inDuration == inDuration &&
+      other.outPreset == outPreset &&
+      other.outDuration == outDuration;
+
+  @override
+  int get hashCode =>
+      Object.hash(inPreset, inDuration.raw, outPreset, outDuration.raw);
+
+  @override
+  String toString() => isStill
+      ? 'ClipAnimation.still'
+      : 'ClipAnimation(in ${inPreset.name} ${inDuration.raw}, '
+          'out ${outPreset.name} ${outDuration.raw})';
+}
+
 /// One piece of media placed on a track.
 ///
 /// A clip is a window onto its source: [sourceIn] is where the window opens in
@@ -716,6 +891,7 @@ final class Clip {
     this.enabled = true,
     this.transform = ClipTransform.identity,
     this.audio = ClipAudio.unity,
+    this.animation = ClipAnimation.still,
     this.text,
   }) : assert(mediaId == null || text == null,
             'a clip is a window onto a file or something the app draws, '
@@ -730,6 +906,7 @@ final class Clip {
     required Tick duration,
     required ClipText text,
     ClipTransform transform = ClipTransform.identity,
+    ClipAnimation animation = ClipAnimation.still,
   }) =>
       Clip(
         id: id,
@@ -737,6 +914,7 @@ final class Clip {
         start: start,
         duration: duration,
         transform: transform,
+        animation: animation,
         text: text,
       );
 
@@ -764,6 +942,10 @@ final class Clip {
   /// How loud it is. [ClipAudio.unity] for a clip nobody has faded, and
   /// present even on a clip whose source has no sound — see [ClipAudio].
   final ClipAudio audio;
+
+  /// How it arrives and how it leaves. [ClipAnimation.still] for a clip nobody
+  /// has animated, which is almost all of them.
+  final ClipAnimation animation;
 
   /// The caption this clip draws, or null for a clip that shows a file.
   final ClipText? text;
@@ -796,6 +978,7 @@ final class Clip {
     bool? enabled,
     ClipTransform? transform,
     ClipAudio? audio,
+    ClipAnimation? animation,
     ClipText? text,
   }) =>
       Clip(
@@ -808,6 +991,7 @@ final class Clip {
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
         audio: audio ?? this.audio,
+        animation: animation ?? this.animation,
         // A caption never becomes a media clip and a media clip never becomes
         // a caption, so there is no need to be able to clear this.
         text: text ?? this.text,
@@ -835,6 +1019,9 @@ final class Clip {
         sourceIn: sourceIn,
         duration: newDuration,
         audio: audio.clampedTo(newDuration),
+        // For the same reason the fades are clamped: an entrance longer than
+        // the clip it is on is one the clip never finishes arriving from.
+        animation: animation.clampedTo(newDuration),
       );
 
   @override
@@ -849,11 +1036,12 @@ final class Clip {
       other.enabled == enabled &&
       other.transform == transform &&
       other.audio == audio &&
+      other.animation == animation &&
       other.text == text;
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, audio, text);
+      sourceIn.raw, label, enabled, transform, audio, animation, text);
 
   @override
   String toString() => isText

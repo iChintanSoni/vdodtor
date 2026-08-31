@@ -198,6 +198,47 @@ final class SetClipText extends EditCommand {
       next is SetClipText && next.clipId == clipId ? next : null;
 }
 
+/// Changes how a clip arrives and how it leaves.
+///
+/// The fourth of the set with [SetClipTransform], [SetClipAudio] and
+/// [SetClipText], merged on the clip id the same way: picking a preset and
+/// then dragging its length is one decision about one clip.
+///
+/// Unlike the other three this applies to *any* clip. An animation is the
+/// transform the clip already has, over time, so there is nothing about it
+/// that only a caption can do — and a photo that pops in is a thing people
+/// ask for. The typewriter is the exception, and it is one the engine handles
+/// by drawing nothing different on a clip that has no text.
+final class SetClipAnimation extends EditCommand {
+  const SetClipAnimation(this.clipId, this.animation);
+
+  final String clipId;
+  final ClipAnimation animation;
+
+  @override
+  String get label => 'Animate clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    // Clamped against this clip's own length, so no picker can ask for an
+    // entrance longer than the clip it is on.
+    final next = animation.clampedTo(clip.duration);
+    if (clip.animation == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(animation: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipAnimation && next.clipId == clipId ? next : null;
+}
+
 /// One video clip's sound, lifted onto an audio lane as a clip of its own.
 ///
 /// Two edits that have to be one: the new audio clip appears *and* the video
@@ -543,6 +584,9 @@ final class SplitClip extends EditCommand {
     final head = clip.copyWith(
       duration: headDuration,
       audio: clip.audio.copyWith(fadeOut: Tick.zero).clampedTo(headDuration),
+      animation: clip.animation
+          .copyWith(outPreset: AnimationPreset.none, outDuration: Tick.zero)
+          .clampedTo(headDuration),
     );
     final tail = Clip(
       id: newClipId,
@@ -554,6 +598,12 @@ final class SplitClip extends EditCommand {
       enabled: clip.enabled,
       transform: clip.transform,
       audio: clip.audio.copyWith(fadeIn: Tick.zero).clampedTo(tailDuration),
+      // The animations divide the way the fades do: each half keeps the one
+      // at the end it still has. An entrance on the tail would be the clip
+      // arriving in the middle of itself.
+      animation: clip.animation
+          .copyWith(inPreset: AnimationPreset.none, inDuration: Tick.zero)
+          .clampedTo(tailDuration),
       // A caption is copied whole, like the transform. It does not vary with
       // time, so both halves say the same thing — and a tail that lost its
       // words would be a cut that deleted them.

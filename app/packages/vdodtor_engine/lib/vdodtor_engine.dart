@@ -9,6 +9,8 @@ library;
 
 export 'src/engine.dart'
     show
+        EngineAnimPreset,
+        EngineAnimation,
         EngineClip,
         EngineStats,
         EngineText,

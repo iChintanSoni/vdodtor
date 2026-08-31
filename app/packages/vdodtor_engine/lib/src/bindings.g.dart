@@ -133,6 +133,86 @@ class VdEngineBindings {
   late final _vd_tick_of_frame = _vd_tick_of_framePtr
       .asFunction<int Function(int, VdRational)>();
 
+  /// A clip at rest: the identity for every field. Not a zeroed struct — a zeroed
+  /// one is invisible, unscaled and empty, which is what a clip looks like
+  /// *before* it arrives rather than after.
+  VdAnimValue vd_anim_rest() {
+    return _vd_anim_rest();
+  }
+
+  late final _vd_anim_restPtr =
+      _lookup<ffi.NativeFunction<VdAnimValue Function()>>('vd_anim_rest');
+  late final _vd_anim_rest = _vd_anim_restPtr
+      .asFunction<VdAnimValue Function()>();
+
+  /// One preset at `t`, where 0 is fully away and 1 is at rest.
+  ///
+  /// The easing lives in here rather than in a curve the caller picks, because a
+  /// preset is a whole gesture: "pop" is the overshoot as much as it is the
+  /// scale, and letting the two be chosen separately would offer a thousand
+  /// combinations to get one of them right.
+  ///
+  /// `t` outside 0..1 is clamped, so a caller doing its own arithmetic on ticks
+  /// cannot produce a frame nobody designed.
+  VdAnimValue vd_anim_value(VdAnimPreset preset, double t) {
+    return _vd_anim_value(preset.value, t);
+  }
+
+  late final _vd_anim_valuePtr =
+      _lookup<
+        ffi.NativeFunction<VdAnimValue Function(ffi.UnsignedInt, ffi.Float)>
+      >('vd_anim_value');
+  late final _vd_anim_value = _vd_anim_valuePtr
+      .asFunction<VdAnimValue Function(int, double)>();
+
+  /// A clip nobody has animated.
+  VdClipAnim vd_clip_anim_none() {
+    return _vd_clip_anim_none();
+  }
+
+  late final _vd_clip_anim_nonePtr =
+      _lookup<ffi.NativeFunction<VdClipAnim Function()>>('vd_clip_anim_none');
+  late final _vd_clip_anim_none = _vd_clip_anim_nonePtr
+      .asFunction<VdClipAnim Function()>();
+
+  /// Where a clip is `offset` ticks into a `duration`-long life.
+  ///
+  /// Works out which half applies and evaluates it. When both halves reach the
+  /// same instant — a clip shorter than its own animations — the one that is
+  /// *further from rest* wins rather than the two being combined: composing two
+  /// entrances produces a motion neither preset describes, and the more extreme
+  /// of the two is the one somebody asked for.
+  VdAnimValue vd_anim_at(
+    ffi.Pointer<VdClipAnim> anim,
+    int offset,
+    int duration,
+  ) {
+    return _vd_anim_at(anim, offset, duration);
+  }
+
+  late final _vd_anim_atPtr =
+      _lookup<
+        ffi.NativeFunction<
+          VdAnimValue Function(ffi.Pointer<VdClipAnim>, VdTick, VdTick)
+        >
+      >('vd_anim_at');
+  late final _vd_anim_at = _vd_anim_atPtr
+      .asFunction<VdAnimValue Function(ffi.Pointer<VdClipAnim>, int, int)>();
+
+  /// True when nothing about this animation would change a frame. The engine uses
+  /// it to keep a caption's raster: a clip whose animation is only ever transform
+  /// and opacity never needs re-drawing, and one with a typewriter on it does.
+  bool vd_anim_reveals_text(ffi.Pointer<VdClipAnim> anim) {
+    return _vd_anim_reveals_text(anim);
+  }
+
+  late final _vd_anim_reveals_textPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdClipAnim>)>>(
+        'vd_anim_reveals_text',
+      );
+  late final _vd_anim_reveals_text = _vd_anim_reveals_textPtr
+      .asFunction<bool Function(ffi.Pointer<VdClipAnim>)>();
+
   /// Fills `out` from `path`. Returns VD_OK, or a negative VdResult.
   /// Never partially fills: on failure `out` is zeroed.
   int vd_probe_file(ffi.Pointer<ffi.Char> path, ffi.Pointer<VdProbeInfo> out) {
@@ -643,9 +723,34 @@ class VdEngineBindings {
   late final _vd_text_font_name = _vd_text_font_namePtr
       .asFunction<ffi.Pointer<ffi.Char> Function(int)>();
 
+  /// How many characters `spec` would draw, counted the way a person counts
+  /// them: composed characters, so an accent or a flag is one and not two or
+  /// four. This is what a typewriter animation divides its time by.
+  int vd_text_length(ffi.Pointer<VdTextSpec> spec) {
+    return _vd_text_length(spec);
+  }
+
+  late final _vd_text_lengthPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdTextSpec>)>>(
+        'vd_text_length',
+      );
+  late final _vd_text_length = _vd_text_lengthPtr
+      .asFunction<int Function(ffi.Pointer<VdTextSpec>)>();
+
   /// Rasterises `spec` into a new `width` x `height` CVPixelBufferRef: 32BGRA,
   /// **premultiplied**, transparent everywhere the ink is not. IOSurface-backed
   /// and Metal-compatible, so the compositor wraps it without a copy.
+  ///
+  /// `reveal` draws only the first that many composed characters; negative draws
+  /// all of them, and 0 draws nothing. It is a parameter rather than a field on
+  /// the spec on purpose: the spec is what the *document* says a caption looks
+  /// like, and how much of it has been typed so far is a fact about the playhead.
+  /// Keeping them apart is what lets vd_text_spec_equal stay a comparison of two
+  /// documents.
+  ///
+  /// Wrapping is computed on the whole string rather than on the prefix, so a
+  /// caption that will wrap does not reflow underneath the typewriter as it
+  /// arrives — the words that are already on screen have to stay where they are.
   ///
   /// The block is laid out centred in the frame; moving it is the clip
   /// transform's job, not this function's. Caller releases with
@@ -655,9 +760,10 @@ class VdEngineBindings {
     ffi.Pointer<VdTextSpec> spec,
     int width,
     int height,
+    int reveal,
     ffi.Pointer<ffi.Int32> out_result,
   ) {
-    return _vd_text_render(spec, width, height, out_result);
+    return _vd_text_render(spec, width, height, reveal, out_result);
   }
 
   late final _vd_text_renderPtr =
@@ -665,6 +771,7 @@ class VdEngineBindings {
         ffi.NativeFunction<
           ffi.Pointer<ffi.Void> Function(
             ffi.Pointer<VdTextSpec>,
+            ffi.Int32,
             ffi.Int32,
             ffi.Int32,
             ffi.Pointer<ffi.Int32>,
@@ -675,6 +782,7 @@ class VdEngineBindings {
       .asFunction<
         ffi.Pointer<ffi.Void> Function(
           ffi.Pointer<VdTextSpec>,
+          int,
           int,
           int,
           ffi.Pointer<ffi.Int32>,
@@ -1602,6 +1710,113 @@ final class VdRational extends ffi.Struct {
   external int den;
 }
 
+/// The presets, in the order a picker offers them.
+///
+/// **A preset names the direction the clip travels, not the edge it comes
+/// from.** `VD_ANIM_SLIDE_UP` moves upwards both times: on the way in it rises
+/// into place from below, and on the way out it carries on and leaves through
+/// the top. One rule for both halves, where "in from the left, out to the left"
+/// would be two — and the second one nobody can predict.
+///
+/// Values cross the FFI boundary as integers, so these may be appended to and
+/// never reordered.
+enum VdAnimPreset {
+  VD_ANIM_NONE(0),
+
+  /// Opacity alone. The one that suits anything.
+  VD_ANIM_FADE(1),
+  VD_ANIM_SLIDE_UP(2),
+  VD_ANIM_SLIDE_DOWN(3),
+  VD_ANIM_SLIDE_LEFT(4),
+  VD_ANIM_SLIDE_RIGHT(5),
+
+  /// Overshoots and settles back. The only preset that is ever larger than its
+  /// resting size, which is what makes it read as a pop rather than a grow.
+  VD_ANIM_POP(6),
+
+  /// Grows from small. Like pop without the overshoot.
+  VD_ANIM_ZOOM(7),
+
+  /// A turn and a grow together.
+  VD_ANIM_SPIN(8),
+
+  /// Reveals the text a character at a time. Does nothing at all to a clip that
+  /// has no text — it is in this list rather than in a list of its own because
+  /// it is chosen from the same menu, and a preset that quietly does nothing on
+  /// a video clip is better than a menu that changes shape depending on what is
+  /// selected.
+  VD_ANIM_TYPEWRITER(9);
+
+  final int value;
+  const VdAnimPreset(this.value);
+
+  static VdAnimPreset fromValue(int value) => switch (value) {
+    0 => VD_ANIM_NONE,
+    1 => VD_ANIM_FADE,
+    2 => VD_ANIM_SLIDE_UP,
+    3 => VD_ANIM_SLIDE_DOWN,
+    4 => VD_ANIM_SLIDE_LEFT,
+    5 => VD_ANIM_SLIDE_RIGHT,
+    6 => VD_ANIM_POP,
+    7 => VD_ANIM_ZOOM,
+    8 => VD_ANIM_SPIN,
+    9 => VD_ANIM_TYPEWRITER,
+    _ => throw ArgumentError('Unknown value for VdAnimPreset: $value'),
+  };
+}
+
+/// What a preset produces at one instant.
+///
+/// Everything here **composes with** what the clip already asked for rather
+/// than replacing it: offsets add, scale multiplies, rotation adds, opacity
+/// multiplies. A caption parked at the bottom of the frame that slides up has
+/// to slide up from below *its own* position, not from below the middle.
+final class VdAnimValue extends ffi.Struct {
+  /// Added to the clip's own offset, as a fraction of the output's width and
+  /// height — the same units VdTransform uses.
+  @ffi.Float()
+  external double offset_x;
+
+  @ffi.Float()
+  external double offset_y;
+
+  /// Multiplied into the clip's own scale. 1 is at rest.
+  @ffi.Float()
+  external double scale;
+
+  /// Added to the clip's own rotation.
+  @ffi.Float()
+  external double rotation_degrees;
+
+  /// Multiplied into the clip's own opacity. 1 is at rest.
+  @ffi.Float()
+  external double opacity;
+
+  /// How much of the text to show, 0..1. 1 is all of it, which is what every
+  /// preset but the typewriter produces.
+  @ffi.Float()
+  external double reveal;
+}
+
+/// The in and out animations on one clip.
+final class VdClipAnim extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int in_presetAsInt;
+
+  VdAnimPreset get in_preset => VdAnimPreset.fromValue(in_presetAsInt);
+
+  @VdTick()
+  external int in_duration;
+
+  @ffi.UnsignedInt()
+  external int out_presetAsInt;
+
+  VdAnimPreset get out_preset => VdAnimPreset.fromValue(out_presetAsInt);
+
+  @VdTick()
+  external int out_duration;
+}
+
 enum VdResult {
   VD_OK(0),
 
@@ -2114,6 +2329,14 @@ final class VdTimelineClip extends ffi.Struct {
   /// Where this clip sits inside the frame. A zeroed transform is the identity,
   /// so a caller with nothing to say about it can leave the field alone.
   external VdTransform transform;
+
+  /// How it arrives and how it leaves. A zeroed VdClipAnim is "no animation",
+  /// so this is another field a caller can ignore.
+  ///
+  /// Evaluated per frame and composed with `transform` rather than replacing
+  /// it: a caption parked at the bottom that slides up slides up from below
+  /// its own position. See vd_anim.h.
+  external VdClipAnim anim;
 
   /// False for a clip that contributes only sound: one on an audio lane, or a
   /// file with no picture in it. The compositor skips it rather than opening a
