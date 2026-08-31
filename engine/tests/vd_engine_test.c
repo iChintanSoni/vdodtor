@@ -88,6 +88,27 @@ static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
   check_frame_pixel_is(e, 0.5, 0.5, rgb, what);
 }
 
+// The colour at a point, for the checks that are about a *blend* rather than
+// about a colour anybody could name — halfway through a dissolve the frame is
+// neither clip, and that is the assertion.
+static bool frame_rgb(VdEngine* e, double fx, double fy, int out[3]) {
+  void* buffer = vd_engine_copy_output(e);
+  if (!buffer) return false;
+  CVPixelBufferRef pixels = (CVPixelBufferRef)buffer;
+  CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+  const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(pixels);
+  const size_t stride = CVPixelBufferGetBytesPerRow(pixels);
+  const size_t x = (size_t)(fx * (double)CVPixelBufferGetWidth(pixels));
+  const size_t y = (size_t)(fy * (double)CVPixelBufferGetHeight(pixels));
+  const uint8_t* px = base + y * stride + x * 4;  // BGRA
+  out[0] = px[2];
+  out[1] = px[1];
+  out[2] = px[0];
+  CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+  CVPixelBufferRelease(pixels);
+  return true;
+}
+
 // Green for the first second, orange for the second. One track, no gaps.
 static VdTimeline two_clip_timeline(VdTimelineClip* clips) {
   clips[0] = vd_timeline_clip_default();
@@ -951,6 +972,294 @@ static void test_a_sticker_takes_a_transform_and_an_animation(void) {
   vd_engine_destroy(e);
 }
 
+// A transition is arithmetic, and vd_transition_test.c checks the arithmetic.
+// What is checked here is the wiring: that the two clips at a cut are on
+// screen together at all, that the overlap comes out of nowhere but the
+// engine, and that a cut with no handles either side still dissolves.
+//
+// Two solid-colour fixtures butt-joined, so "which clip is on screen" is a
+// pixel: green then orange.
+static VdTimeline cut_timeline(VdTimelineClip* clips, VdTick each,
+                               VdTransitionPreset preset, VdTick length) {
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");
+  clips[0].start = 0;
+  clips[0].duration = each;
+  clips[1] = vd_timeline_clip_default();
+  clips[1].path = fixture("solid_sd_orange.mp4");
+  clips[1].start = each;
+  clips[1].duration = each;
+  clips[1].transition.preset = preset;
+  clips[1].transition.duration = length;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+  return timeline;
+}
+
+// The overlap is the whole mechanism, and nothing in the document has it: two
+// clips that meet at a cut are both on screen through the transition because
+// the engine widened their drawing windows, not because either moved.
+static void test_a_transition_puts_both_clips_on_screen(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_DISSOLVE, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // Well before the cut: one clip, and it is the first one.
+  vd_engine_seek(e, SECOND / 4);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "before the transition");
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 1);
+
+  // At the cut, halfway through the dissolve: both, blended.
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 2);
+  int middle[3];
+  VD_CHECK(frame_rgb(e, 0.5, 0.5, middle));
+  // Between the two colours and equal to neither, which is what a blend is:
+  // less green than the clip leaving, more red than it had.
+  VD_CHECK(middle[1] < GREEN[1] - 20);
+  VD_CHECK(middle[0] > GREEN[0] + 20);
+
+  // Well after: one clip again, and it is the second one.
+  vd_engine_seek(e, 7 * SECOND / 4);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, ORANGE, "after the transition");
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 1);
+
+  vd_engine_destroy(e);
+}
+
+// The window straddles the cut, so the first clip is still drawn after its own
+// span has ended and the second before its own has begun. Both are asking
+// their decoders for times outside their trims, and both get a frame — which
+// is the whole of "never fails for lack of media".
+static void test_the_overlap_reaches_past_both_clips_trims(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_DISSOLVE, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // A quarter of a second before the cut, the *second* clip is already drawn
+  // even though its own span has not started.
+  vd_engine_seek(e, SECOND - SECOND / 8);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 2);
+
+  // And after the cut the first one is still there, past its end.
+  vd_engine_seek(e, SECOND + SECOND / 8);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 2);
+
+  // The project is no longer or shorter for any of it: a transition that
+  // repacked the lane would move every clip after it.
+  VD_CHECK_EQ(vd_engine_duration(e), 2 * SECOND);
+
+  vd_engine_destroy(e);
+}
+
+// A dip goes all the way to the colour, and it is a layer of its own — so at
+// the midpoint the frame is that colour and neither clip.
+static void test_a_fade_dips_through_a_colour(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_FADE_WHITE, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  int px[3];
+  VD_CHECK(frame_rgb(e, 0.5, 0.5, px));
+  VD_CHECK(px[0] > 240 && px[1] > 240 && px[2] > 240);
+
+  // Three layers, which is the number VD_LAYERS_PER_LANE was sized for: the
+  // clip leaving (at zero opacity by now), the clip arriving, and the colour
+  // over both of them.
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 3);
+
+  // Black dips the other way, and to black rather than to whatever is behind.
+  clips[1].transition.preset = VD_TRANSITION_FADE_BLACK;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  VD_CHECK(frame_rgb(e, 0.5, 0.5, px));
+  VD_CHECK(px[0] < 12 && px[1] < 12 && px[2] < 12);
+
+  vd_engine_destroy(e);
+}
+
+// The wipe, which is the one preset the transform cannot express. Halfway
+// through, the left of the frame is the new clip and the right is the old one,
+// with a hard edge between them.
+static void test_a_wipe_splits_the_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_WIPE, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.1, 0.5, ORANGE, "the new clip has arrived here");
+  check_frame_pixel_is(e, 0.9, 0.5, GREEN, "and not yet here");
+
+  vd_engine_destroy(e);
+}
+
+// The bug that only a blur-filled clip could have.
+//
+// A blur-fill layer is drawn twice: the backdrop is rendered into an offscreen
+// texture and then composited over the frame full-width. Cutting the *first*
+// of those left the hidden part of the offscreen as opaque black — and that
+// black was then painted across everything underneath, so a wipe erased the
+// very clip it was wiping away from. The cut has to happen at the composite,
+// where discarding leaves what is beneath showing.
+//
+// Worth its own test because blur fill is the document's default and every
+// other check here uses contain or stretch, which have no second pass at all.
+static void test_a_wipe_over_a_blur_filled_clip_keeps_it(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_WIPE, SECOND / 2);
+  // 4:3 sources in a 16:9 frame, so both clips have bars and both take the
+  // blur path — which is exactly what the app does by default.
+  clips[0].fit = VD_FIT_BLUR;
+  clips[1].fit = VD_FIT_BLUR;
+  timeline.width = 640;
+  timeline.height = 360;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.2, 0.5, ORANGE, "the new clip has arrived here");
+  check_frame_pixel_is(e, 0.97, 0.5, GREEN,
+                       "and the old one is still under the rest of the frame");
+
+  // The start of the window: nothing of the new clip yet, and the old one
+  // whole — including the blurred bars it fills the frame's edges with.
+  vd_engine_seek(e, SECOND - SECOND / 4);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.2, 0.5, GREEN, "the old clip at the start");
+  check_frame_pixel_is(e, 0.97, 0.5, GREEN, "and its backdrop with it");
+
+  vd_engine_destroy(e);
+}
+
+// A transition needs a cut. Two clips with a gap between them are not one, and
+// a dissolve into nothing is a fade — which the user would have asked for if
+// they wanted it.
+static void test_a_transition_with_no_cut_does_nothing(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_DISSOLVE, SECOND / 2);
+  // Push the second clip away, leaving a gap where the cut was.
+  clips[1].start = 2 * SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND - SECOND / 8);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 1);
+  check_frame_is(e, GREEN, "no cut, no transition");
+
+  vd_engine_destroy(e);
+}
+
+// Clips on different lanes that happen to meet in time are not a cut either:
+// a transition joins two clips on one lane, and the clip above is an overlay.
+static void test_a_transition_does_not_reach_across_lanes(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_DISSOLVE, SECOND / 2);
+  clips[1].track = 1;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND - SECOND / 8);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 1);
+
+  vd_engine_destroy(e);
+}
+
+// Seeking into the middle of a transition shows exactly what playing into it
+// would — the same claim an animation makes, and for the same reason: there is
+// no state between frames to get out of step.
+static void test_a_seek_into_a_transition_matches_playing_into_it(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      cut_timeline(clips, SECOND, VD_TRANSITION_DISSOLVE, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  const VdTick at = SECOND + SECOND / 8;
+
+  // Played into: every frame from before the transition up to it, and then
+  // the instant itself — the stride does not divide the distance, and
+  // comparing two different instants would prove nothing.
+  for (VdTick t = SECOND / 2; t < at; t += SECOND / 30) {
+    vd_engine_seek(e, t);
+    vd_engine_render_now(e);
+  }
+  vd_engine_seek(e, at);
+  vd_engine_render_now(e);
+  int played[3];
+  VD_CHECK(frame_rgb(e, 0.5, 0.5, played));
+
+  // Jumped straight to, from the other end of the timeline.
+  vd_engine_seek(e, 0);
+  vd_engine_render_now(e);
+  vd_engine_seek(e, at);
+  vd_engine_render_now(e);
+  int sought[3];
+  VD_CHECK(frame_rgb(e, 0.5, 0.5, sought));
+
+  for (int i = 0; i < 3; i++) {
+    VD_CHECK(abs(played[i] - sought[i]) <= TOLERANCE);
+  }
+
+  vd_engine_destroy(e);
+}
+
 
 // --- animation -------------------------------------------------------------
 
@@ -1560,6 +1869,14 @@ int main(void) {
   test_a_sticker_survives_an_edit();
   test_a_sticker_keeps_its_alpha_over_the_picture();
   test_a_sticker_takes_a_transform_and_an_animation();
+  test_a_transition_puts_both_clips_on_screen();
+  test_the_overlap_reaches_past_both_clips_trims();
+  test_a_fade_dips_through_a_colour();
+  test_a_wipe_splits_the_frame();
+  test_a_wipe_over_a_blur_filled_clip_keeps_it();
+  test_a_transition_with_no_cut_does_nothing();
+  test_a_transition_does_not_reach_across_lanes();
+  test_a_seek_into_a_transition_matches_playing_into_it();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

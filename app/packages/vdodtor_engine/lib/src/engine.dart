@@ -115,6 +115,41 @@ class EngineAnimation {
   final int outTicks;
 }
 
+/// How one clip becomes the next. Order matches `VdTransitionPreset` in
+/// vd_transition.h — the index crosses the FFI boundary as an integer, so
+/// these may be appended to and never reordered.
+enum EngineTransitionPreset {
+  none,
+  dissolve,
+  fadeBlack,
+  fadeWhite,
+  slide,
+  push,
+  wipe,
+}
+
+/// The transition at a clip's head: how it joins the clip before it on the
+/// same lane.
+///
+/// It belongs to the incoming clip and names only its own head, so there is one
+/// place a transition is written down and no way for the two sides of a cut to
+/// disagree. The engine finds the outgoing clip itself.
+@immutable
+class EngineTransition {
+  const EngineTransition({
+    this.preset = EngineTransitionPreset.none,
+    this.ticks = 0,
+  });
+
+  static const none = EngineTransition();
+
+  final EngineTransitionPreset preset;
+
+  /// The whole window, half of it either side of the cut. 0 is a plain cut,
+  /// whatever the preset says.
+  final int ticks;
+}
+
 /// Where each line sits inside a caption. Order matches `VdTextAlign` in
 /// vd_text.h — the index crosses the FFI boundary as an integer.
 enum EngineTextAlign { left, center, right }
@@ -265,6 +300,7 @@ class EngineClip {
     this.fit = FitMode.contain,
     this.transform = EngineTransform.identity,
     this.animation = EngineAnimation.none,
+    this.transition = EngineTransition.none,
     this.hasVideo = true,
     this.gain = 1.0,
     this.fadeInTicks = 0,
@@ -311,6 +347,10 @@ class EngineClip {
 
   /// How it arrives and how it leaves.
   final EngineAnimation animation;
+
+  /// How it joins the clip before it on the same lane. The engine pairs the
+  /// two and widens both clips' drawing windows across the cut.
+  final EngineTransition transition;
 
   /// False for a clip that only makes a sound. The compositor skips it rather
   /// than opening a decoder for a picture that is not there.
@@ -582,6 +622,10 @@ class PreviewEngine extends ChangeNotifier {
         entry.anim.in_duration = animation.inTicks;
         entry.anim.out_presetAsInt = animation.outPreset.index;
         entry.anim.out_duration = animation.outTicks;
+
+        final transition = clip.transition;
+        entry.transition.presetAsInt = transition.preset.index;
+        entry.transition.duration = transition.ticks;
       }
 
       final native = arena<VdTimeline>();

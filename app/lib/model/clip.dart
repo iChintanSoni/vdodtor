@@ -1134,6 +1134,136 @@ final class ClipAnimation {
           'out ${outPreset.name} ${outDuration.raw})';
 }
 
+/// How a clip joins the one before it on the same track.
+///
+/// Order matches `VdTransitionPreset` in
+/// `engine/include/vdodtor/vd_transition.h`; the index crosses the FFI
+/// boundary as an integer, so these may be appended to and never reordered.
+///
+/// One direction each. [wipe] wipes left to right and [slide] brings the new
+/// clip in from the right, because a picker with four arrows on every entry is
+/// a picker with twenty entries — and the enum may be appended to, so the other
+/// directions can arrive as presets of their own the way [AnimationPreset]'s
+/// slides did.
+enum TransitionPreset {
+  none('None'),
+
+  /// The new clip fades up over the old one. The one that suits anything.
+  dissolve('Dissolve'),
+
+  /// Down to a colour and back out of it. Black and white are two presets
+  /// rather than a preset and a colour well, because these two are the ones
+  /// anybody asks for.
+  fadeBlack('Fade to black'),
+  fadeWhite('Fade to white'),
+
+  /// The new clip slides in from the right over one that stays put.
+  slide('Slide'),
+
+  /// The same slide, with the old clip shoved out of frame ahead of it.
+  push('Push'),
+
+  /// A hard edge travelling left to right, the new clip behind it.
+  wipe('Wipe');
+
+  const TransitionPreset(this.label);
+  final String label;
+}
+
+/// A transition at a clip's head: what happens at the cut above it.
+///
+/// **It belongs to the incoming clip and names only its own head.** A cut has
+/// two sides and a transition is one decision, so recording it on both would
+/// be two places to keep in step and one of them eventually wrong. The engine
+/// finds the outgoing clip itself — the one on the same lane whose end is
+/// exactly this clip's start.
+///
+/// **The transition straddles the cut and nothing moves.** Half of it sits
+/// either side, so the middle of a dissolve lands where the clips meet, and
+/// the overlap it needs is made by the engine rather than by the document:
+/// [Track] keeps its clips butt-joined and non-overlapping, which is what
+/// [Track.clipAt]'s binary search rests on. Editors more often consume handles
+/// and shorten the sequence; that would move every clip downstream and repack
+/// the magnetic lane, which is a far larger surprise than the alternative —
+/// through its half of the window each clip is asked for a source time outside
+/// its own trim, and the decoder clamps, so a cut between two clips trimmed to
+/// their very ends still dissolves with a held frame rather than failing.
+@immutable
+final class ClipTransition {
+  const ClipTransition({
+    this.preset = TransitionPreset.none,
+    this.duration = Tick.zero,
+  });
+
+  /// A plain cut.
+  static const none = ClipTransition();
+
+  final TransitionPreset preset;
+
+  /// The whole window, half of it either side of the cut.
+  final Tick duration;
+
+  /// What a transition is when somebody picks one without saying how long.
+  /// Half a second reads as deliberate without holding up the edit.
+  static final defaultDuration =
+      Tick(Timebase.project.ticksPerSecond ~/ 2);
+
+  static final minDuration = Tick(Timebase.project.ticksPerSecond ~/ 10);
+  static final maxDuration = Tick(3 * Timebase.project.ticksPerSecond);
+
+  /// True when this would change a frame. A preset with no length and a length
+  /// with no preset are both "a plain cut", and saying so once here keeps
+  /// every reader from working it out again.
+  bool get isActive =>
+      preset != TransitionPreset.none && duration.raw > 0;
+
+  /// Pulled inside the range the inspector offers, on the way into the
+  /// document — so a file written by a version with a wider slider opens as
+  /// something this one can still edit.
+  ClipTransition clamped() => !isActive
+      ? ClipTransition.none
+      : ClipTransition(
+          preset: preset,
+          duration: Tick(
+              duration.raw.clamp(minDuration.raw, maxDuration.raw)),
+        );
+
+  /// Shortened so it cannot reach beyond either clip it joins.
+  ///
+  /// Half the window sits on each side, so the longest a transition may be is
+  /// twice the shorter neighbour. Clamped rather than refused: the duration is
+  /// a slider, and one that stops moving at a length nobody can see looks
+  /// broken.
+  ClipTransition clampedBetween(Tick before, Tick after) {
+    if (!isActive) return ClipTransition.none;
+    final room = 2 * (before.raw < after.raw ? before.raw : after.raw);
+    if (room <= 0) return ClipTransition.none;
+    return duration.raw <= room
+        ? this
+        : ClipTransition(preset: preset, duration: Tick(room));
+  }
+
+  ClipTransition copyWith({TransitionPreset? preset, Tick? duration}) =>
+      ClipTransition(
+        preset: preset ?? this.preset,
+        duration: duration ?? this.duration,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipTransition &&
+      other.preset == preset &&
+      other.duration == duration;
+
+  @override
+  int get hashCode => Object.hash(preset, duration.raw);
+
+  @override
+  String toString() => isActive
+      ? 'ClipTransition(${preset.name} ${duration.raw})'
+      : 'ClipTransition.none';
+}
+
 /// One piece of media placed on a track.
 ///
 /// A clip is a window onto its source: [sourceIn] is where the window opens in
@@ -1156,6 +1286,7 @@ final class Clip {
     this.transform = ClipTransform.identity,
     this.audio = ClipAudio.unity,
     this.animation = ClipAnimation.still,
+    this.transition = ClipTransition.none,
     this.text,
     this.shape,
   }) : assert(
@@ -1236,6 +1367,10 @@ final class Clip {
   /// has animated, which is almost all of them.
   final ClipAnimation animation;
 
+  /// How it joins the clip before it on the same track — see [ClipTransition].
+  /// [ClipTransition.none] is a plain cut, which is almost every join.
+  final ClipTransition transition;
+
   /// The caption this clip draws, or null for a clip that is not one.
   final ClipText? text;
 
@@ -1281,6 +1416,7 @@ final class Clip {
     ClipTransform? transform,
     ClipAudio? audio,
     ClipAnimation? animation,
+    ClipTransition? transition,
     ClipText? text,
     ClipShape? shape,
   }) =>
@@ -1295,6 +1431,7 @@ final class Clip {
         transform: transform ?? this.transform,
         audio: audio ?? this.audio,
         animation: animation ?? this.animation,
+        transition: transition ?? this.transition,
         // What a clip *is* never changes: a caption never becomes a shape or a
         // media clip and neither becomes a caption, so there is no need to be
         // able to clear either of these.
@@ -1327,6 +1464,11 @@ final class Clip {
         // For the same reason the fades are clamped: an entrance longer than
         // the clip it is on is one the clip never finishes arriving from.
         animation: animation.clampedTo(newDuration),
+        // And a transition longer than twice the clip would reach past the
+        // far end of it. Only this clip's own half is bounded here — the other
+        // half belongs to a neighbour this knows nothing about, and the engine
+        // clamps against both when it pairs the cut.
+        transition: transition.clampedBetween(newDuration, newDuration),
       );
 
   @override
@@ -1342,12 +1484,14 @@ final class Clip {
       other.transform == transform &&
       other.audio == audio &&
       other.animation == animation &&
+      other.transition == transition &&
       other.text == text &&
       other.shape == shape;
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, audio, animation, text, shape);
+      sourceIn.raw, label, enabled, transform, audio, animation, transition,
+      text, shape);
 
   @override
   String toString() => isGenerated

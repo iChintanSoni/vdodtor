@@ -76,6 +76,15 @@ typedef struct {
 // callers can say what they mean.
 VD_EXPORT VdTransform vd_transform_identity(void);
 
+// How much of a layer to cut away from each side, as fractions of its own
+// rectangle. Zeroed cuts nothing away — see VdLayer::reveal.
+typedef struct {
+  float left;
+  float top;
+  float right;
+  float bottom;
+} VdReveal;
+
 typedef struct {
   // CVPixelBufferRef from vd_decoder_frame_at. Borrowed for the duration of
   // the call; the compositor does not retain it.
@@ -102,6 +111,17 @@ typedef struct {
 
   VdFitMode fit;
   float opacity;  // 0..1
+
+  // How much of the layer to cut away from each side, as fractions of its own
+  // rectangle. A zeroed value cuts nothing away, so a caller with nothing to
+  // say about it can leave the field alone.
+  //
+  // A hard edge rather than a fade, and in the layer's *own* space rather than
+  // the output's, so it travels with the clip if the clip is also moving. This
+  // is the one thing a transition needs that a transform cannot express: a
+  // wipe is an edge crossing a picture that is standing still, where a crop
+  // would shrink the picture and a scale would move it.
+  VdReveal reveal;
 
   // Where this layer goes and how much of it shows. A zeroed transform is the
   // identity, so this may be ignored entirely.

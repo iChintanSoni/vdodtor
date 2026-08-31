@@ -15,6 +15,8 @@ export 'src/engine.dart'
         EngineShape,
         EngineShapeKind,
         EngineStats,
+        EngineTransition,
+        EngineTransitionPreset,
         EngineText,
         EngineTextAlign,
         EngineTimeline,

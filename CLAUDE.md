@@ -36,7 +36,8 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
            can be set in
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
-engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets), vd_probe,
+engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
+           vd_transition (how one clip becomes the next), vd_probe,
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
@@ -114,6 +115,34 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A transition's overlap is made by the engine, never by the document.** Two clips
+  that meet at a cut are butt-joined and non-overlapping in `Track` — `Track.clipAt`
+  binary-searches on that, and so do hit testing, split and insert — so the engine
+  widens both clips' *drawing* windows across the cut instead: `render_from` and
+  `render_to` in `vd_engine.c`, resolved once per edit in `resolve_transitions`.
+  Nothing on the timeline moves and the magnetic lane never repacks.
+- **"Never fails for lack of media" is the decoder's clamp, reused.** Through its half
+  of the window each clip is asked for a source time outside its own trim, and
+  `vd_decoder_frame_at` already returns the first frame before the start and the last
+  past the end. A cut between two clips trimmed to their very ends still dissolves,
+  with a held frame on the side that ran out — no handles, no shortening.
+- **A transition is recorded on the incoming clip and names only its own head.** One
+  decision, one place: `Clip.transition` / `VdTimelineClip.transition`. The engine
+  finds the outgoing clip itself, and `SetClipTransition` clamps the window against
+  both neighbours because half of it sits on each side.
+- **A dissolve leaves the outgoing clip at full opacity.** With premultiplied
+  over-blending, B at alpha t over A *is* B·t + A·(1−t); turning A down as well lets
+  the black behind them show through the middle of every dissolve.
+- **A fade dips through a layer, not through opacity.** `VdTransitionValue::flash` is a
+  solid colour over both clips and under anything on a higher lane, so a caption over a
+  fade to black stays legible. Opacity cannot do it: it dips to whatever is *behind*
+  the clips — the main track's picture, on an overlay lane — and nothing fades a clip
+  to white.
+- **`VdLayer::reveal` is a hard edge in the layer's own space, and it is cut at the
+  composite.** A blur-filled clip is drawn twice — backdrop into an offscreen texture,
+  then composited full-width — and cutting the first leaves the hidden part as opaque
+  black which is then painted over everything underneath. `draw_full_frame` takes the
+  hide for that reason. Zeroed hides nothing, which is why the goldens never moved.
 - **A sticker is a file the decoder cannot open.** A GIF, an animated WebP or an
   APNG goes through `vd_sticker`, not `vd_decoder`, and not as a preference:
   `vd_decoder` exports VideoToolbox or YUV420P and refuses everything else, so a
@@ -202,8 +231,9 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   checks the second against the third. A mismatch is silent: the caption falls back to
   the system face and looks like somebody's decision.
 - **Lane counts and `VD_MAX_LAYERS` move together.** `Project.maxTracksOfKind` allows one
-  main, three overlays and eight text lanes; `VD_MAX_LAYERS` in `vd_engine.c` is their
-  sum. A lane the document allows and the compositor drops is a caption that is on the
+  main, three overlays and eight text lanes; `VD_MAX_LANES` in `vd_engine.c` is their
+  sum, and `VD_MAX_LAYERS` is that times three — a lane in the middle of a transition
+  draws the clip leaving, the clip arriving and the colour dipped between them. A lane the document allows and the compositor drops is a caption that is on the
   timeline and not on the screen.
 - **An animation is a pure function of one number, not a keyframe list.**
   `vd_anim_value(preset, t)` maps "how far through the entrance" to an offset, a scale,

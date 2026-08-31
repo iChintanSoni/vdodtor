@@ -502,6 +502,78 @@ static void test_a_generated_layer_composites_over_the_picture(void) {
   vd_frame_release(&picture);
 }
 
+// A wipe: a hard edge crossing a picture that is standing still.
+//
+// The one thing a transform cannot express, which is why it is a field of its
+// own rather than a crop. A crop would shrink the picture into a smaller
+// rectangle; this leaves every pixel exactly where it was and stops drawing
+// past a line.
+static void test_a_reveal_cuts_the_layer_at_a_hard_edge(void) {
+  VdFrame picture;
+  if (!first_frame("solid_sd_601.mp4", &picture)) return;
+
+  CVPixelBufferRef overlay = generated_layer(200, 200, 0, 0, 255, 255);
+  VD_CHECK(overlay != NULL);
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c && overlay) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    memset(&layers[1], 0, sizeof(layers[1]));
+    layers[1].pixel_buffer = overlay;
+    layers[1].format = VD_PIXEL_BGRA;
+    layers[1].fit = VD_FIT_STRETCH;
+    layers[1].opacity = 1.0f;
+
+    // Nothing hidden: the zeroed reveal draws the whole layer, which is what
+    // lets every caller that has never heard of a wipe leave it alone.
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, 255, 0, 0, "a zeroed reveal hides nothing");
+
+    // Half of it cut away from the right. The ink on the left is untouched —
+    // not moved, not scaled — and the picture is back on the right.
+    layers[1].reveal.right = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, 255, 0, 0, "the revealed half is unmoved");
+    check_pixel_is(c, 150, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "the hidden half is the clip underneath");
+
+    // And from the left, which is the other direction the same edge travels.
+    layers[1].reveal.right = 0.0f;
+    layers[1].reveal.left = 0.6f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "hidden from the left");
+
+    // Every side, so a wipe can run either way on either axis.
+    layers[1].reveal.left = 0.0f;
+    layers[1].reveal.bottom = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 20, 255, 0, 0, "the top half survives");
+    check_pixel_is(c, 50, 180, SOLID_R, SOLID_G, SOLID_B,
+                   "and the bottom half is gone");
+
+    // Margins that meet in the middle hide everything rather than wrapping
+    // round into nonsense.
+    layers[1].reveal.bottom = 0.0f;
+    layers[1].reveal.left = 0.9f;
+    layers[1].reveal.right = 0.9f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "overlapping margins leave nothing");
+
+    // Out of range is clamped, not believed: a layer that vanished mid-wipe
+    // is a harder bug to see than one that stops wiping.
+    layers[1].reveal.left = -5.0f;
+    layers[1].reveal.right = 0.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, 255, 0, 0, "a negative margin hides nothing");
+
+    vd_compositor_destroy(c);
+  }
+  if (overlay) CVPixelBufferRelease(overlay);
+  vd_frame_release(&picture);
+}
+
 static void test_a_null_layer_is_skipped_not_crashed(void) {
   VdCompositor* c = vd_compositor_create(160, 160, NULL);
   if (!c) return;
@@ -1064,6 +1136,7 @@ int main(void) {
   test_opacity_blends_towards_black();
   test_layers_stack_bottom_to_top();
   test_a_generated_layer_composites_over_the_picture();
+  test_a_reveal_cuts_the_layer_at_a_hard_edge();
   test_a_null_layer_is_skipped_not_crashed();
   test_output_and_png();
   test_repeated_renders_stay_correct();

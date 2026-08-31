@@ -213,6 +213,111 @@ class VdEngineBindings {
   late final _vd_anim_reveals_text = _vd_anim_reveals_textPtr
       .asFunction<bool Function(ffi.Pointer<VdClipAnim>)>();
 
+  /// The cut with no transition on it: both clips at rest, nothing hidden, no
+  /// flash. Not a zeroed struct — a zeroed one has both clips invisible.
+  VdTransitionValue vd_transition_rest() {
+    return _vd_transition_rest();
+  }
+
+  late final _vd_transition_restPtr =
+      _lookup<ffi.NativeFunction<VdTransitionValue Function()>>(
+        'vd_transition_rest',
+      );
+  late final _vd_transition_rest = _vd_transition_restPtr
+      .asFunction<VdTransitionValue Function()>();
+
+  /// One preset at `t`, where 0 is the start of the transition and 1 is its end.
+  /// `t` outside 0..1 is clamped, so a caller doing its own arithmetic on ticks
+  /// cannot produce a frame nobody designed.
+  VdTransitionValue vd_transition_value(VdTransitionPreset preset, double t) {
+    return _vd_transition_value(preset.value, t);
+  }
+
+  late final _vd_transition_valuePtr =
+      _lookup<
+        ffi.NativeFunction<
+          VdTransitionValue Function(ffi.UnsignedInt, ffi.Float)
+        >
+      >('vd_transition_value');
+  late final _vd_transition_value = _vd_transition_valuePtr
+      .asFunction<VdTransitionValue Function(int, double)>();
+
+  /// A clip nobody has put a transition on.
+  VdClipTransition vd_clip_transition_none() {
+    return _vd_clip_transition_none();
+  }
+
+  late final _vd_clip_transition_nonePtr =
+      _lookup<ffi.NativeFunction<VdClipTransition Function()>>(
+        'vd_clip_transition_none',
+      );
+  late final _vd_clip_transition_none = _vd_clip_transition_nonePtr
+      .asFunction<VdClipTransition Function()>();
+
+  /// True when this would change a frame: a preset that does something, and a
+  /// duration to do it in. A preset with no length and a length with no preset
+  /// are both "nothing happens", and saying so once here keeps the engine from
+  /// working it out twice.
+  bool vd_transition_active(ffi.Pointer<VdClipTransition> transition) {
+    return _vd_transition_active(transition);
+  }
+
+  late final _vd_transition_activePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdClipTransition>)>
+      >('vd_transition_active');
+  late final _vd_transition_active = _vd_transition_activePtr
+      .asFunction<bool Function(ffi.Pointer<VdClipTransition>)>();
+
+  /// Where the transition sits, given the cut it is at.
+  ///
+  /// Half either side, and clamped so it can never reach beyond the clips it
+  /// joins: a transition longer than the shorter of the two would dissolve into a
+  /// clip that is not on screen yet. Returns false when nothing happens, in which
+  /// case the outputs are untouched.
+  bool vd_transition_window(
+    ffi.Pointer<VdClipTransition> transition,
+    int cut,
+    int out_clip_start,
+    int in_clip_end,
+    ffi.Pointer<VdTick> out_from,
+    ffi.Pointer<VdTick> out_to,
+  ) {
+    return _vd_transition_window(
+      transition,
+      cut,
+      out_clip_start,
+      in_clip_end,
+      out_from,
+      out_to,
+    );
+  }
+
+  late final _vd_transition_windowPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Bool Function(
+            ffi.Pointer<VdClipTransition>,
+            VdTick,
+            VdTick,
+            VdTick,
+            ffi.Pointer<VdTick>,
+            ffi.Pointer<VdTick>,
+          )
+        >
+      >('vd_transition_window');
+  late final _vd_transition_window = _vd_transition_windowPtr
+      .asFunction<
+        bool Function(
+          ffi.Pointer<VdClipTransition>,
+          int,
+          int,
+          int,
+          ffi.Pointer<VdTick>,
+          ffi.Pointer<VdTick>,
+        )
+      >();
+
   /// Fills `out` from `path`. Returns VD_OK, or a negative VdResult.
   /// Never partially fills: on failure `out` is zeroed.
   int vd_probe_file(ffi.Pointer<ffi.Char> path, ffi.Pointer<VdProbeInfo> out) {
@@ -2102,6 +2207,125 @@ final class VdClipAnim extends ffi.Struct {
   external int out_duration;
 }
 
+/// The presets, in the order a picker offers them.
+///
+/// One direction each. `VD_TRANSITION_WIPE` wipes left to right and
+/// `VD_TRANSITION_SLIDE` brings the new clip in from the right, because a
+/// picker with four arrows per entry is a picker with twenty entries — and the
+/// enum may be appended to, so the other directions can arrive as their own
+/// presets the way `VD_ANIM_SLIDE_*` did.
+///
+/// Values cross the FFI boundary as integers: append only, never reorder.
+enum VdTransitionPreset {
+  VD_TRANSITION_NONE(0),
+
+  /// The new clip fades up over the old one. The one that suits anything.
+  VD_TRANSITION_DISSOLVE(1),
+
+  /// Down to a colour and back up out of it. Black and white are two presets
+  /// rather than a preset and a colour, because these two are the ones anybody
+  /// asks for and a colour well would be a whole control for the third.
+  VD_TRANSITION_FADE_BLACK(2),
+  VD_TRANSITION_FADE_WHITE(3),
+
+  /// The new clip slides in from the right over the old one, which stays put.
+  VD_TRANSITION_SLIDE(4),
+
+  /// The same slide, but the old clip is shoved out of the frame by it.
+  VD_TRANSITION_PUSH(5),
+
+  /// A hard edge travelling left to right, the new clip behind it.
+  VD_TRANSITION_WIPE(6);
+
+  final int value;
+  const VdTransitionPreset(this.value);
+
+  static VdTransitionPreset fromValue(int value) => switch (value) {
+    0 => VD_TRANSITION_NONE,
+    1 => VD_TRANSITION_DISSOLVE,
+    2 => VD_TRANSITION_FADE_BLACK,
+    3 => VD_TRANSITION_FADE_WHITE,
+    4 => VD_TRANSITION_SLIDE,
+    5 => VD_TRANSITION_PUSH,
+    6 => VD_TRANSITION_WIPE,
+    _ => throw ArgumentError('Unknown value for VdTransitionPreset: $value'),
+  };
+}
+
+/// What the two clips look like at one instant.
+///
+/// "Out" is the clip leaving and "in" is the clip arriving. Offsets are
+/// fractions of the output's width and height, the same units `VdTransform`
+/// uses, and they are *added* to whatever transform the clip already had — a
+/// clip someone pushed to one side still pushes out from where they put it.
+final class VdTransitionValue extends ffi.Struct {
+  @ffi.Float()
+  external double out_opacity;
+
+  @ffi.Float()
+  external double in_opacity;
+
+  @ffi.Float()
+  external double out_offset_x;
+
+  @ffi.Float()
+  external double out_offset_y;
+
+  @ffi.Float()
+  external double in_offset_x;
+
+  @ffi.Float()
+  external double in_offset_y;
+
+  /// How much of the incoming clip to cut away from each side, as fractions of
+  /// its own rectangle. Zeroed cuts nothing away. This is the one thing a
+  /// transition needs that a transform cannot express: a wipe is a hard edge
+  /// moving across a picture that is standing still, not a picture moving.
+  @ffi.Float()
+  external double in_hide_left;
+
+  @ffi.Float()
+  external double in_hide_top;
+
+  @ffi.Float()
+  external double in_hide_right;
+
+  @ffi.Float()
+  external double in_hide_bottom;
+
+  /// A solid colour laid over *both* clips, and how opaque it is. 0 draws
+  /// nothing, which is every preset but the two fades.
+  ///
+  /// A layer of its own, laid over the two clips at the cut and under anything
+  /// on a higher track — a caption over a fade-to-black stays legible, which is
+  /// what makes it a transition between two clips rather than an effect on the
+  /// whole frame.
+  ///
+  /// It has to be a layer. Turning the two clips' own opacity down instead
+  /// dips to whatever is *behind* them: black on the main track, which looks
+  /// right by accident, and the main track's picture on an overlay lane, which
+  /// does not. And there is no opacity at all that fades a clip to white.
+  @ffi.Float()
+  external double flash;
+
+  /// 0xAARRGGBB
+  @ffi.Uint32()
+  external int flash_color;
+}
+
+/// The transition at the head of one clip.
+final class VdClipTransition extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int presetAsInt;
+
+  VdTransitionPreset get preset => VdTransitionPreset.fromValue(presetAsInt);
+
+  /// The whole window, half of it either side of the cut. 0 is no transition,
+  /// whatever the preset says.
+  @VdTick()
+  external int duration;
+}
+
 enum VdResult {
   VD_OK(0),
 
@@ -2385,6 +2609,22 @@ final class VdTransform extends ffi.Struct {
   external bool flip_v;
 }
 
+/// How much of a layer to cut away from each side, as fractions of its own
+/// rectangle. Zeroed cuts nothing away — see VdLayer::reveal.
+final class VdReveal extends ffi.Struct {
+  @ffi.Float()
+  external double left;
+
+  @ffi.Float()
+  external double top;
+
+  @ffi.Float()
+  external double right;
+
+  @ffi.Float()
+  external double bottom;
+}
+
 final class VdLayer extends ffi.Struct {
   /// CVPixelBufferRef from vd_decoder_frame_at. Borrowed for the duration of
   /// the call; the compositor does not retain it.
@@ -2427,6 +2667,17 @@ final class VdLayer extends ffi.Struct {
   /// 0..1
   @ffi.Float()
   external double opacity;
+
+  /// How much of the layer to cut away from each side, as fractions of its own
+  /// rectangle. A zeroed value cuts nothing away, so a caller with nothing to
+  /// say about it can leave the field alone.
+  ///
+  /// A hard edge rather than a fade, and in the layer's *own* space rather than
+  /// the output's, so it travels with the clip if the clip is also moving. This
+  /// is the one thing a transition needs that a transform cannot express: a
+  /// wipe is an edge crossing a picture that is standing still, where a crop
+  /// would shrink the picture and a scale would move it.
+  external VdReveal reveal;
 
   /// Where this layer goes and how much of it shows. A zeroed transform is the
   /// identity, so this may be ignored entirely.
@@ -2755,6 +3006,16 @@ final class VdTimelineClip extends ffi.Struct {
   /// Where this clip sits inside the frame. A zeroed transform is the identity,
   /// so a caller with nothing to say about it can leave the field alone.
   external VdTransform transform;
+
+  /// How this clip joins the one before it on the same track. A zeroed
+  /// VdClipTransition is "a plain cut", so this is a field a caller can ignore.
+  ///
+  /// It belongs to the *incoming* clip and names only its own head, so there is
+  /// one place a transition is written down and no way for the two sides of a
+  /// cut to disagree about it. The engine finds the outgoing clip itself — the
+  /// one on the same track whose end is exactly this clip's start — once per
+  /// edit rather than once per frame. See vd_transition.h.
+  external VdClipTransition transition;
 
   /// How it arrives and how it leaves. A zeroed VdClipAnim is "no animation",
   /// so this is another field a caller can ignore.

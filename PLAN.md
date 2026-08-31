@@ -17,7 +17,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > keyboard reaches all of it.**
 >
 > **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
-> animated stickers over them, and make them all arrive.** A caption is a clip with no
+> animated stickers over them, make them all arrive, and join one shot to the next.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -33,6 +33,15 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > preset but the typewriter is the same pixels moved about, so an animated caption is laid
 > out **once** however much it moves; the typewriter redraws once per *character*, never
 > once per frame, because the caption cache is keyed on how much of it has been typed.
+>
+> Cuts can now be **joins**: dissolve, slide, push, wipe and a dip to black or white,
+> adjustable, on any cut on any lane. The decision worth knowing is that the overlap a
+> transition needs is made by the *engine*, not the document — clips stay butt-joined and
+> non-overlapping, nothing on the timeline moves, and "never fails for lack of media" falls
+> out of the decoder's existing clamp past the end of a source. Five of the six presets
+> were things the compositor could already do; the wipe needed a hard reveal edge, and
+> adding it turned up a blur-fill bug that had been making every wipe in the real app erase
+> the clip it was wiping away from.
 >
 > **Stickers** are the third kind of layer and the first that comes out of a file the
 > engine does not decode like video: a GIF, an animated WebP or an APNG is decoded whole
@@ -1076,8 +1085,59 @@ start to finish without touching another editor; undo works through the whole se
       one-second animation it is showing its first frame again, over the shot.
 
 ### Transitions
-- [ ] Cross-dissolve, slide/push, wipe, fade-to-black, fade-to-white; adjustable duration;
+- [x] Cross-dissolve, slide/push, wipe, fade-to-black, fade-to-white; adjustable duration;
       overlap model (never fails for lack of media)
+      — six presets, and the decision that matters is **where the overlap
+      lives**. A cross-dissolve needs both clips on screen at once, and that
+      overlap has to come from somewhere.
+      Most editors take it out of the timeline: the incoming clip is pulled
+      earlier, the sequence gets shorter, and the cut consumes handles. Here it
+      is made by the **engine** instead. The document keeps its clips
+      butt-joined and non-overlapping, because `Track`'s no-overlap invariant is
+      not decoration — `Track.clipAt` binary-searches on it, and so do hit
+      testing, split and insert. Breaking it for one feature would have poisoned
+      all of them, and shortening the sequence would repack the magnetic lane
+      and move every clip downstream of a cut nobody dragged.
+      So a transition **straddles the cut and moves nothing**: half the window
+      each side, and the engine widens the two clips' drawing windows across it.
+      Through its half each clip is asked for a source time outside its own
+      trim — and `vd_decoder_frame_at` already clamps, which is the whole of
+      "never fails for lack of media". A cut between two clips trimmed to their
+      very ends still dissolves, with a held frame on the side that ran out.
+      That behaviour was written for scrubbing and paid for itself here.
+      **It is recorded on the incoming clip and names only its own head.** A cut
+      has two sides and a transition is one decision, so writing it on both
+      would be two places to keep in step and one of them eventually wrong. The
+      engine pairs it with whatever ends exactly at that start — once per edit,
+      not once per frame.
+      Five of the six are things the compositor could already do: a dissolve is
+      the incoming clip's opacity (and the outgoing one stays at *full*, because
+      with premultiplied over-blending B at alpha t over A already gives
+      B·t + A·(1−t) — turning A down as well would let the black behind them
+      show through the middle of every dissolve). Slide and push are offsets.
+      The two fades are a solid layer dipped over both clips and under anything
+      on a higher lane, so a caption over a fade to black stays legible — and it
+      has to be a *layer*, because turning the clips' own opacity down dips to
+      whatever is behind them, which on an overlay lane is the main track and
+      for white is nothing at all.
+      **The wipe needed one new thing**: `VdLayer::reveal`, a hard edge in the
+      layer's own space. A crop would shrink the picture and a scale would move
+      it; a wipe is an edge crossing a picture that is standing still. Zeroed
+      hides nothing, so every caller that has never heard of it is unaffected —
+      the golden frames did not move.
+      **And it found a real bug, by looking at a frame rather than at a test.**
+      A blur-filled clip is drawn twice: its backdrop is rendered into an
+      offscreen texture and then composited full-width. Cutting the *first* of
+      those left the hidden part of the offscreen as opaque black, which was
+      then painted over everything underneath — so a wipe erased the clip it was
+      wiping away from. The cut belongs at the composite, where discarding
+      leaves what is beneath showing. Every engine test used contain or stretch,
+      which have no second pass; blur fill is the document's default, so every
+      wipe in the actual app was broken and nothing red said so.
+      Measured in the running app: four presets across a real cut, one extra
+      layer inside the window and two inside a fade, and the frame at the middle
+      of a fade-to-white is white — with the sticker from a higher lane still
+      over it.
 
 ### Effects
 - [ ] Color adjust on GPU: brightness, contrast, saturation, temperature, tint

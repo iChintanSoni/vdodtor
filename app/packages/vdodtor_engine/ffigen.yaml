@@ -13,6 +13,7 @@ headers:
   entry-points:
     - '../../../engine/include/vdodtor/vd_time.h'
     - '../../../engine/include/vdodtor/vd_anim.h'
+    - '../../../engine/include/vdodtor/vd_transition.h'
     - '../../../engine/include/vdodtor/vd_probe.h'
     - '../../../engine/include/vdodtor/vd_decoder.h'
     - '../../../engine/include/vdodtor/vd_compositor.h'

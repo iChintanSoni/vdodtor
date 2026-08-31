@@ -215,6 +215,8 @@ class TimelinePainter extends CustomPainter {
       _paintVolumeLine(canvas, clip, track, rect);
     }
 
+    _paintTransition(canvas, clip, track, body);
+
     if (selected) {
       canvas.drawRRect(
         rect,
@@ -257,6 +259,72 @@ class TimelinePainter extends CustomPainter {
   /// The clip's sound, drawn as one vertical line per pixel column.
   ///
   /// The envelope comes from the file and the height comes from the clip:
+  /// A transition, drawn at the cut it happens at rather than on the clip that
+  /// records it.
+  ///
+  /// The document keeps it on the incoming clip because a cut has two sides and
+  /// a transition is one decision — but on screen it belongs to *both*, and a
+  /// mark that sat only on the second clip would read as a property of that
+  /// clip rather than of the join. So it straddles: half over each, exactly
+  /// where the engine puts the window.
+  ///
+  /// Nothing is drawn when the clip has no neighbour to join. A transition with
+  /// no cut under it does nothing, and drawing one would be a promise the
+  /// picture does not keep.
+  void _paintTransition(Canvas canvas, Clip clip, Track track, Rect body) {
+    final transition = clip.transition;
+    if (!transition.isActive) return;
+
+    final index = track.indexOfClip(clip.id);
+    if (index <= 0) return;
+    final previous = track.clips[index - 1];
+    if (previous.end != clip.start) return;
+
+    // The same clamp the engine applies: half a window either side, and never
+    // past either clip.
+    final half = math.min(
+      transition.duration.raw ~/ 2,
+      math.min(previous.duration.raw, clip.duration.raw),
+    );
+    if (half <= 0) return;
+
+    final cut = body.left;
+    final pixels = half * controller.geometry.pxPerTick;
+    // A cut is a line, so at any sensible zoom the window is a sliver. Widened
+    // to something a pointer could aim at, because a mark nobody can see is a
+    // setting nobody knows is on.
+    final reach = math.max(pixels, 4.0);
+    final area = Rect.fromLTRB(cut - reach, body.top, cut + reach, body.bottom);
+
+    canvas.drawRect(
+      area,
+      Paint()..color = VdColors.accent.withValues(alpha: 0.34),
+    );
+    // The bow tie every editor draws at a cut, and the reason it is two
+    // triangles rather than a block: it says which way the picture is going.
+    final middle = area.center.dy;
+    final path = Path()
+      ..moveTo(area.left, area.top)
+      ..lineTo(area.left, area.bottom)
+      ..lineTo(area.right, area.top)
+      ..lineTo(area.right, area.bottom)
+      ..close();
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = VdColors.accent.withValues(alpha: 0.9),
+    );
+    canvas.drawLine(
+      Offset(area.left, middle),
+      Offset(area.right, middle),
+      Paint()
+        ..strokeWidth = 1
+        ..color = VdColors.accent.withValues(alpha: 0.9),
+    );
+  }
+
   /// volume, fades and mute scale it here, at paint time. That split is what
   /// makes a fader instant — pulling one repaints, where anything cached per
   /// clip would have to be rebuilt — and it is also what lets one analysis
