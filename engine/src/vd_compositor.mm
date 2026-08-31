@@ -37,6 +37,13 @@ struct LayerUniforms {
   float kb;
   float blur_step[2];
   float hide[4];
+  float grade[3][4];
+  uint32_t graded;
+  // Metal rounds a struct up to its own 16-byte alignment and this mirror
+  // would stop at 148 bytes; setFragmentBytes copies exactly what it is told
+  // to, so without this the GPU is handed a buffer shorter than the layout it
+  // was compiled against.
+  uint32_t padding_[3];
 };
 
 static float clamp01(float v) {
@@ -100,6 +107,28 @@ FitRect compute_fit(int32_t src_w, int32_t src_h, int32_t dst_w, int32_t dst_h,
   }
   return {(float)((1.0 - w) / 2.0), (float)((1.0 - h) / 2.0), (float)w,
           (float)h};
+}
+
+// Folds a layer's five sliders into the rows the shader multiplies by, and
+// says whether there is anything to multiply at all.
+//
+// Skipped entirely for a neutral grade rather than written out as the
+// identity: an ungraded fragment then takes the arithmetic it took before the
+// compositor learned about grading, which is what keeps the golden frames from
+// moving for a feature nobody used.
+void set_grade(LayerUniforms* u, const VdColorAdjust& adjust) {
+  if (vd_color_is_neutral(&adjust)) {
+    u->graded = 0;
+    return;
+  }
+  const VdColorTransform t = vd_color_transform(&adjust);
+  for (int row = 0; row < 3; row++) {
+    u->grade[row][0] = t.m[row * 3 + 0];
+    u->grade[row][1] = t.m[row * 3 + 1];
+    u->grade[row][2] = t.m[row * 3 + 2];
+    u->grade[row][3] = t.offset[row];
+  }
+  u->graded = 1;
 }
 
 bool is_full_range(OSType pixel_format) {
@@ -488,6 +517,7 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       uniforms.hide[2] = clamp01(layer.reveal.right);
       uniforms.hide[3] = clamp01(layer.reveal.bottom);
       uniforms.opacity = opacity;
+      set_grade(&uniforms, layer.color);
       uniforms.quarter_turns = (uint32_t)turns;
       // The decoder read the range from the stream; the pixel buffer's own
       // format type is the fallback for buffers that did not come from it.
@@ -585,7 +615,10 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
 
         // Back to the output, keeping whatever earlier layers drew.
         encoder = begin_pass(commands, c->output_texture, false);
-        // Cut here, where discarding leaves what is underneath showing.
+        // Cut here, where discarding leaves what is underneath showing. The
+        // grade is *not* passed on: `background` carried it into the offscreen
+        // above, so these pixels are already graded and doing it again would
+        // grade the backdrop twice as hard as the picture in front of it.
         draw_full_frame(encoder, c->pipeline_texture, c->blur_a, opacity, 0.0f,
                         0.0f, uniforms.hide);
       }

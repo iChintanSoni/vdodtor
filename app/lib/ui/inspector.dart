@@ -41,6 +41,9 @@ class Inspector extends StatelessWidget {
   void _setShape(Clip clip, ClipShape shape) =>
       _store.run(SetClipShape(clip.id, shape), fromGestureStart: true);
 
+  void _setColor(Clip clip, ClipColor color) =>
+      _store.run(SetClipColor(clip.id, color), fromGestureStart: true);
+
   void _setAnimation(Clip clip, ClipAnimation animation) =>
       _store.run(SetClipAnimation(clip.id, animation), fromGestureStart: true);
 
@@ -131,6 +134,22 @@ class Inspector extends StatelessWidget {
               clip: clip,
               onChanged: (t) => _set(clip, t),
               onCommit: _commit,
+            ),
+          // Where the picture goes, and then what it looks like when it gets
+          // there. Only for a clip whose picture came out of a file: a caption
+          // and a shape are drawn from colours the two sections above already
+          // offer, and a saturation slider on a rectangle somebody just picked
+          // the colour of is a second control fighting the first.
+          if (showsPicture && !clip.isGenerated)
+            _ColorControls(
+              color: clip.color,
+              onChanged: (c) => _setColor(clip, c),
+              onCommit: _commit,
+              onReset: () {
+                _commit();
+                _store.run(SetClipColor(clip.id, ClipColor.neutral));
+                _commit();
+              },
             ),
           // Where a clip sits, and then how it gets there. In that order
           // because the resting position is what an animation animates to,
@@ -1031,6 +1050,110 @@ String _percentOfSize(double v) => '${(v * 100).round()}%';
 /// It appears whether or not the clip has a neighbour. A transition with no
 /// cut under it does nothing, and hiding the control when a clip is dragged
 /// away from its neighbour would mean re-picking one every time it came back.
+/// The five sliders that decide what a shot looks like.
+///
+/// All five run −1..1 from the same centre, because that is what the document
+/// stores and what the engine expects — and because a panel where every slider
+/// rests in the middle and means "more" to the right is one nobody has to
+/// learn. See [ClipColor].
+///
+/// In the order they are applied, which is also the order anybody grades in:
+/// fix the light, set the level, set the contrast, and judge the colour last
+/// against what the first three left. A panel that offered them in some other
+/// order would be teaching the wrong habit.
+class _ColorControls extends StatelessWidget {
+  const _ColorControls({
+    required this.color,
+    required this.onChanged,
+    required this.onCommit,
+    required this.onReset,
+  });
+
+  final ClipColor color;
+  final ValueChanged<ClipColor> onChanged;
+  final VoidCallback onCommit;
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const _SectionLabel('COLOUR'),
+              const Spacer(),
+              // A grade is the one panel that is genuinely hard to undo by
+              // hand: five sliders that have all drifted cannot be put back by
+              // eye, and the undo stack has merged the whole session of
+              // dragging into one step by then.
+              if (!color.isNeutral)
+                TextButton(
+                  onPressed: onReset,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('Reset', style: TextStyle(fontSize: 11)),
+                ),
+            ],
+          ),
+          _Slider(
+            label: 'Temperature',
+            value: color.temperature,
+            min: -1,
+            max: 1,
+            format: _gradePercent,
+            onChanged: (v) => onChanged(color.copyWith(temperature: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Tint',
+            value: color.tint,
+            min: -1,
+            max: 1,
+            format: _gradePercent,
+            onChanged: (v) => onChanged(color.copyWith(tint: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Brightness',
+            value: color.brightness,
+            min: -1,
+            max: 1,
+            format: _gradePercent,
+            onChanged: (v) => onChanged(color.copyWith(brightness: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Contrast',
+            value: color.contrast,
+            min: -1,
+            max: 1,
+            format: _gradePercent,
+            onChanged: (v) => onChanged(color.copyWith(contrast: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Saturation',
+            value: color.saturation,
+            min: -1,
+            max: 1,
+            format: _gradePercent,
+            onChanged: (v) => onChanged(color.copyWith(saturation: v)),
+            onCommit: onCommit,
+          ),
+        ],
+      );
+}
+
+/// Signed, so a slider that is off centre says which way. "0%" for the shot as
+/// it was shot reads better than "100%" would: a grade is a change, and the
+/// number should be the size of the change.
+String _gradePercent(double v) {
+  final percent = (v * 100).round();
+  return percent > 0 ? '+$percent%' : '$percent%';
+}
+
 class _TransitionControls extends StatelessWidget {
   const _TransitionControls({
     required this.clip,

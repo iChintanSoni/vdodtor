@@ -143,6 +143,113 @@ final class ClipTransform {
           'rot $rotationDegrees opacity $opacity)';
 }
 
+/// What a clip does to its own colour.
+///
+/// The five sliders every editor has: brightness, contrast, saturation,
+/// temperature and tint. [ClipTransform] says where the picture goes;
+/// this says what it looks like when it gets there.
+///
+/// **Every one of them runs −1..1 with 0 the shot you shot.** One range for
+/// all five rather than a natural range each — a gain from 0 to 2, a
+/// saturation from 0 to 2, a temperature in kelvin — because a panel of five
+/// sliders that all rest in the middle and all mean "more" to the right is one
+/// anybody can read at a glance, and five with different centres is five
+/// things to learn. It also makes [neutral] a struct of zeros, which is what
+/// lets the engine skip an ungraded clip without comparing it to anything.
+///
+/// **Nothing here is evaluated in Dart.** The arithmetic that turns five
+/// numbers into a picture lives in `engine/src/vd_color.c`, where it composes
+/// into one matrix that the shader applies per fragment. That is the same
+/// bargain `vd_anim` has and for the same reason: nothing in the app draws a
+/// grade, so a second copy of the maths would be a second thing to keep in
+/// step with no reader. If the inspector ever previews a swatch, that is the
+/// moment to port it *and* add the shared table, the way `vd_time.c` and
+/// `time.dart` have one.
+///
+/// It hangs off every clip, like [ClipTransform] and [ClipAudio], because a
+/// clip does not know whether its source has a picture until the media is
+/// probed and the document must be describable without opening a file.
+@immutable
+final class ClipColor {
+  const ClipColor({
+    this.brightness = 0,
+    this.contrast = 0,
+    this.saturation = 0,
+    this.temperature = 0,
+    this.tint = 0,
+  });
+
+  /// The shot as it was shot. The default for every clip, and the value
+  /// serialisation leaves out of the file entirely.
+  static const neutral = ClipColor();
+
+  /// A gain rather than a lift, so black stays black — see `vd_color.h`.
+  final double brightness;
+
+  /// About a pivot of mid-grey, so the picture opens out from the middle
+  /// rather than sliding.
+  final double contrast;
+
+  /// −1 is monochrome, +1 is twice as colourful.
+  final double saturation;
+
+  /// Warm at +1, cool at −1: the blue–orange half of a white balance.
+  final double temperature;
+
+  /// Magenta at +1, green at −1: the other half, and the one that fixes
+  /// fluorescent light.
+  final double tint;
+
+  bool get isNeutral => this == neutral;
+
+  /// Pulled inside the range the inspector offers, on the way into the
+  /// document — so a file written by a version with a wider slider opens as
+  /// something this one can still edit. The engine clamps too; this is so the
+  /// *sliders* agree with the picture, which they would not if the document
+  /// held a value no slider could show.
+  ClipColor clamped() => ClipColor(
+        brightness: brightness.clamp(-1.0, 1.0),
+        contrast: contrast.clamp(-1.0, 1.0),
+        saturation: saturation.clamp(-1.0, 1.0),
+        temperature: temperature.clamp(-1.0, 1.0),
+        tint: tint.clamp(-1.0, 1.0),
+      );
+
+  ClipColor copyWith({
+    double? brightness,
+    double? contrast,
+    double? saturation,
+    double? temperature,
+    double? tint,
+  }) =>
+      ClipColor(
+        brightness: brightness ?? this.brightness,
+        contrast: contrast ?? this.contrast,
+        saturation: saturation ?? this.saturation,
+        temperature: temperature ?? this.temperature,
+        tint: tint ?? this.tint,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipColor &&
+      other.brightness == brightness &&
+      other.contrast == contrast &&
+      other.saturation == saturation &&
+      other.temperature == temperature &&
+      other.tint == tint;
+
+  @override
+  int get hashCode =>
+      Object.hash(brightness, contrast, saturation, temperature, tint);
+
+  @override
+  String toString() => isNeutral
+      ? 'ClipColor.neutral'
+      : 'ClipColor(b $brightness c $contrast s $saturation '
+          't $temperature/$tint)';
+}
+
 /// One point on a clip's volume line.
 ///
 /// [sourceTime] is in the *source's* own time — the coordinate [Clip.sourceIn]
@@ -1284,6 +1391,7 @@ final class Clip {
     this.label = '',
     this.enabled = true,
     this.transform = ClipTransform.identity,
+    this.color = ClipColor.neutral,
     this.audio = ClipAudio.unity,
     this.animation = ClipAnimation.still,
     this.transition = ClipTransition.none,
@@ -1359,6 +1467,10 @@ final class Clip {
   /// nobody has moved, which is almost all of them.
   final ClipTransform transform;
 
+  /// What it does to its own colour. [ClipColor.neutral] for a clip nobody has
+  /// graded, which is almost all of them.
+  final ClipColor color;
+
   /// How loud it is. [ClipAudio.unity] for a clip nobody has faded, and
   /// present even on a clip whose source has no sound — see [ClipAudio].
   final ClipAudio audio;
@@ -1414,6 +1526,7 @@ final class Clip {
     String? label,
     bool? enabled,
     ClipTransform? transform,
+    ClipColor? color,
     ClipAudio? audio,
     ClipAnimation? animation,
     ClipTransition? transition,
@@ -1429,6 +1542,7 @@ final class Clip {
         label: label ?? this.label,
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
+        color: color ?? this.color,
         audio: audio ?? this.audio,
         animation: animation ?? this.animation,
         transition: transition ?? this.transition,
@@ -1482,6 +1596,7 @@ final class Clip {
       other.label == label &&
       other.enabled == enabled &&
       other.transform == transform &&
+      other.color == color &&
       other.audio == audio &&
       other.animation == animation &&
       other.transition == transition &&
@@ -1490,8 +1605,8 @@ final class Clip {
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, audio, animation, transition,
-      text, shape);
+      sourceIn.raw, label, enabled, transform, color, audio, animation,
+      transition, text, shape);
 
   @override
   String toString() => isGenerated

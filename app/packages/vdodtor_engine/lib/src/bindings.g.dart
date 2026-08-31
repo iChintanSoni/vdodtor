@@ -213,6 +213,70 @@ class VdEngineBindings {
   late final _vd_anim_reveals_text = _vd_anim_reveals_textPtr
       .asFunction<bool Function(ffi.Pointer<VdClipAnim>)>();
 
+  /// The grade that changes nothing. Equivalent to a zeroed struct; this exists
+  /// so callers can say what they mean.
+  VdColorAdjust vd_color_neutral() {
+    return _vd_color_neutral();
+  }
+
+  late final _vd_color_neutralPtr =
+      _lookup<ffi.NativeFunction<VdColorAdjust Function()>>('vd_color_neutral');
+  late final _vd_color_neutral = _vd_color_neutralPtr
+      .asFunction<VdColorAdjust Function()>();
+
+  /// True when this grade would leave every pixel exactly as it found it, which
+  /// is almost every clip. The compositor asks so that an ungraded layer takes
+  /// the path it took before this file existed — down to the last bit, which is
+  /// what keeps the golden frames from moving for a feature nobody used.
+  bool vd_color_is_neutral(ffi.Pointer<VdColorAdjust> adjust) {
+    return _vd_color_is_neutral(adjust);
+  }
+
+  late final _vd_color_is_neutralPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdColorAdjust>)>
+      >('vd_color_is_neutral');
+  late final _vd_color_is_neutral = _vd_color_is_neutralPtr
+      .asFunction<bool Function(ffi.Pointer<VdColorAdjust>)>();
+
+  /// Composes the five sliders into one matrix and offset. NULL is the identity.
+  VdColorTransform vd_color_transform(ffi.Pointer<VdColorAdjust> adjust) {
+    return _vd_color_transform(adjust);
+  }
+
+  late final _vd_color_transformPtr =
+      _lookup<
+        ffi.NativeFunction<
+          VdColorTransform Function(ffi.Pointer<VdColorAdjust>)
+        >
+      >('vd_color_transform');
+  late final _vd_color_transform = _vd_color_transformPtr
+      .asFunction<VdColorTransform Function(ffi.Pointer<VdColorAdjust>)>();
+
+  /// Applies one to a straight — *not* premultiplied — RGB triple in place,
+  /// clamped to 0..1. The same arithmetic the shader does, and the reason the
+  /// composition can be asserted on numbers instead of on pixels.
+  void vd_color_apply(
+    ffi.Pointer<VdColorTransform> transform,
+    ffi.Pointer<ffi.Float> rgb,
+  ) {
+    return _vd_color_apply(transform, rgb);
+  }
+
+  late final _vd_color_applyPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdColorTransform>,
+            ffi.Pointer<ffi.Float>,
+          )
+        >
+      >('vd_color_apply');
+  late final _vd_color_apply = _vd_color_applyPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdColorTransform>, ffi.Pointer<ffi.Float>)
+      >();
+
   /// The cut with no transition on it: both clips at rest, nothing hidden, no
   /// flash. Not a zeroed struct — a zeroed one has both clips invisible.
   VdTransitionValue vd_transition_rest() {
@@ -2207,6 +2271,60 @@ final class VdClipAnim extends ffi.Struct {
   external int out_duration;
 }
 
+/// What a clip does to its own colour.
+///
+/// −1..1 each, 0 neutral, and out of range is clamped rather than believed.
+/// Applied in the order the fields are declared in, which is the order anybody
+/// grades in: fix the light, set the level, set the contrast, and judge the
+/// colour last against what the first three left.
+final class VdColorAdjust extends ffi.Struct {
+  /// A gain rather than a lift: 1 + brightness, so black stays black.
+  ///
+  /// Adding a constant instead would raise the blacks to grey, which is the one
+  /// thing nobody reaches for a brightness slider to do — that is the faded
+  /// look, and it belongs to a control that says so.
+  @ffi.Float()
+  external double brightness;
+
+  /// 1 + contrast, about a pivot of 0.5 in the signal. Mid-grey as the eye
+  /// sees it, which is where a picture looks like it should pivot; the
+  /// photometric middle is a fifth of the way up and pivoting there would make
+  /// every increase look like an exposure change.
+  @ffi.Float()
+  external double contrast;
+
+  /// 1 + saturation towards or away from grey. −1 is monochrome, +1 is twice
+  /// as colourful.
+  @ffi.Float()
+  external double saturation;
+
+  /// Warm at +1, cool at −1: the blue-orange axis, which is what a white
+  /// balance mostly is.
+  @ffi.Float()
+  external double temperature;
+
+  /// Magenta at +1, green at −1: the other axis of a white balance, and the
+  /// one that fixes fluorescent light.
+  @ffi.Float()
+  external double tint;
+}
+
+/// The affine map the five sliders compose to: `rgb' = m * rgb + offset`,
+/// row-major, in the encoded signal rather than in light.
+///
+/// Grading in the signal is deliberate. A brightness slider that worked in
+/// linear light would move the picture much further at the top of its travel
+/// than at the bottom, because the encoding is a curve — and every editor a
+/// user has met puts these five in the signal. The LUT is the one that goes to
+/// linear, because a film emulation is describing what light did.
+final class VdColorTransform extends ffi.Struct {
+  @ffi.Array.multi([9])
+  external ffi.Array<ffi.Float> m;
+
+  @ffi.Array.multi([3])
+  external ffi.Array<ffi.Float> offset;
+}
+
 /// The presets, in the order a picker offers them.
 ///
 /// One direction each. `VD_TRANSITION_WIPE` wipes left to right and
@@ -2682,6 +2800,19 @@ final class VdLayer extends ffi.Struct {
   /// Where this layer goes and how much of it shows. A zeroed transform is the
   /// identity, so this may be ignored entirely.
   external VdTransform transform;
+
+  /// What this layer does to its own colour: brightness, contrast, saturation,
+  /// temperature, tint. A zeroed value is the neutral grade, so this is another
+  /// field a caller can leave alone — see vd_color.h.
+  ///
+  /// Per layer rather than per frame, and that is the decision. A grade on the
+  /// frame would be an effect on the *project*, which is a different feature
+  /// and a worse one to have by accident: a shot that needed warming would warm
+  /// the caption over it and the shot on the lane beneath it too. Here it
+  /// travels with the clip, the way its opacity and its transform do, and a
+  /// blur-filled clip's backdrop is graded with it because the backdrop is the
+  /// same picture.
+  external VdColorAdjust color;
 }
 
 /// What gets drawn inside the box.
@@ -3007,6 +3138,17 @@ final class VdTimelineClip extends ffi.Struct {
   /// so a caller with nothing to say about it can leave the field alone.
   external VdTransform transform;
 
+  /// What it does to its own colour. A zeroed VdColorAdjust is the neutral
+  /// grade, so this is another field a caller can ignore.
+  ///
+  /// Handed to the compositor untouched, unlike the animation and the
+  /// transition beside it: those are functions of *time* and have to be
+  /// evaluated per frame, where a grade is the same five numbers at every
+  /// instant of the clip. Nothing about it belongs in the render loop, which is
+  /// why it is composed into a matrix down in the compositor and not here.
+  /// See vd_color.h.
+  external VdColorAdjust color;
+
   /// How this clip joins the one before it on the same track. A zeroed
   /// VdClipTransition is "a plain cut", so this is a field a caller can ignore.
   ///
@@ -3273,6 +3415,12 @@ final class VdPeaks extends ffi.Struct {
 const int VD_TICKS_PER_SECOND = 120000;
 
 const int VD_NANOS_PER_SECOND = 1000000000;
+
+const double VD_LUMA_R = 0.2125999927520752;
+
+const double VD_LUMA_G = 0.7152000069618225;
+
+const double VD_LUMA_B = 0.0722000002861023;
 
 const int VD_AUDIO_SAMPLE_RATE = 48000;
 

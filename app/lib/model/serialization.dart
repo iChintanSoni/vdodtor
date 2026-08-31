@@ -92,6 +92,7 @@ Map<String, Object?> _trackToJson(Track t) => {
             // it, not like a dump of every field that exists.
             if (!c.transform.isIdentity)
               'transform': _transformToJson(c.transform),
+            if (!c.color.isNeutral) 'color': _gradeToJson(c.color),
             if (!c.audio.isUnity) 'audio': _audioToJson(c.audio),
             // `isAnimated`, not `isStill`: a preset with no length to run in
             // does nothing, and a file records what happens rather than what
@@ -126,6 +127,28 @@ Map<String, Object?> _transformToJson(ClipTransform t) => {
       if (t.flipHorizontal) 'flipH': true,
       if (t.flipVertical) 'flipV': true,
     };
+
+/// Only the sliders that were moved, so a clip somebody warmed by a hair does
+/// not write out five numbers — and a neutral grade writes nothing at all.
+Map<String, Object?> _gradeToJson(ClipColor c) => {
+      if (c.brightness != 0) 'brightness': c.brightness,
+      if (c.contrast != 0) 'contrast': c.contrast,
+      if (c.saturation != 0) 'saturation': c.saturation,
+      if (c.temperature != 0) 'temperature': c.temperature,
+      if (c.tint != 0) 'tint': c.tint,
+    };
+
+ClipColor _gradeFromJson(Map<String, Object?> json) => ClipColor(
+      // A slider this version has never heard of is simply not read, which is
+      // the right answer for a grade: the ones it does know still apply, and
+      // the picture is wrong in a way the user can see and fix rather than
+      // refusing to open.
+      brightness: _double(json, 'brightness', 0),
+      contrast: _double(json, 'contrast', 0),
+      saturation: _double(json, 'saturation', 0),
+      temperature: _double(json, 'temperature', 0),
+      tint: _double(json, 'tint', 0),
+    );
 
 Map<String, Object?> _audioToJson(ClipAudio a) => {
       if (a.volume != 1) 'volume': a.volume,
@@ -489,6 +512,12 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
           ? ClipTransform.identity
           : _transformFromJson(
               _asMap(c['transform'], '$where.transform'), '$where.transform'),
+      // Clamped on the way in like every other slider: a file may claim a
+      // grade this version has no slider for, and a clip that cannot be
+      // adjusted is worse than one that opens slightly changed.
+      color: c['color'] == null
+          ? ClipColor.neutral
+          : _gradeFromJson(_asMap(c['color'], '$where.color')).clamped(),
       // Clamped on the way in: a file can always claim a fade longer than the
       // clip carrying it, whether through a hand edit or a version of this
       // program that did not clamp.

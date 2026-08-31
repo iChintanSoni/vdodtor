@@ -102,6 +102,7 @@ EngineTimeline engineTimelineFor(Project project) {
           ClipFit.stretch => FitMode.stretch,
         },
         transform: _engineTransformFor(transform),
+        color: _engineColorFor(clip.color),
         animation: _engineAnimationFor(clip.animation),
         transition: _engineTransitionFor(clip.transition),
       ));
@@ -131,6 +132,22 @@ EngineTransform _engineTransformFor(ClipTransform transform) => EngineTransform(
       cropHeight: transform.cropHeight,
       flipHorizontal: transform.flipHorizontal,
       flipVertical: transform.flipVertical,
+    );
+
+/// The grade, field for field. Five numbers on the same scale on both sides,
+/// so there is nothing to convert — and nothing here evaluates them: the
+/// engine composes the matrix, because the engine is the one that draws.
+///
+/// Sent for every clip, graded or not, unlike the animation and the transition
+/// below. There is no work to save by leaving a neutral grade out: a zeroed
+/// struct *is* the neutral grade, and the compositor already asks whether
+/// there is anything to do before it does any.
+EngineColor _engineColorFor(ClipColor color) => EngineColor(
+      brightness: color.brightness,
+      contrast: color.contrast,
+      saturation: color.saturation,
+      temperature: color.temperature,
+      tint: color.tint,
     );
 
 /// The entrance and the exit. Only the halves that actually run cross over —

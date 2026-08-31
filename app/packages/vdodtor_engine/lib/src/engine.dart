@@ -59,6 +59,42 @@ class EngineTransform {
   final bool flipVertical;
 }
 
+/// What a clip does to its own colour.
+///
+/// Five sliders, all −1..1 with 0 neutral, mirroring `VdColorAdjust` in
+/// vd_color.h. Numbers only, like everything else that crosses this boundary:
+/// the engine composes them into one matrix and applies it per fragment, and
+/// nothing on this side ever evaluates a grade.
+@immutable
+class EngineColor {
+  const EngineColor({
+    this.brightness = 0,
+    this.contrast = 0,
+    this.saturation = 0,
+    this.temperature = 0,
+    this.tint = 0,
+  });
+
+  /// The shot as it was shot, which is what the engine does with a zeroed
+  /// struct.
+  static const neutral = EngineColor();
+
+  /// A gain rather than a lift, so black stays black.
+  final double brightness;
+
+  /// About a pivot of mid-grey.
+  final double contrast;
+
+  /// −1 monochrome, +1 twice as colourful.
+  final double saturation;
+
+  /// Warm at +1, cool at −1.
+  final double temperature;
+
+  /// Magenta at +1, green at −1.
+  final double tint;
+}
+
 /// One point on a clip's volume line.
 ///
 /// [sourceTicks] is in the source's own time, the same coordinate as
@@ -299,6 +335,7 @@ class EngineClip {
     this.opacity = 1.0,
     this.fit = FitMode.contain,
     this.transform = EngineTransform.identity,
+    this.color = EngineColor.neutral,
     this.animation = EngineAnimation.none,
     this.transition = EngineTransition.none,
     this.hasVideo = true,
@@ -344,6 +381,11 @@ class EngineClip {
   final double opacity;
   final FitMode fit;
   final EngineTransform transform;
+
+  /// What it does to its own colour. Handed straight to the compositor, unlike
+  /// the animation and the transition below: those are functions of time, and
+  /// a grade is the same five numbers at every instant of the clip.
+  final EngineColor color;
 
   /// How it arrives and how it leaves.
   final EngineAnimation animation;
@@ -616,6 +658,13 @@ class PreviewEngine extends ChangeNotifier {
         entry.transform.crop_h = transform.cropHeight;
         entry.transform.flip_h = transform.flipHorizontal;
         entry.transform.flip_v = transform.flipVertical;
+
+        final color = clip.color;
+        entry.color.brightness = color.brightness;
+        entry.color.contrast = color.contrast;
+        entry.color.saturation = color.saturation;
+        entry.color.temperature = color.temperature;
+        entry.color.tint = color.tint;
 
         final animation = clip.animation;
         entry.anim.in_presetAsInt = animation.inPreset.index;

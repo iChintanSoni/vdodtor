@@ -151,6 +151,11 @@ class _EditorScreenState extends State<EditorScreen> {
         // it goes after the others so the frames it dumps show an overlay on
         // top of a shot that already has a caption and a shape on it.
         await runStickerSelfTest(engine, _store, timeline);
+        // Before the transition pass, and it puts the clip back the way it
+        // found it: a grade changes every pixel of the shot it is on, so
+        // leaving one on would make the frames the passes after it dump a
+        // question about the grade rather than about themselves.
+        await runColorSelfTest(engine, _store);
         // Last, and it puts the timeline back the way it found it: a
         // transition is the one pass that changes what a *cut* looks like, so
         // leaving one on would change every frame the play pass dumps.

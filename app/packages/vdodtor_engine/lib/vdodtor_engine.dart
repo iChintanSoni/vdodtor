@@ -12,6 +12,7 @@ export 'src/engine.dart'
         EngineAnimPreset,
         EngineAnimation,
         EngineClip,
+        EngineColor,
         EngineShape,
         EngineShapeKind,
         EngineStats,

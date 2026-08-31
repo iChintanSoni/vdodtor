@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "vdodtor/vd_anim.h"
+#include "vdodtor/vd_color.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_sticker.h"
@@ -93,6 +94,17 @@ typedef struct {
   // Where this clip sits inside the frame. A zeroed transform is the identity,
   // so a caller with nothing to say about it can leave the field alone.
   VdTransform transform;
+
+  // What it does to its own colour. A zeroed VdColorAdjust is the neutral
+  // grade, so this is another field a caller can ignore.
+  //
+  // Handed to the compositor untouched, unlike the animation and the
+  // transition beside it: those are functions of *time* and have to be
+  // evaluated per frame, where a grade is the same five numbers at every
+  // instant of the clip. Nothing about it belongs in the render loop, which is
+  // why it is composed into a matrix down in the compositor and not here.
+  // See vd_color.h.
+  VdColorAdjust color;
 
   // How this clip joins the one before it on the same track. A zeroed
   // VdClipTransition is "a plain cut", so this is a field a caller can ignore.
