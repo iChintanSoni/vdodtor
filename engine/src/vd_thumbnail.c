@@ -100,6 +100,7 @@ int32_t vd_thumbnail_render(const char* path, VdTick t, int32_t max_width,
   layer.pixel_buffer = frame.pixel_buffer;
   layer.format = frame.format;
   layer.rotation_degrees = info.rotation_degrees;
+  layer.pixel_aspect = info.pixel_aspect;
   layer.color_matrix = frame.color_matrix;
   layer.full_range = frame.full_range;
   layer.fit = VD_FIT_CONTAIN;

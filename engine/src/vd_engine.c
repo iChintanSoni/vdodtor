@@ -245,6 +245,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->pixel_buffer = frames[layer_count].pixel_buffer;
     layer->format = frames[layer_count].format;
     layer->rotation_degrees = info.rotation_degrees;
+    layer->pixel_aspect = info.pixel_aspect;
     layer->color_matrix = frames[layer_count].color_matrix;
     layer->full_range = frames[layer_count].full_range;
     layer->fit = clip->fit;

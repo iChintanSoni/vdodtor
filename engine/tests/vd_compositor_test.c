@@ -55,9 +55,13 @@ static void check_pixel_is(VdCompositor* c, int32_t x, int32_t y, int r, int g,
   }
 }
 
-// Decodes the first frame of `name` and hands back a layer pointing at it.
+// Decodes the first frame of `name`, and hands back what the file says about
+// itself along with it. Rotation and sample aspect are properties of the
+// stream rather than of the picture, so a test that fills them in by hand is
+// checking its own arithmetic where one that reads them is checking the file.
 // The frame must be released by the caller.
-static bool first_frame(const char* name, VdFrame* out) {
+static bool first_frame_and_info(const char* name, VdFrame* out,
+                                 VdProbeInfo* info) {
   VdDecoderOptions options = vd_decoder_default_options();
   int32_t result = 0;
   VdDecoder* d = vd_decoder_open(fixture(name), options, &result);
@@ -66,9 +70,14 @@ static bool first_frame(const char* name, VdFrame* out) {
     fprintf(stderr, "FAIL could not open %s (%d)\n", name, result);
     return false;
   }
+  if (info) vd_decoder_info(d, info);
   bool ok = vd_decoder_frame_at(d, 0, out) == VD_OK;
   vd_decoder_close(d);
   return ok;
+}
+
+static bool first_frame(const char* name, VdFrame* out) {
+  return first_frame_and_info(name, out, NULL);
 }
 
 static VdLayer layer_of(const VdFrame* frame, VdFitMode fit, float opacity) {
@@ -220,6 +229,126 @@ static void test_rotation_changes_the_fit(void) {
     check_pixel_is(c, 5, 200, 0, 0, 0, "rotated left bar");
     check_pixel_is(c, 395, 200, 0, 0, 0, "rotated right bar");
     check_pixel_is(c, 200, 5, SOLID_R, SOLID_G, SOLID_B, "rotated top edge");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// quadrants.mp4 is four flat colours, one per quarter, as ffmpeg's own
+// decoder renders them. Nothing here is subtle: any two of these are further
+// apart than a wrong matrix or a rounding error could move one.
+#define QUAD_TL 192, 0, 0      // red
+#define QUAD_TR 0, 192, 0      // green
+#define QUAD_BL 0, 0, 192      // blue
+#define QUAD_BR 192, 192, 0    // yellow
+
+// Which way a quarter turn goes.
+//
+// Every rotation test before this one used a flat colour, and a flat colour
+// cannot tell 90 clockwise from 90 anticlockwise — both move the bars to the
+// sides and leave the centre the same. So the sign of the turn, which is the
+// one thing about rotation metadata that is easy to get backwards and
+// impossible to notice in a fit rectangle, was not tested anywhere.
+//
+// quadrants_cw90.mp4 is the *same bitstream* as quadrants.mp4 with a display
+// matrix bolted on, so the pair isolates the metadata: identical pixels, one
+// of them asking to be turned. Turned a quarter clockwise, what was at the
+// bottom left arrives at the top left.
+static void test_rotation_turns_the_picture_the_right_way(void) {
+  VdFrame frame;
+  if (!first_frame("quadrants.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(240, 240, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 60, 60, QUAD_TL, "upright top left");
+    check_pixel_is(c, 180, 60, QUAD_TR, "upright top right");
+    check_pixel_is(c, 60, 180, QUAD_BL, "upright bottom left");
+    check_pixel_is(c, 180, 180, QUAD_BR, "upright bottom right");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+
+  VdProbeInfo info;
+  if (!first_frame_and_info("quadrants_cw90.mp4", &frame, &info)) return;
+  VD_CHECK_EQ(info.rotation_degrees, 90);
+
+  c = vd_compositor_create(240, 240, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.rotation_degrees = info.rotation_degrees;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    // Clockwise: bottom left comes up to the top left, and the top left goes
+    // round to the top right. Anticlockwise would give exactly the opposite,
+    // and would pass every other rotation test in this file.
+    check_pixel_is(c, 60, 60, QUAD_BL, "turned top left was bottom left");
+    check_pixel_is(c, 180, 60, QUAD_TL, "turned top right was top left");
+    check_pixel_is(c, 60, 180, QUAD_BR, "turned bottom left was bottom right");
+    check_pixel_is(c, 180, 180, QUAD_TR, "turned bottom right was top right");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// Non-square pixels.
+//
+// anamorphic_sar2.mp4 is coded 160x240 and asks to be shown 320x240, so it is
+// a 4:3 picture stored in a 2:3 box. Contained in a square, honouring that
+// puts the bars above and below; ignoring it puts them at the sides and draws
+// the picture at half the width it asked for.
+//
+// The media bin has always sized thumbnails from the display aspect, so before
+// this the same file was a different shape in the bin and in the preview.
+static void test_sample_aspect_decides_the_shape(void) {
+  VdFrame frame;
+  VdProbeInfo info;
+  if (!first_frame_and_info("anamorphic_sar2.mp4", &frame, &info)) return;
+  VD_CHECK_EQ(info.width, 160);
+  VD_CHECK_EQ(info.height, 240);
+  VD_CHECK_EQ(info.pixel_aspect.num, 2);
+  VD_CHECK_EQ(info.pixel_aspect.den, 1);
+
+  VdCompositor* c = vd_compositor_create(400, 400, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    layer.pixel_aspect = info.pixel_aspect;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    // 4:3 in a square: full width, bars top and bottom.
+    check_pixel_is(c, 10, 200, SOLID_R, SOLID_G, SOLID_B, "reaches the left");
+    check_pixel_is(c, 390, 200, SOLID_R, SOLID_G, SOLID_B, "reaches the right");
+    check_pixel_is(c, 200, 10, 0, 0, 0, "bar above");
+    check_pixel_is(c, 200, 390, 0, 0, 0, "bar below");
+
+    // And a zeroed sample aspect still means square, so a caller that has
+    // never heard of the field is not silently drawing something else.
+    layer.pixel_aspect = (VdRational){0, 0};
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 10, 200, 0, 0, 0, "square pixels bar the sides instead");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// A turn puts the stretch on the other axis: the same file, rotated, is 3:4
+// rather than 4:3, so the bars move from top and bottom to left and right.
+// Applying the sample aspect after the rotation instead of before would
+// letterbox it the wrong way round and look entirely plausible doing it.
+static void test_sample_aspect_turns_with_the_picture(void) {
+  VdFrame frame;
+  VdProbeInfo info;
+  if (!first_frame_and_info("anamorphic_sar2.mp4", &frame, &info)) return;
+
+  VdCompositor* c = vd_compositor_create(400, 400, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_CONTAIN, 1.0f);
+    layer.pixel_aspect = info.pixel_aspect;
+    layer.rotation_degrees = 90;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 200, 10, SOLID_R, SOLID_G, SOLID_B, "reaches the top");
+    check_pixel_is(c, 200, 390, SOLID_R, SOLID_G, SOLID_B, "reaches the base");
+    check_pixel_is(c, 10, 200, 0, 0, 0, "bar to the left");
+    check_pixel_is(c, 390, 200, 0, 0, 0, "bar to the right");
     vd_compositor_destroy(c);
   }
   vd_frame_release(&frame);
@@ -839,6 +968,9 @@ int main(void) {
   test_cover_fills_every_pixel();
   test_stretch_ignores_aspect();
   test_rotation_changes_the_fit();
+  test_rotation_turns_the_picture_the_right_way();
+  test_sample_aspect_decides_the_shape();
+  test_sample_aspect_turns_with_the_picture();
   test_opacity_blends_towards_black();
   test_layers_stack_bottom_to_top();
   test_a_null_layer_is_skipped_not_crashed();

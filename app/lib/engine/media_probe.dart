@@ -55,6 +55,12 @@ class MediaProbeService {
       frameRate: frameRate,
       variableFrameRate: native.variableFrameRate,
       rotationDegrees: native.rotationDegrees,
+      // A zero either way means the container did not say, and square is the
+      // only safe reading of that.
+      pixelAspect: native.pixelAspectNumerator > 0 &&
+              native.pixelAspectDenominator > 0
+          ? Rational(native.pixelAspectNumerator, native.pixelAspectDenominator)
+          : Rational.one,
       hasVideo: native.hasVideo,
       hasAudio: native.hasAudio,
       audioChannels: native.audioChannels,

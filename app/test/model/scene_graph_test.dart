@@ -247,5 +247,34 @@ void main() {
       expect(p.displayHeight, 1920);
       expect(p.copyWith(rotationDegrees: 180).displayWidth, 1920);
     });
+
+    test('sample aspect widens before the rotation turns', () {
+      // 720x480 with 32:27 pixels is the 16:9 DVD frame: 853x480 on screen.
+      final p = MediaProbe(
+        kind: MediaKind.video,
+        duration: const Tick(0),
+        width: 720,
+        height: 480,
+        pixelAspect: Rational(32, 27),
+      );
+      expect(p.displayWidth, 853);
+      expect(p.displayHeight, 480);
+
+      // Turned, the stretch is on the other axis. Widening after the turn
+      // instead would give 480 by 569 — still plausible, still wrong.
+      final turned = p.copyWith(rotationDegrees: 90);
+      expect(turned.displayWidth, 480);
+      expect(turned.displayHeight, 853);
+    });
+
+    test('square pixels are the default, not an assumption to make', () {
+      const p = MediaProbe(
+          kind: MediaKind.video,
+          duration: Tick(0),
+          width: 1920,
+          height: 1080);
+      expect(p.pixelAspect, Rational.one);
+      expect(p.displayWidth, 1920);
+    });
   });
 }

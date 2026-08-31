@@ -17,6 +17,11 @@
 #define VD_DEFAULT_CACHE 32
 #define VD_MAX_CACHE 128
 
+// Two, not one. Resolving a time needs the frame that covers it *and* the one
+// after it — the second is what ends the first one's interval — so a cache
+// that could hold only one would evict the answer to make room for its proof.
+#define VD_MIN_CACHE 2
+
 // How far ahead it is worth decoding rather than seeking. Seeking costs a
 // keyframe jump plus every frame from there, so for short hops forward the
 // straight-line decode is cheaper and, more importantly, does not throw away
@@ -27,6 +32,11 @@ typedef struct {
   AVFrame* frame;   // ref-counted; NULL when the slot is empty
   VdTick pts;
   VdTick duration;
+  // True once `duration` is the gap to the frame that actually follows,
+  // rather than the guess the container supplied. Only a confirmed slot can
+  // answer a lookup: an unconfirmed duration can be too long as easily as too
+  // short, and one that is too long hides the frames it swallows.
+  bool confirmed;
   int64_t used;     // LRU stamp
 } VdCacheSlot;
 
@@ -43,9 +53,11 @@ struct VdDecoder {
   VdProbeInfo info;
   VdTick nominal_duration;  // one frame at the nominal rate
 
-  // Where the decoder currently sits: the pts of the next frame it will
-  // produce if simply asked to continue. VD_UNKNOWN_POS before the first
-  // decode and after a seek.
+  // Where the decoder currently sits: the presentation time of the most
+  // recent frame it produced. Not known before the first decode or after a
+  // seek. Everything it produces from here has a later presentation time,
+  // which is what makes it the test for whether walking forward can still
+  // reach a given moment.
   VdTick position;
   bool position_known;
   bool eof;
@@ -152,6 +164,7 @@ static void cache_clear(VdDecoder* d) {
     if (d->cache[i].frame) av_frame_free(&d->cache[i].frame);
     d->cache[i].pts = 0;
     d->cache[i].duration = 0;
+    d->cache[i].confirmed = false;
     d->cache[i].used = 0;
   }
 }
@@ -159,7 +172,7 @@ static void cache_clear(VdDecoder* d) {
 static VdCacheSlot* cache_find(VdDecoder* d, VdTick t) {
   for (int32_t i = 0; i < d->cache_capacity; i++) {
     VdCacheSlot* slot = &d->cache[i];
-    if (!slot->frame) continue;
+    if (!slot->frame || !slot->confirmed) continue;
     if (t >= slot->pts && t < slot->pts + slot->duration) {
       slot->used = ++d->clock;
       return slot;
@@ -181,13 +194,24 @@ static VdCacheSlot* cache_latest_at_or_before(VdDecoder* d, VdTick t) {
   return best;
 }
 
+static VdCacheSlot* cache_slot_at(VdDecoder* d, VdTick pts) {
+  for (int32_t i = 0; i < d->cache_capacity; i++) {
+    if (d->cache[i].frame && d->cache[i].pts == pts) return &d->cache[i];
+  }
+  return NULL;
+}
+
 static void cache_put(VdDecoder* d, AVFrame* frame, VdTick pts, VdTick dur) {
   VdCacheSlot* victim = NULL;
+  bool keep_duration = false;
   for (int32_t i = 0; i < d->cache_capacity; i++) {
     VdCacheSlot* slot = &d->cache[i];
     if (slot->frame && slot->pts == pts) {
-      // Already held. Refresh it rather than keeping two of the same frame.
+      // Already held. Refresh it rather than keeping two of the same frame,
+      // and keep an interval an earlier walk already confirmed — re-decoding
+      // the same frame is not a reason to forget what follows it.
       av_frame_free(&slot->frame);
+      keep_duration = slot->confirmed;
       victim = slot;
       break;
     }
@@ -203,8 +227,26 @@ static void cache_put(VdDecoder* d, AVFrame* frame, VdTick pts, VdTick dur) {
   victim->frame = av_frame_clone(frame);
   if (!victim->frame) return;
   victim->pts = pts;
-  victim->duration = dur;
+  if (!keep_duration) {
+    victim->duration = dur;
+    victim->confirmed = false;
+  }
   victim->used = ++d->clock;
+}
+
+// The frame decoded before `pts` was on screen until now, so its interval ends
+// here. This is the whole of variable-rate handling: a source's own per-frame
+// durations are a hint and no more — the muxer writes them in decode order, so
+// with B-frames they land on the wrong frames — and the gap to the next
+// presentation time is the thing that is actually true. Getting it from the
+// container instead shows frames from the future on a source whose timestamps
+// are irregular, and skips frames whose neighbour claimed their time.
+static void confirm_previous(VdDecoder* d, VdTick pts) {
+  if (!d->position_known || pts <= d->position) return;
+  VdCacheSlot* previous = cache_slot_at(d, d->position);
+  if (!previous) return;
+  previous->duration = pts - d->position;
+  previous->confirmed = true;
 }
 
 // --- frame export ----------------------------------------------------------
@@ -335,6 +377,7 @@ VdDecoder* vd_decoder_open(const char* path, VdDecoderOptions options,
                                  ? VD_MAX_CACHE
                                  : options.cache_capacity)
                           : VD_DEFAULT_CACHE;
+  if (d->cache_capacity < VD_MIN_CACHE) d->cache_capacity = VD_MIN_CACHE;
   d->cache = calloc((size_t)d->cache_capacity, sizeof(VdCacheSlot));
   d->packet = av_packet_alloc();
   d->frame = av_frame_alloc();
@@ -467,7 +510,11 @@ static VdTick frame_duration(const VdDecoder* d, const AVFrame* frame) {
 static VdTick frame_pts(const VdDecoder* d, const AVFrame* frame) {
   int64_t ts = frame->best_effort_timestamp;
   if (ts == AV_NOPTS_VALUE) ts = frame->pts;
-  if (ts == AV_NOPTS_VALUE) return d->position_known ? d->position : 0;
+  if (ts == AV_NOPTS_VALUE) {
+    // No timestamp at all: assume it follows the frame before at the nominal
+    // rate, which is the only guess that keeps the sequence moving forward.
+    return d->position_known ? d->position + d->nominal_duration : 0;
+  }
   return ticks_of(d, ts);
 }
 
@@ -541,9 +588,23 @@ int32_t vd_decoder_frame_at(VdDecoder* d, VdTick t, VdFrame* out) {
   }
   d->stats.cache_misses++;
 
+  // Past the end of a source already walked to its last frame. Nothing more
+  // will ever come out of it, so the answer is in the cache and re-seeking to
+  // rediscover that would cost a decode of the whole tail on every query.
+  if (d->eof && d->position_known && t >= d->position) {
+    VdCacheSlot* last = cache_latest_at_or_before(d, t);
+    if (last) {
+      return export_frame(d, last->frame, last->pts, last->duration, out)
+                 ? VD_OK
+                 : VD_ERR_DECODE;
+    }
+  }
+
   // Decide between continuing forward and seeking. Continuing is only valid
-  // when the decoder is already positioned at or before the target, and close
-  // enough that the walk is cheaper than a keyframe jump.
+  // when the last frame decoded is at or before the target — everything the
+  // decoder produces from here has a later presentation time, so one already
+  // past t would never see the frame that covers it — and only worth it when
+  // the walk is shorter than a keyframe jump.
   const bool can_continue = d->position_known && !d->eof &&
                             d->position <= t &&
                             (t - d->position) <= VD_FORWARD_WINDOW_TICKS;
@@ -551,21 +612,40 @@ int32_t vd_decoder_frame_at(VdDecoder* d, VdTick t, VdFrame* out) {
     if (seek_to(d, t) != VD_OK) return VD_ERR_DECODE;
   }
 
+  // Walk until a frame lands *after* t. That frame is not the answer; it is
+  // what proves the one before it is, by ending its interval. It costs one
+  // decode beyond the frame wanted, and no more than one, because it is
+  // cached and becomes the next answer rather than being thrown away.
   for (;;) {
     if (decode_next(d) != VD_OK) break;
 
-    VdTick pts = frame_pts(d, d->frame);
-    VdTick duration = frame_duration(d, d->frame);
-    d->position = pts + duration;
+    const VdTick pts = frame_pts(d, d->frame);
+    const VdTick nominal = frame_duration(d, d->frame);
+    confirm_previous(d, pts);
+
+    // Looked up before this frame goes in, so it cannot be the answer to its
+    // own question, and while the slot it finds is still the one most recently
+    // touched and so cannot be the one evicted to make room.
+    VdCacheSlot* covering = pts > t ? cache_latest_at_or_before(d, t) : NULL;
+
+    // The frame that proves the answer is kept whether or not it *is* the
+    // answer. Dropping it would leave a hole in the walk: the next query would
+    // continue from after it, and the frame before would swallow its time.
+    cache_put(d, d->frame, pts, nominal);
+    d->position = pts;
     d->position_known = true;
 
-    cache_put(d, d->frame, pts, duration);
-
-    if (t < pts + duration) {
-      // This frame covers t — or, if t fell before the first frame, this is
-      // the first frame and clamping is the right answer.
-      return export_frame(d, d->frame, pts, duration, out) ? VD_OK
-                                                           : VD_ERR_DECODE;
+    if (covering) {
+      return export_frame(d, covering->frame, covering->pts,
+                          covering->duration, out)
+                 ? VD_OK
+                 : VD_ERR_DECODE;
+    }
+    if (pts > t) {
+      // Nothing before it: t falls before the source starts, and a clip
+      // trimmed a tick early should show the first frame, not a black hole.
+      return export_frame(d, d->frame, pts, nominal, out) ? VD_OK
+                                                          : VD_ERR_DECODE;
     }
   }
 

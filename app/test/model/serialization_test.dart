@@ -203,7 +203,7 @@ void main() {
   });
 
   group('probe serialisation', () {
-    test('carries codec, rotation and VFR through', () {
+    test('carries codec, rotation, sample aspect and VFR through', () {
       final asset = MediaAsset(
         id: 'vfr',
         path: '/media/phone.mov',
@@ -216,6 +216,7 @@ void main() {
           frameRate: FrameRates.fps59_94,
           variableFrameRate: true,
           rotationDegrees: 90,
+          pixelAspect: Rational(4, 3),
           hasVideo: true,
           hasAudio: true,
           audioChannels: 1,
@@ -229,7 +230,33 @@ void main() {
       expect(back.media['vfr'], asset);
       expect(back.media['vfr']!.probe.variableFrameRate, isTrue);
       expect(back.media['vfr']!.probe.rotationDegrees, 90);
+      expect(back.media['vfr']!.probe.pixelAspect, Rational(4, 3));
       expect(back.media['vfr']!.probe.frameRate, FrameRates.fps59_94);
+    });
+
+    test('a project written before sample aspect reads as square', () {
+      final json = jsonDecode(encodeProject(emptyProject().addMedia(MediaAsset(
+        id: 'a',
+        path: '/media/a.mp4',
+        displayName: 'a.mp4',
+        probe: MediaProbe(
+          kind: MediaKind.video,
+          duration: secs(1),
+          width: 640,
+          height: 480,
+          hasVideo: true,
+          pixelAspect: Rational(2, 1),
+        ),
+      )))) as Map<String, Object?>;
+      // Take the field back out, which is exactly what an older file is.
+      final asset = (json['media'] as List)
+          .cast<Map<String, Object?>>()
+          .firstWhere((m) => m['id'] == 'a');
+      (asset['probe'] as Map<String, Object?>).remove('pixelAspect');
+
+      final back = decodeProject(jsonEncode(json));
+      expect(back.media['a']!.probe.pixelAspect, Rational.one);
+      expect(back.media['a']!.probe.displayWidth, 640);
     });
 
     test('an audio-only asset needs no video fields', () {

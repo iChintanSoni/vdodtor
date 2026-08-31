@@ -212,6 +212,55 @@ Future<void> runImportSelfTest(
   }
 }
 
+/// What the container said about each source's geometry, and what came out of
+/// the compositor once it had been believed.
+///
+/// Rotation and sample aspect are the two things about a file that decide its
+/// shape without changing a pixel of it, and both fail quietly: a clip on its
+/// side, or squeezed to half the width it should be, still plays, still
+/// exports, and still looks like a file someone shot badly. So this prints the
+/// coded size, the metadata and the display size for every asset — the three
+/// numbers that have to agree — and then dumps a frame of every turned clip,
+/// because which way up a picture is can only be seen.
+///
+/// It does not say which *frame* of a variable-rate source came out. Nothing
+/// up here can: the engine reports a position on the project's grid, not the
+/// source timestamp it resolved to, and adding a back channel for a self test
+/// would be a worse trade than testing it where the timestamps are legible.
+/// That is `test_a_frame_is_on_screen_until_the_next_one` in
+/// engine/tests/vd_decoder_test.c, which asserts the whole mapping.
+Future<void> runSourceGeometrySelfTest(
+    PreviewEngine engine, Project project) async {
+  final out = Directory.systemTemp.createTempSync('vdodtor_geometry_');
+
+  for (final asset in project.media.values) {
+    if (!asset.probe.hasVideo) continue;
+    final p = asset.probe;
+    stdout.writeln('[selftest] geometry: ${asset.displayName} '
+        'coded ${p.width}x${p.height} '
+        'par ${p.pixelAspect} rot ${p.rotationDegrees} '
+        'vfr ${p.variableFrameRate} '
+        '-> display ${p.displayWidth}x${p.displayHeight}');
+  }
+
+  // One frame from the middle of each turned clip. Only the turned ones: a
+  // sample aspect changes the shape of the picture and the line above already
+  // says so in numbers, where which way up a picture is can only be seen.
+  for (final clip in project.tracks.expand((t) => t.clips)) {
+    final asset = project.assetFor(clip);
+    if (asset == null || !asset.probe.hasVideo) continue;
+    if (asset.probe.rotationDegrees == 0) continue;
+    engine.seek(clip.start.raw + clip.duration.raw ~/ 2);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    final name = asset.displayName.replaceAll('.', '_');
+    final path = '${out.path}/$name.png';
+    engine.dumpPng(path);
+    stdout.writeln('[selftest] geometry: ${asset.displayName} at '
+        '${clip.start.raw + clip.duration.raw ~/ 2} -> $path');
+  }
+  stdout.writeln('[selftest] geometry: frames in ${out.path}');
+}
+
 /// Analyses a file's audio through the real engine and prints the envelope it
 /// produced, then does it again to show the cache doing its job.
 ///

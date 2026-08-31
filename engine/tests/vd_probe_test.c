@@ -48,6 +48,32 @@ static void test_rotation_is_clockwise_for_display(void) {
   VD_CHECK_EQ(info.height, 240);
 }
 
+// Non-square pixels. 160x240 coded with a 2:1 sample aspect is a 320x240
+// picture, and everything downstream lays it out from these two numbers.
+static void test_sample_aspect_is_reported(void) {
+  VdProbeInfo info;
+  VD_CHECK_EQ(vd_probe_file(fixture("anamorphic_sar2.mp4"), &info), VD_OK);
+  VD_CHECK_EQ(info.width, 160);
+  VD_CHECK_EQ(info.height, 240);
+  VD_CHECK_EQ(info.pixel_aspect.num, 2);
+  VD_CHECK_EQ(info.pixel_aspect.den, 1);
+  VD_CHECK_EQ(info.rotation_degrees, 0);
+
+  // The square-pixel pair, so the assertion above is a fact about the file
+  // and not about the default.
+  VD_CHECK_EQ(vd_probe_file(fixture("quadrants.mp4"), &info), VD_OK);
+  VD_CHECK_EQ(info.pixel_aspect.num, 1);
+  VD_CHECK_EQ(info.pixel_aspect.den, 1);
+  VD_CHECK_EQ(info.rotation_degrees, 0);
+
+  // Same bitstream, display matrix attached: the rotation is the only thing
+  // that differs, which is what makes the pair worth having.
+  VD_CHECK_EQ(vd_probe_file(fixture("quadrants_cw90.mp4"), &info), VD_OK);
+  VD_CHECK_EQ(info.rotation_degrees, 90);
+  VD_CHECK_EQ(info.width, 320);
+  VD_CHECK_EQ(info.height, 240);
+}
+
 static void test_audio_only(void) {
   VdProbeInfo info;
   VD_CHECK_EQ(vd_probe_file(fixture("audio_only.m4a"), &info), VD_OK);
@@ -113,6 +139,7 @@ static void test_probing_is_repeatable(void) {
 int main(void) {
   test_constant_rate_video_with_audio();
   test_rotation_is_clockwise_for_display();
+  test_sample_aspect_is_reported();
   test_audio_only();
   test_variable_frame_rate_is_detected();
   test_failures_are_reported_not_guessed();
