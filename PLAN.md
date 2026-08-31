@@ -10,7 +10,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - Keep the status line below current whenever a milestone starts or finishes.
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
-> M2 has started: the timeline cuts.**
+> M2 has started: the timeline cuts, and the compositor is now pinned by golden frames.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -381,7 +381,37 @@ audio, scrub anywhere, quit and reopen with everything restored.
       which a sharp test pattern would fail by a mile.
       Confirmed on a real render: a portrait clip in a 16:9 project comes out with its
       pillars filled
-- [ ] Golden-frame tests for the compositor in CI (fixed scenes, fixed timestamps, strict tolerance)
+- [x] Golden-frame tests for the compositor in CI (fixed scenes, fixed timestamps, strict tolerance)
+      — five whole frames, committed as PNGs and compared pixel for pixel on every run.
+      The compositor already had twenty-six tests, and they all sample *points*: the centre
+      of the picture, a spot in the bar, the corner that should be orange. That catches the
+      failures someone thought of in advance and cannot catch the ones nobody sampled. The
+      goldens were checked against exactly that: changing the blur's downsample from an
+      eighth to a sixth leaves **all twenty-six point tests green** and turns the golden
+      suite red, on the one scene affected, naming the worst pixel.
+      The scenes are chosen to cover what a point cannot — a full-colour pattern contained
+      with its pillars, the same frame blur-filled (only a whole frame can say it is the
+      *same* blur rather than merely a blurry one), picture-in-picture, crop and scale and
+      rotation and flip stacked so the *order* is pinned, and three layers where the top one
+      blends over a translucent middle rather than over the background. Every one decodes at
+      a **fixed tick** rather than taking whatever frame arrives first: the fixture animates,
+      and a golden of "some frame" is a golden of nothing. The frame counter burnt into the
+      reference reads 10, which is how you can see that it worked.
+      The tolerance is two numbers, not one. Four counts on any single channel, because
+      texture filtering and a floating-point blur are not promised the same last bit on two
+      GPU generations — and far below the 25 counts a wrong YCbCr matrix moves green by. Then
+      a mean of one count across the frame, because the per-pixel bound has a blind spot: a
+      change that darkens *every* pixel by three passes it while being obviously wrong.
+      Two things make the suite trustworthy rather than merely green. A **missing** reference
+      fails — a golden suite with nothing to compare against reports coverage it does not
+      have. And the harness checks itself first: it renders something asymmetric in both
+      axes, writes it, reads it back and demands an *exact* match, because if the PNG pair
+      flipped the picture or swapped red for blue then every golden below would be written
+      wrong, read wrong, compared equal, and the whole suite would test nothing.
+      `VD_UPDATE_GOLDENS=1` rewrites the references and says loudly that the run proved
+      nothing; approving one means reading the diff of the picture. On a red CI the actual
+      frame and an amplified difference come back as an artifact, so the first question —
+      what changed, and where — is answered without reproducing anything
 - [ ] Audio: 6 tracks; per-clip volume, mute, fade in/out; detach audio from video
 - [ ] Waveforms rendered from multi-resolution peak files at every zoom level
 - [ ] Keyframed volume (manual ducking)

@@ -81,6 +81,19 @@ jobs:
       - name: Engine unit tests
         run: ctest --test-dir build/engine --output-on-failure
 
+      # The golden frames fail on a picture, and a number in a log is a poor
+      # way to look at one. On a red run the actual frame and an amplified
+      # difference come back as an artifact, so the first question — what
+      # changed, and where — is answered without reproducing anything.
+      - name: Golden frame differences
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures
+          path: build/engine/tests/golden-failures/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # --- app ------------------------------------------------------------
       - name: Resolve Dart dependencies
         run: |
