@@ -68,7 +68,8 @@ if(APPLE)
     DEPENDS "${VD_METAL_LIB}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
     VERBATIM COMMENT "Embedding vd_shaders.metallib")
 
-  list(APPEND VD_EXTRA_SOURCES "${VD_METAL_EMBED}" src/vd_compositor.mm)
+  list(APPEND VD_EXTRA_SOURCES "${VD_METAL_EMBED}" src/vd_compositor.mm
+       src/vd_text.mm)
 endif()
 
 # --- engine -----------------------------------------------------------------
@@ -95,7 +96,8 @@ if(APPLE)
   target_link_libraries(vdodtor_engine PUBLIC
     "-framework CoreVideo" "-framework CoreMedia"
     "-framework VideoToolbox" "-framework Metal" "-framework CoreFoundation"
-    "-framework CoreGraphics" "-framework ImageIO" "-framework QuartzCore"
+    "-framework CoreGraphics" "-framework CoreText" "-framework ImageIO"
+    "-framework QuartzCore"
     "-framework Foundation" "-framework AudioToolbox")
 endif()
 

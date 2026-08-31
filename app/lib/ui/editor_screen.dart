@@ -131,6 +131,10 @@ class _EditorScreenState extends State<EditorScreen> {
         // Before the play pass for the same reason the duck is: what it
         // dumps comes from a timeline nothing else has moved yet.
         await runSourceGeometrySelfTest(engine, _store.project);
+        // Last of the edits, and before the play pass like the others: what
+        // plays then has a caption over it, which is the only way to see that
+        // a caption survives the clock as well as a seek.
+        await runCaptionSelfTest(engine, _store, timeline);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
@@ -227,6 +231,7 @@ class _EditorScreenState extends State<EditorScreen> {
         EditorAction.zoomOut: () => _timeline?.zoomBy(1 / 1.4),
         EditorAction.zoomToFit: () => _timeline?.zoomToFit(),
         EditorAction.split: () => _timeline?.splitAtPlayhead(),
+        EditorAction.addText: () => _timeline?.addTextClip(),
         EditorAction.duplicate: () => _timeline?.duplicateSelected(),
         EditorAction.detachAudio: () => _timeline?.detachAudio(),
         EditorAction.delete: () => _timeline?.deleteSelected(),
@@ -627,6 +632,16 @@ class _TransportBar extends StatelessWidget {
           Text('  /  ${timecode(duration, fps)}',
               style: vdMono.copyWith(color: VdColors.dim)),
           const Spacer(),
+          // First of the "add something" buttons, because a caption is the
+          // thing most often added to a cut that is otherwise finished.
+          IconButton(
+            tooltip: timeline.canAddTextClip
+                ? 'Add a caption at the playhead (⌘T)'
+                : 'Every text lane is full at the playhead',
+            icon: const Icon(Icons.title, size: 20),
+            onPressed:
+                timeline.canAddTextClip ? () => timeline.addTextClip() : null,
+          ),
           IconButton(
             tooltip: timeline.canAddOverlayTrack
                 ? 'Add an overlay track'

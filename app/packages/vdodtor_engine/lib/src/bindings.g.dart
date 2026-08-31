@@ -542,6 +542,145 @@ class VdEngineBindings {
         int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Uint8>, int)
       >();
 
+  /// A caption with nothing said about it: white, unstroked, unboxed, centred,
+  /// at a readable size. Not a zeroed struct — a zeroed one is transparent type
+  /// with no size, which is not a default anybody wants.
+  VdTextSpec vd_text_spec_default() {
+    return _vd_text_spec_default();
+  }
+
+  late final _vd_text_spec_defaultPtr =
+      _lookup<ffi.NativeFunction<VdTextSpec Function()>>(
+        'vd_text_spec_default',
+      );
+  late final _vd_text_spec_default = _vd_text_spec_defaultPtr
+      .asFunction<VdTextSpec Function()>();
+
+  /// True when two specs would rasterise to the same pixels. This is what lets
+  /// the engine keep a raster across an edit that did not touch the text.
+  bool vd_text_spec_equal(
+    ffi.Pointer<VdTextSpec> a,
+    ffi.Pointer<VdTextSpec> b,
+  ) {
+    return _vd_text_spec_equal(a, b);
+  }
+
+  late final _vd_text_spec_equalPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Bool Function(ffi.Pointer<VdTextSpec>, ffi.Pointer<VdTextSpec>)
+        >
+      >('vd_text_spec_equal');
+  late final _vd_text_spec_equal = _vd_text_spec_equalPtr
+      .asFunction<
+        bool Function(ffi.Pointer<VdTextSpec>, ffi.Pointer<VdTextSpec>)
+      >();
+
+  /// A copy that owns its own strings, and the matching free. The engine holds a
+  /// spec for as long as a clip is on the timeline; the caller that handed it
+  /// over keeps its own.
+  ffi.Pointer<VdTextSpec> vd_text_spec_copy(ffi.Pointer<VdTextSpec> spec) {
+    return _vd_text_spec_copy(spec);
+  }
+
+  late final _vd_text_spec_copyPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdTextSpec> Function(ffi.Pointer<VdTextSpec>)
+        >
+      >('vd_text_spec_copy');
+  late final _vd_text_spec_copy = _vd_text_spec_copyPtr
+      .asFunction<ffi.Pointer<VdTextSpec> Function(ffi.Pointer<VdTextSpec>)>();
+
+  void vd_text_spec_free(ffi.Pointer<VdTextSpec> spec) {
+    return _vd_text_spec_free(spec);
+  }
+
+  late final _vd_text_spec_freePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdTextSpec>)>>(
+        'vd_text_spec_free',
+      );
+  late final _vd_text_spec_free = _vd_text_spec_freePtr
+      .asFunction<void Function(ffi.Pointer<VdTextSpec>)>();
+
+  /// Registers a font from memory, for this process only. `data` is the contents
+  /// of a .ttf or .otf; it is copied, so the caller may free it on return.
+  ///
+  /// Bytes rather than a path because the fonts ship inside the app bundle, where
+  /// the only address anybody has for them is an asset key. Registering the same
+  /// face twice is not an error — it is what happens when the app restarts an
+  /// engine — and the second registration is quietly ignored.
+  int vd_text_register_font(ffi.Pointer<ffi.Void> data, int size) {
+    return _vd_text_register_font(data, size);
+  }
+
+  late final _vd_text_register_fontPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Int64)>
+      >('vd_text_register_font');
+  late final _vd_text_register_font = _vd_text_register_fontPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Void>, int)>();
+
+  /// The families registered so far, in the order they arrived. For tests and for
+  /// telling a UI what it may offer.
+  int vd_text_font_count() {
+    return _vd_text_font_count();
+  }
+
+  late final _vd_text_font_countPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>('vd_text_font_count');
+  late final _vd_text_font_count = _vd_text_font_countPtr
+      .asFunction<int Function()>();
+
+  ffi.Pointer<ffi.Char> vd_text_font_name(int index) {
+    return _vd_text_font_name(index);
+  }
+
+  late final _vd_text_font_namePtr =
+      _lookup<ffi.NativeFunction<ffi.Pointer<ffi.Char> Function(ffi.Int32)>>(
+        'vd_text_font_name',
+      );
+  late final _vd_text_font_name = _vd_text_font_namePtr
+      .asFunction<ffi.Pointer<ffi.Char> Function(int)>();
+
+  /// Rasterises `spec` into a new `width` x `height` CVPixelBufferRef: 32BGRA,
+  /// **premultiplied**, transparent everywhere the ink is not. IOSurface-backed
+  /// and Metal-compatible, so the compositor wraps it without a copy.
+  ///
+  /// The block is laid out centred in the frame; moving it is the clip
+  /// transform's job, not this function's. Caller releases with
+  /// CVPixelBufferRelease. NULL on failure, with `out_result` — which may be
+  /// NULL — set to a negative VdResult.
+  ffi.Pointer<ffi.Void> vd_text_render(
+    ffi.Pointer<VdTextSpec> spec,
+    int width,
+    int height,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_text_render(spec, width, height, out_result);
+  }
+
+  late final _vd_text_renderPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<ffi.Void> Function(
+            ffi.Pointer<VdTextSpec>,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_text_render');
+  late final _vd_text_render = _vd_text_renderPtr
+      .asFunction<
+        ffi.Pointer<ffi.Void> Function(
+          ffi.Pointer<VdTextSpec>,
+          int,
+          int,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
   /// A clip with nothing said about it: fully opaque, full volume, contained,
   /// carrying a picture, and with no volume line — for which a zeroed pointer and
   /// count happen to be exactly right.
@@ -1550,7 +1689,14 @@ enum VdPixelFormat {
 
   /// Software decode, copied into a planar buffer. Slower, and the compositor
   /// has to sample it differently.
-  VD_PIXEL_YUV420P(1);
+  VD_PIXEL_YUV420P(1),
+
+  /// Not something a decoder produces: premultiplied BGRA, which is what a
+  /// generated layer — a caption, a shape — arrives as. It lives in this enum
+  /// rather than in one of its own because VdLayer::format is the only thing
+  /// that reads it, and the compositor should not have to be told twice what
+  /// kind of pixels it is being handed.
+  VD_PIXEL_BGRA(2);
 
   final int value;
   const VdPixelFormat(this.value);
@@ -1558,6 +1704,7 @@ enum VdPixelFormat {
   static VdPixelFormat fromValue(int value) => switch (value) {
     0 => VD_PIXEL_NV12,
     1 => VD_PIXEL_YUV420P,
+    2 => VD_PIXEL_BGRA,
     _ => throw ArgumentError('Unknown value for VdPixelFormat: $value'),
   };
 }
@@ -1786,6 +1933,108 @@ final class VdLayer extends ffi.Struct {
   external VdTransform transform;
 }
 
+/// Where each line sits inside the text block. The block itself is centred in
+/// the frame and moved by the clip's transform; this only decides what happens
+/// to a short line next to a long one.
+enum VdTextAlign {
+  VD_TEXT_ALIGN_LEFT(0),
+  VD_TEXT_ALIGN_CENTER(1),
+  VD_TEXT_ALIGN_RIGHT(2);
+
+  final int value;
+  const VdTextAlign(this.value);
+
+  static VdTextAlign fromValue(int value) => switch (value) {
+    0 => VD_TEXT_ALIGN_LEFT,
+    1 => VD_TEXT_ALIGN_CENTER,
+    2 => VD_TEXT_ALIGN_RIGHT,
+    _ => throw ArgumentError('Unknown value for VdTextAlign: $value'),
+  };
+}
+
+/// Everything about how one caption looks.
+///
+/// Colours are 0xAARRGGBB, straight (not premultiplied) — the document writes
+/// them and a human reads them, and premultiplied colour is neither. Alpha 0
+/// means *off* for the two optional parts: a shadow colour with no alpha casts
+/// no shadow, a box colour with no alpha draws no box. That is one rule rather
+/// than two booleans nobody would keep in step with the colours beside them.
+final class VdTextSpec extends ffi.Struct {
+  /// UTF-8, NUL terminated. NULL or empty renders a transparent frame, which
+  /// is what a caption someone has not typed into yet should look like.
+  external ffi.Pointer<ffi.Char> text;
+
+  /// Family name as the font file reports it — "Inter", "Playfair Display".
+  /// NULL, empty, or a family nothing was registered under falls back to the
+  /// system's own, so a project made on a machine with a pack installed still
+  /// opens somewhere it is not.
+  external ffi.Pointer<ffi.Char> font;
+
+  /// Cap height of the type as a fraction of the output height. 0.08 is a
+  /// readable caption on a 16:9 frame.
+  @ffi.Float()
+  external double size;
+
+  @ffi.Uint32()
+  external int color;
+
+  /// An outline, drawn under the fill so only its outer half shows. Width is a
+  /// fraction of the font size, which is also how CoreText expresses it.
+  @ffi.Uint32()
+  external int stroke_color;
+
+  @ffi.Float()
+  external double stroke_width;
+
+  /// Cast by the ink — the fill and its outline together — onto whatever is
+  /// behind it, including the box. Offsets and blur are fractions of the font
+  /// size; +y is down, the direction a light above the frame throws it.
+  @ffi.Uint32()
+  external int shadow_color;
+
+  @ffi.Float()
+  external double shadow_dx;
+
+  @ffi.Float()
+  external double shadow_dy;
+
+  @ffi.Float()
+  external double shadow_blur;
+
+  /// A rounded rectangle behind the whole block, inset by `box_padding` on
+  /// every side. Padding and corner radius are fractions of the font size, so
+  /// the box keeps its proportions as the type grows.
+  @ffi.Uint32()
+  external int box_color;
+
+  @ffi.Float()
+  external double box_padding;
+
+  @ffi.Float()
+  external double box_radius;
+
+  /// Extra space between glyphs, as a fraction of the font size. Negative
+  /// tightens.
+  @ffi.Float()
+  external double letter_spacing;
+
+  /// Multiple of the font's own line height. 0 and 1 both mean "as the font
+  /// asked for".
+  @ffi.Float()
+  external double line_spacing;
+
+  /// How much of the output's width the block may fill before it wraps, as a
+  /// fraction. 0 means the default, which leaves a margin — text that touches
+  /// the edge of the frame reads as a mistake.
+  @ffi.Float()
+  external double max_width;
+
+  @ffi.UnsignedInt()
+  external int alignAsInt;
+
+  VdTextAlign get align => VdTextAlign.fromValue(alignAsInt);
+}
+
 final class VdEngine extends ffi.Opaque {}
 
 final class VdAudioRenderer extends ffi.Opaque {}
@@ -1823,9 +2072,20 @@ final class VdVolumePoint extends ffi.Struct {
 }
 
 final class VdTimelineClip extends ffi.Struct {
-  /// Absolute path to the source file. Copied on set_timeline; the caller keeps
+  /// Absolute path to the source file, or NULL for a clip that generates its
+  /// own picture — see `text`. Copied on set_timeline; the caller keeps
   /// ownership of its own string.
   external ffi.Pointer<ffi.Char> path;
+
+  /// A caption instead of a file. NULL for every clip that has a `path`, and
+  /// the two are exclusive: a clip is a window onto a source or it is something
+  /// the engine draws, never both.
+  ///
+  /// The spec is copied on set_timeline, strings and all, and the raster it
+  /// produces is kept for as long as the clip's spec is unchanged — the same
+  /// bargain `path` gets with its decoder, and for the same reason: nudging a
+  /// clip must not cost a re-layout of every caption on the timeline.
+  external ffi.Pointer<VdTextSpec> text;
 
   /// position on the timeline
   @VdTick()
@@ -1988,6 +2248,14 @@ final class VdEngineStats extends ffi.Struct {
   /// frame boundary would republish a frame that has already been shown.
   @ffi.Int64()
   external int clock_regressions;
+
+  /// Captions laid out since the engine started. This is the number that says
+  /// whether the raster cache is working: it should tick once per caption per
+  /// edit that changed one, and never during playback. A steady stream of them
+  /// means every frame is re-running Core Text, which is the whole thing the
+  /// cache exists to prevent.
+  @ffi.Int64()
+  external int text_rasters;
 }
 
 final class VdThumbnail extends ffi.Struct {

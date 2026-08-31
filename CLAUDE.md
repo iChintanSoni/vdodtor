@@ -31,12 +31,14 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 
 ```
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
-           `lib/media` — import, thumbnails, waveforms, sandbox file access — and
-           `lib/ui`)
+           `lib/media` — import, thumbnails, waveforms, bundled fonts, sandbox file
+           access — and `lib/ui`); `assets/fonts` holds the five OFL faces a caption
+           can be set in
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_probe, vd_decoder, vd_compositor
-           (Metal), vd_audio_*, vd_engine (transport), vd_thumbnail, vd_peaks
+           (Metal), vd_text (Core Text captions), vd_audio_*, vd_engine (transport),
+           vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 
@@ -110,6 +112,36 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A caption is a source, not a compositing mode.** `vd_text_render` lays a
+  `VdTextSpec` out with Core Text into an output-sized premultiplied BGRA buffer, and
+  the engine hands that to the compositor as an ordinary `VdLayer` — same transform,
+  same opacity, same z-order as a decoded frame. It lives in the engine rather than in
+  Flutter so that a frame stays a pure function of `(document, time)` with no UI
+  attached: an export driven by a frame counter has to produce the caption the preview
+  showed, and rasterising in Dart would make text the one exception. Nothing about a
+  caption is measured in pixels — sizes, offsets, padding and spacing are fractions of
+  the output height or of the font size — so a project cut at 1080p exports the same at
+  4K.
+- **A caption's raster is kept until the caption changes.** `vd_engine_set_timeline`
+  carries a raster across an edit whose `vd_text_spec_equal` says nothing about that
+  caption moved, exactly as it carries a decoder across an unchanged path.
+  `VdEngineStats::text_rasters` is how that is asserted: it should tick once per edit
+  that touched a caption and never during playback.
+- **Text is checked on where the ink is, not on which pixels it covers.**
+  `vd_text_test.c` measures ink bounds and coverage rather than comparing a golden
+  frame, because glyph rasterisation is the part of Core Text most likely to be tuned in
+  a macOS release — a reference PNG of a sentence would go red on an OS upgrade while
+  the renderer was still correct. The compositor's goldens stay; text does not join them.
+- **A face's family name is written down three times.** Inside the font file, in
+  `BundledFonts.faces` (so the picker can list faces with no engine alive — a widget
+  test has none), and in `app/pubspec.yaml` (so Flutter can preview one). `vd_text_test.c`
+  checks the first against the second's claim and `app/test/media/fonts_test.dart`
+  checks the second against the third. A mismatch is silent: the caption falls back to
+  the system face and looks like somebody's decision.
+- **Lane counts and `VD_MAX_LAYERS` move together.** `Project.maxTracksOfKind` allows one
+  main, three overlays and eight text lanes; `VD_MAX_LAYERS` in `vd_engine.c` is their
+  sum. A lane the document allows and the compositor drops is a caption that is on the
+  timeline and not on the screen.
 - **`spikes/` is throwaway M0 code.** Read it for reference; do not build on it.
 
 Remote: `https://github.com/iChintanSoni/vdodtor.git` (branch `master`, also the main branch).

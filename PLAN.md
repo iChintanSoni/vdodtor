@@ -10,11 +10,21 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - Keep the status line below current whenever a milestone starts or finishes.
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
-> M2's build items are now all done too, and its exit criteria are one edit by hand:
+> M2's build items are all done too, and its exit criteria are one edit by hand:
 > the timeline cuts, the compositor is pinned by golden frames, the audio lanes make a
 > sound, the clips on them show what that sound looks like, a volume line on a clip can
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
+>
+> **M3 has started: the editor can put words on the picture.** A caption is a clip with no
+> file — the first thing on the timeline that is drawn rather than decoded — laid out by
+> Core Text in the engine and composited as an ordinary layer, so preview and export can
+> never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
+> letter and line spacing and alignment, all measured in fractions so a project cut at
+> 1080p exports the same at 4K. ⌘T at the playhead. Measured in the running app: the
+> caption composites over the picture in the same frame as the clip under it, and eight
+> seeks across it lay it out **zero** further times — the raster is kept until the caption
+> itself changes, so scrubbing costs nothing and retyping costs one layout.
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -774,7 +784,69 @@ start to finish without touching another editor; undo works through the whole se
 ## M3 — "It's an editor" (text, overlays, effects)
 
 ### Text & shapes
-- [ ] Text rendering with bundled fonts: fill, stroke, shadow, background box, spacing, alignment
+- [x] Text rendering with bundled fonts: fill, stroke, shadow, background box, spacing, alignment
+      — the first clip on the timeline that is **drawn rather than decoded**, and the
+      decision worth remembering is where it is drawn. A caption is laid out by
+      **Core Text inside the engine** (`vd_text.mm`) into an output-sized
+      premultiplied BGRA buffer, and handed to the compositor as an ordinary
+      `VdLayer` — same transform, same opacity, same z-order as a decoded frame.
+      Rasterising it in Dart would have been less code and would have made text
+      the one thing preview and export can disagree about: a frame has to stay a
+      pure function of `(document, time)` with no UI attached, because an export
+      driven by a frame counter has no widget tree to ask. It is also what lets
+      the engine's own tests see the words at all.
+      The compositor grew one branch for it — `VD_PIXEL_BGRA`, which reuses the
+      pass that already draws the blur-fill background, because a premultiplied
+      RGBA texture is a premultiplied RGBA texture.
+      **Nothing about a caption is measured in pixels.** Size is a fraction of the
+      output height and everything else — outline width, shadow offset and blur,
+      box padding and corner, letter spacing — is a fraction of the font size, for
+      the same reason `ClipTransform` has none: a project cut at 1080p and
+      exported at 4K has to put the same words in the same place at the same size,
+      and a point size stored in the file is right at exactly one resolution.
+      **The layout box is as wide as wrapping allows, and the background box hugs
+      the words.** They are different rectangles on purpose. A block that hugged
+      its own text would leave "align left" doing nothing at all to a single line,
+      which is the case alignment is asked for most; a background box as wide as
+      the wrap would be a bar across the frame. So alignment moves lines inside
+      the wrap width, and the box is measured back off the lines that actually got
+      drawn.
+      Line spacing is applied **between** lines rather than above every one of
+      them. A line-height multiple adds its extra space above the first line too,
+      so the block sinks below the middle of the frame — a caption that moves when
+      its leading changes is a caption nobody can place.
+      **The raster is kept until the caption changes**, on exactly the terms a
+      decoder is kept across an unchanged path: `vd_text_spec_equal` decides, and
+      `VdEngineStats::text_rasters` is how a test can tell. Measured in the running
+      app, eight seeks across a caption lay it out **zero** further times.
+      **Five bundled OFL faces** — Inter, Anton, Playfair Display, Caveat, Space
+      Mono — one for each job a caption has, with their licences beside them. They
+      are registered into the engine's *own* catalogue rather than with
+      `CTFontManager`, which only offers session or machine scope for a font that
+      came from memory: a video editor has no business changing which fonts the
+      computer it is running on has. Each family name is written down three times —
+      in the file, in `BundledFonts.faces` so the picker works with no engine
+      alive, and in `pubspec.yaml` so Flutter can preview it — and two tests hold
+      the three together, because the failure is silent: a family nothing is
+      registered under draws perfectly well in the wrong face.
+      **Text is checked on where the ink is, not on which pixels it covers.** The
+      compositor is pinned by golden frames; text deliberately is not. Hinting and
+      subpixel positioning are the parts of Core Text most likely to be tuned in a
+      macOS release, and a reference PNG of a sentence would go red on an OS
+      upgrade while the renderer was still perfectly correct. `vd_text_test.c`
+      asserts the properties that survive any amount of rasteriser drift and break
+      the moment the layout is wrong: alignment moves the block, letter spacing
+      widens it, line spacing heightens it without moving it, the box sits behind
+      it, the shadow falls below and to the right of it, and no pixel has more
+      colour than alpha.
+      ⌘T puts one at the playhead, on the first text lane with room and on a new
+      one when there is none — stacking two on a lane is impossible and refusing
+      would be a button that stops working exactly when somebody wants a title and
+      a subtitle at once. Lane and caption are **one undo entry**, which is what
+      `InsertClips.newTracks` exists for.
+      Text lanes are capped at **8**, which the brief does not state; that number
+      and `VD_MAX_LAYERS` are the same decision written twice and have to move
+      together, or a lane the document allows is a caption the compositor drops.
 - [ ] ~8 in/out animation presets (fade, slide, pop, scale, typewriter, …)
 - [ ] Shape primitives: rect, rounded rect, circle, line/arrow — fill/stroke, same transforms
       and animation presets as text

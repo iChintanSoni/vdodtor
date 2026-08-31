@@ -407,6 +407,184 @@ static void test_editing_the_timeline_keeps_decoders(void) {
   vd_engine_destroy(e);
 }
 
+// A caption is a clip with no file. It has to reach the screen through the
+// same render list, the same z-order and the same transform as everything
+// else — and it has to be laid out once rather than on every frame.
+//
+// The assertion is on the background box rather than on a glyph: a box is a
+// filled rectangle of a colour nobody else in the frame is using, so "the
+// caption is on screen" becomes a pixel and not an eyeball.
+static const int CAPTION_RED[3] = {220, 40, 40};
+
+static VdTextSpec boxed_caption(const char* text) {
+  VdTextSpec spec = vd_text_spec_default();
+  spec.text = text;
+  spec.size = 0.2f;
+  // Ink and box the same colour, so the middle of the frame is that colour
+  // whether a glyph happens to fall on it or not — what is being asked here
+  // is whether the caption reached the screen, not where its letters landed.
+  spec.color = 0xFFDC2828u;      // CAPTION_RED, opaque
+  spec.box_color = 0xFFDC2828u;
+  spec.box_padding = 0.5f;
+  spec.box_radius = 0.0f;
+  return spec;
+}
+
+static void test_a_caption_composites_over_the_picture(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTextSpec spec = boxed_caption("Hi");
+  VdTimelineClip clips[2];
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");
+  clips[0].duration = SECOND;
+  clips[1] = vd_timeline_clip_default();
+  clips[1].text = &spec;   // and no path at all
+  clips[1].duration = SECOND;
+  clips[1].track = 1;
+  clips[1].gain = 0.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  check_frame_is(e, CAPTION_RED, "the caption is on top of the picture");
+  // And only where it is: a caption is a few words on a transparent frame,
+  // so the corners are still the clip underneath.
+  check_frame_pixel_is(e, 0.02, 0.02, GREEN, "the picture around the caption");
+
+  // It opens no decoder — there is no file to open, and a caption that costs
+  // a file handle would be a caption that can fail.
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.open_decoders, 1);
+  VD_CHECK_EQ(stats.active_layers, 2);
+  VD_CHECK_EQ(stats.text_rasters, 1);
+
+  // The transform reaches it like any other layer: pushed off the bottom, the
+  // middle of the frame is the picture again.
+  clips[1].transform = vd_transform_identity();
+  clips[1].transform.offset_y = 0.9f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the caption moved out of the middle");
+
+  vd_engine_destroy(e);
+}
+
+static void test_a_caption_is_laid_out_once(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTextSpec spec = boxed_caption("Kept");
+  VdTimelineClip clips[2];
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");
+  clips[0].duration = 2 * SECOND;
+  clips[1] = vd_timeline_clip_default();
+  clips[1].text = &spec;
+  clips[1].duration = 2 * SECOND;
+  clips[1].track = 1;
+  clips[1].gain = 0.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_seek(e, 0);
+  vd_engine_render_now(e);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 1);
+
+  // Scrubbing renders frame after frame and lays nothing out again: a caption
+  // does not change with time, which is the whole reason it is worth keeping.
+  for (int i = 1; i <= 20; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND / 20);
+    vd_engine_render_now(e);
+  }
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 1);
+
+  // Nor does an edit somewhere else on the timeline. This is the same bargain
+  // a decoder gets from an unchanged path.
+  clips[0].duration = SECOND;
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 1);
+
+  // Changing the caption does lay it out again — that is what the cache is
+  // keyed on, and a caption that did not redraw when retyped would be worse
+  // than one that redrew constantly.
+  spec.text = "Retyped";
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 2);
+
+  // And so does a change of output size, because the raster is made at it.
+  timeline.width = 640;
+  timeline.height = 480;
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.text_rasters, 3);
+
+  vd_engine_destroy(e);
+}
+
+static void test_a_caption_alone_is_a_timeline(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // No file anywhere on the timeline. Nothing may go looking for one: an
+  // empty project with a title card has to play, and it has to be black
+  // behind the words rather than nothing at all.
+  VdTextSpec spec = boxed_caption("Title");
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.text = &spec;
+  clip.start = 0;
+  clip.duration = SECOND;
+  clip.gain = 0.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_duration(e), SECOND);
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, CAPTION_RED, "a caption on its own");
+  check_frame_pixel_is(e, 0.02, 0.02, BLACK, "and black behind it");
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.open_decoders, 0);
+
+  vd_engine_destroy(e);
+}
+
 static void test_a_missing_source_is_a_gap_not_a_stall(void) {
   VdEngine* e = make_engine();
   if (!e) return;
@@ -746,6 +924,9 @@ int main(void) {
   test_play_from_the_end_restarts();
   test_frame_callback();
   test_editing_the_timeline_keeps_decoders();
+  test_a_caption_composites_over_the_picture();
+  test_a_caption_is_laid_out_once();
+  test_a_caption_alone_is_a_timeline();
   test_a_missing_source_is_a_gap_not_a_stall();
   test_an_empty_timeline_renders_black();
   test_scrubbing_stays_correct();

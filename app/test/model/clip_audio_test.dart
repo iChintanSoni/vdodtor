@@ -392,7 +392,7 @@ void main() {
       // It did not before: the render list was built from visual tracks only,
       // so everything on an audio lane was silent no matter what was on it.
       final timeline = engineTimelineFor(withMusic());
-      final bed = timeline.clips.where((c) => c.path.endsWith('music.m4a'));
+      final bed = timeline.clips.where((c) => c.path!.endsWith('music.m4a'));
       expect(bed, hasLength(1));
       expect(bed.single.gain, 1);
     });
@@ -400,7 +400,7 @@ void main() {
     test('and it arrives carrying no picture', () {
       final timeline = engineTimelineFor(withMusic());
       final bed =
-          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+          timeline.clips.firstWhere((c) => c.path!.endsWith('music.m4a'));
       expect(bed.hasVideo, isFalse,
           reason: 'the compositor must not open a decoder for a music file');
     });
@@ -408,7 +408,7 @@ void main() {
     test('a muted lane silences what is on it', () {
       final timeline = engineTimelineFor(withMusic(muted: true));
       final bed =
-          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+          timeline.clips.firstWhere((c) => c.path!.endsWith('music.m4a'));
       expect(bed.gain, 0);
     });
 
@@ -417,7 +417,7 @@ void main() {
       // mutes the last clip.
       final timeline =
           engineTimelineFor(withMusic(audio: const ClipAudio(muted: true)));
-      final bed = timeline.clips.where((c) => c.path.endsWith('music.m4a'));
+      final bed = timeline.clips.where((c) => c.path!.endsWith('music.m4a'));
       expect(bed, hasLength(1));
       expect(bed.single.gain, 0);
     });
@@ -426,7 +426,7 @@ void main() {
       final timeline = engineTimelineFor(withMusic(
           audio: ClipAudio(volume: 0.25, fadeIn: secs(1), fadeOut: secs(2))));
       final bed =
-          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+          timeline.clips.firstWhere((c) => c.path!.endsWith('music.m4a'));
       expect(bed.gain, 0.25);
       expect(bed.fadeInTicks, secs(1).raw);
       expect(bed.fadeOutTicks, secs(2).raw);
@@ -438,7 +438,7 @@ void main() {
       final timeline = engineTimelineFor(
           withMusic(audio: const ClipAudio(volume: 0.5, points: _duck)));
       final bed =
-          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+          timeline.clips.firstWhere((c) => c.path!.endsWith('music.m4a'));
       expect(bed.gain, 0.5);
       expect(bed.volumePoints.map((p) => p.sourceTicks), [1000, 1200, 1600, 1800]);
       expect(bed.volumePoints.map((p) => p.value), [1, 0.25, 0.25, 1]);
@@ -447,7 +447,7 @@ void main() {
     test('a clip with no line sends none', () {
       final timeline = engineTimelineFor(withMusic());
       final bed =
-          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+          timeline.clips.firstWhere((c) => c.path!.endsWith('music.m4a'));
       expect(bed.volumePoints, isEmpty);
     });
 
@@ -457,7 +457,7 @@ void main() {
       var p = withMusic();
       p = p.updateTrack(mainTrackId, (t) => t.copyWith(hidden: true));
       final timeline = engineTimelineFor(p);
-      final video = timeline.clips.firstWhere((c) => c.path.endsWith('m1.mp4'));
+      final video = timeline.clips.firstWhere((c) => c.path!.endsWith('m1.mp4'));
       expect(video.hasVideo, isFalse);
       expect(video.gain, 1);
     });

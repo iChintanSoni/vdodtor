@@ -158,6 +158,46 @@ final class SetClipAudio extends EditCommand {
       next is SetClipAudio && next.clipId == clipId ? next : null;
 }
 
+/// Changes what a caption says and how it looks.
+///
+/// The third of the trio with [SetClipTransform] and [SetClipAudio], merged
+/// the same way: typing into the text field and then dragging the size slider
+/// is one decision about one caption, and splitting it into an undo entry per
+/// keystroke would make ⌘Z useless exactly where it is needed most.
+///
+/// A clip that is not a caption is refused rather than quietly given one. The
+/// two kinds of clip are exclusive, and a command that could turn a video clip
+/// into a text clip is a command that will.
+final class SetClipText extends EditCommand {
+  const SetClipText(this.clipId, this.text);
+
+  final String clipId;
+  final ClipText text;
+
+  @override
+  String get label => 'Edit text';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    if (!clip.isText) throw EditException('clip $clipId is not a caption');
+
+    final next = text.clamped();
+    if (clip.text == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(text: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipText && next.clipId == clipId ? next : null;
+}
+
 /// One video clip's sound, lifted onto an audio lane as a clip of its own.
 ///
 /// Two edits that have to be one: the new audio clip appears *and* the video
@@ -281,7 +321,10 @@ final class MoveClip extends EditCommand {
   Project _moveAcross(Project project, Track from, Clip clip, Tick target) {
     final to = project.trackById(toTrackId!);
     if (to == null) throw EditException('no track $toTrackId');
-    if (!accepts(to, project.assetFor(clip), from: from.kind)) return project;
+    if (!accepts(to, project.assetFor(clip),
+        from: from.kind, isText: clip.isText)) {
+      return project;
+    }
 
     final moved = clip.movedTo(target);
     final emptied = from
@@ -317,9 +360,21 @@ final class MoveClip extends EditCommand {
   /// Which is why [from] has to be here at all: after a detach, an audio lane
   /// holds a clip whose *file* still has video, and it has to be free to move
   /// between the six audio lanes like anything else.
+  ///
+  /// A caption is decided by [isText] rather than by having no asset, because
+  /// those are different reasons to have none: a caption belongs on a text lane
+  /// and nowhere else, where a clip whose media is merely missing is still a
+  /// video clip and still belongs where video goes.
   static bool accepts(Track track, MediaAsset? asset,
-      {TrackKind from = TrackKind.main}) {
+      {TrackKind from = TrackKind.main, bool isText = false}) {
     if (track.locked) return false;
+    // Both ways round: a caption may only land on a text lane, and a text lane
+    // may only hold captions. A caption on the magnetic main lane would
+    // repack the video around it and then composite underneath it, which is
+    // two surprises for one drag.
+    if (isText || track.kind == TrackKind.text) {
+      return isText && track.kind == TrackKind.text;
+    }
     if (asset == null) return track.kind.isVisual;
     if (track.kind.isVisual) return asset.probe.hasVideo;
     if (!asset.probe.hasAudio) return false;
@@ -499,6 +554,10 @@ final class SplitClip extends EditCommand {
       enabled: clip.enabled,
       transform: clip.transform,
       audio: clip.audio.copyWith(fadeIn: Tick.zero).clampedTo(tailDuration),
+      // A caption is copied whole, like the transform. It does not vary with
+      // time, so both halves say the same thing — and a tail that lost its
+      // words would be a cut that deleted them.
+      text: clip.text,
     );
 
     final index = track.indexOfClip(clipId);
@@ -529,15 +588,28 @@ typedef ClipPlacement = ({String trackId, Clip clip, int? index});
 /// a clip that appears somewhere beats one that appears nowhere and says
 /// nothing.
 final class InsertClips extends EditCommand {
-  const InsertClips(this.placements, {this.label = 'Paste'});
+  const InsertClips(this.placements,
+      {this.label = 'Paste', this.newTracks = const []});
 
   final List<ClipPlacement> placements;
+
+  /// Lanes to make first, for a clip that has nowhere to go yet — the first
+  /// caption in a project lands on a text lane that does not exist until it
+  /// does. Part of this command rather than a separate [AddTrack] for the same
+  /// reason [DetachAudio] carries its own: adding a caption is one action, and
+  /// two undo entries for one button is one of them always wrong.
+  final List<Track> newTracks;
 
   @override
   final String label;
 
   @override
   Project apply(Project project) {
+    if (placements.isEmpty && newTracks.isEmpty) return project;
+
+    for (final track in newTracks) {
+      project = AddTrack(track).apply(project);
+    }
     if (placements.isEmpty) return project;
 
     final seen = <String>{};

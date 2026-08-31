@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/media.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/serialization.dart';
@@ -88,6 +89,124 @@ void main() {
       final back = decodeProject(encodeProject(p));
       expect(back.clipById('a')!.enabled, isFalse);
       expect(back.media['m1']!.bookmark, 'Ym9va21hcms=');
+    });
+
+    test('a caption round-trips, styling and all', () {
+      const styled = ClipText(
+        text: 'Two\nlines',
+        font: 'Anton',
+        size: 0.15,
+        color: 0xFFFF0000,
+        strokeColor: 0xFF00FF00,
+        strokeWidth: 0.05,
+        shadowColor: 0x80000000,
+        shadowOffsetX: 0.01,
+        shadowOffsetY: 0.02,
+        shadowBlur: 0.03,
+        boxColor: 0x99101010,
+        boxPadding: 0.4,
+        boxRadius: 0.2,
+        letterSpacing: 0.06,
+        lineSpacing: 1.4,
+        maxWidth: 0.7,
+        alignment: TextAlignment.right,
+      );
+      final p = emptyProject().addTrack(Track.of(
+        id: 'tr-text',
+        kind: TrackKind.text,
+        name: 'Text 1',
+        clips: [
+          Clip.caption(
+              id: 't1', start: secs(1), duration: secs(3), text: styled),
+        ],
+      ));
+
+      final back = decodeProject(encodeProject(p));
+      expectSameDocument(back, p);
+      // And field by field, because the comparison above would also pass if
+      // both sides lost the same thing.
+      final clip = back.trackById('tr-text')!.clips.single;
+      expect(clip.mediaId, isNull);
+      expect(clip.text, styled);
+    });
+
+    test('a caption is written whole, with its colours readable', () {
+      final p = emptyProject().addTrack(Track.of(
+        id: 'tr-text',
+        kind: TrackKind.text,
+        name: 'Text 1',
+        clips: [
+          Clip.caption(
+              id: 't1',
+              start: Tick.zero,
+              duration: secs(2),
+              text: const ClipText(text: 'Hi', color: 0xFF3366CC)),
+        ],
+      ));
+
+      final json = encodeProject(p);
+      // Hex, because a project file is read by people and 4281216204 is not a
+      // colour anybody recognises.
+      expect(json, contains('#FF3366CC'));
+      expect(json, contains('"text": "Hi"'));
+    });
+
+    test('a caption whose colour will not parse is an error, not a guess', () {
+      final json = jsonDecode(encodeProject(
+        emptyProject().addTrack(Track.of(
+          id: 'tr-text',
+          kind: TrackKind.text,
+          name: 'Text 1',
+          clips: [
+            Clip.caption(
+                id: 't1',
+                start: Tick.zero,
+                duration: secs(2),
+                text: const ClipText(text: 'Hi')),
+          ],
+        )),
+      )) as Map<String, Object?>;
+      final tracks = json['tracks']! as List<Object?>;
+      final track = tracks.last! as Map<String, Object?>;
+      final clips = track['clips']! as List<Object?>;
+      final text = (clips.single! as Map<String, Object?>)['text']!
+          as Map<String, Object?>;
+      text['color'] = 'not a colour';
+
+      // Guessing black would silently rewrite the caption; guessing white
+      // would do it just as silently the other way.
+      expect(
+        () => decodeProject(jsonEncode(json)),
+        throwsA(isA<ProjectDecodeException>().having(
+            (e) => e.path, 'path', contains('color'))),
+      );
+    });
+
+    test('a caption from a wider future opens as one this build can edit', () {
+      final json = jsonDecode(encodeProject(
+        emptyProject().addTrack(Track.of(
+          id: 'tr-text',
+          kind: TrackKind.text,
+          name: 'Text 1',
+          clips: [
+            Clip.caption(
+                id: 't1',
+                start: Tick.zero,
+                duration: secs(2),
+                text: const ClipText(text: 'Hi')),
+          ],
+        )),
+      )) as Map<String, Object?>;
+      final tracks = json['tracks']! as List<Object?>;
+      final track = tracks.last! as Map<String, Object?>;
+      final clips = track['clips']! as List<Object?>;
+      final text = (clips.single! as Map<String, Object?>)['text']!
+          as Map<String, Object?>;
+      text['size'] = 9.0;
+
+      final back = decodeProject(jsonEncode(json));
+      expect(back.trackById('tr-text')!.clips.single.text!.size,
+          ClipText.maxSize);
     });
 
     test('an empty project round-trips', () {

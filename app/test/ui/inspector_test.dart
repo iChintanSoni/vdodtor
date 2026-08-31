@@ -382,4 +382,118 @@ void main() {
       expect(audio.volume, 0.5, reason: 'the fader is not part of the line');
     });
   });
+
+  group('a caption', () {
+    /// Adds one at the playhead and selects it, which is what the toolbar
+    /// button does.
+    String addCaption() {
+      controller.addTextClip();
+      return controller.selectedClipId!;
+    }
+
+    Future<void> scrollTo(WidgetTester tester, Finder finder) async {
+      await tester.scrollUntilVisible(finder, 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('gets a field with its words in it', (tester) async {
+      addCaption();
+      await pumpInspector(tester);
+
+      expect(find.byType(TextField), findsOneWidget);
+      expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'Text');
+    });
+
+    testWidgets('typing into the field reaches the document', (tester) async {
+      final id = addCaption();
+      await pumpInspector(tester);
+
+      await tester.enterText(find.byType(TextField), 'Hello there');
+      await tester.pump();
+
+      expect(store.project.clipById(id)!.text!.text, 'Hello there');
+    });
+
+    testWidgets('an ordinary clip gets no text field', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      expect(find.byType(TextField), findsNothing);
+    });
+
+    testWidgets('and a caption gets no fit or crop', (tester) async {
+      // Its raster is made at the size of the frame, so a fit mode would do
+      // nothing and a crop would cut the words off.
+      addCaption();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('PLACE'));
+
+      expect(find.text('FILL'), findsNothing);
+      expect(find.text('CROP'), findsNothing);
+      expect(find.text('Flip H'), findsNothing);
+      expect(find.text('PLACE'), findsOneWidget);
+    });
+
+    testWidgets('the shadow controls appear only once there is a shadow',
+        (tester) async {
+      final id = addCaption();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('SHADOW'));
+      expect(find.text('Blur'), findsNothing);
+
+      store.run(SetClipText(
+          id, const ClipText(text: 'Text', shadowColor: 0xB3000000)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollTo(tester, find.text('Blur'));
+      expect(find.text('Blur'), findsOneWidget);
+    });
+
+    testWidgets('the box controls appear only once there is a box',
+        (tester) async {
+      final id = addCaption();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('BOX'));
+      expect(find.text('Padding'), findsNothing);
+
+      store.run(SetClipText(
+          id, const ClipText(text: 'Text', boxColor: 0x99000000)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollTo(tester, find.text('Padding'));
+      expect(find.text('Padding'), findsOneWidget);
+    });
+
+    testWidgets('alignment is three buttons, and pressing one lands',
+        (tester) async {
+      final id = addCaption();
+      await pumpInspector(tester);
+
+      await tester.tap(find.byIcon(Icons.format_align_left));
+      await tester.pump();
+
+      expect(store.project.clipById(id)!.text!.alignment, TextAlignment.left);
+    });
+
+    testWidgets('undo puts the old words back in the field', (tester) async {
+      // The field owns the caret, so it is not rebuilt from the document on
+      // every keystroke — which means an edit from outside has to be pushed
+      // into it deliberately.
+      final id = addCaption();
+      await pumpInspector(tester);
+
+      await tester.enterText(find.byType(TextField), 'Changed');
+      await tester.pump();
+      expect(store.project.clipById(id)!.text!.text, 'Changed');
+
+      store.undo();
+      await tester.pumpAndSettle();
+
+      expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'Text');
+    });
+  });
 }

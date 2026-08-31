@@ -17,6 +17,25 @@ EngineTimeline engineTimelineFor(Project project) {
 
     for (final clip in track.clips) {
       if (!clip.enabled) continue;
+
+      // A caption has no file to look up and nothing to decode, so it goes
+      // across on its own terms: the words and the styling, and silence.
+      final caption = clip.text;
+      if (caption != null) {
+        if (track.hidden) continue;
+        clips.add(EngineClip(
+          text: _engineTextFor(caption),
+          startTicks: clip.start.raw,
+          durationTicks: clip.duration.raw,
+          track: index,
+          gain: 0,
+          opacity: clip.transform.opacity,
+          fit: FitMode.stretch,
+          transform: _engineTransformFor(clip.transform),
+        ));
+        continue;
+      }
+
       final asset = project.assetFor(clip);
       if (asset == null) continue;
 
@@ -69,21 +88,7 @@ EngineTimeline engineTimelineFor(Project project) {
           ClipFit.cover => FitMode.cover,
           ClipFit.stretch => FitMode.stretch,
         },
-        // Insets become a rectangle here rather than in the model: the
-        // document says what the user dragged, the engine wants where to
-        // sample, and this is the one place that knows both.
-        transform: EngineTransform(
-          offsetX: transform.offsetX,
-          offsetY: transform.offsetY,
-          scale: transform.scale,
-          rotationDegrees: transform.rotationDegrees,
-          cropX: transform.cropLeft,
-          cropY: transform.cropTop,
-          cropWidth: transform.cropWidth,
-          cropHeight: transform.cropHeight,
-          flipHorizontal: transform.flipHorizontal,
-          flipVertical: transform.flipVertical,
-        ),
+        transform: _engineTransformFor(transform),
       ));
     }
   }
@@ -96,3 +101,46 @@ EngineTimeline engineTimelineFor(Project project) {
     clips: clips,
   );
 }
+
+/// Insets become a rectangle here rather than in the model: the document says
+/// what the user dragged, the engine wants where to sample, and this is the
+/// one place that knows both.
+EngineTransform _engineTransformFor(ClipTransform transform) => EngineTransform(
+      offsetX: transform.offsetX,
+      offsetY: transform.offsetY,
+      scale: transform.scale,
+      rotationDegrees: transform.rotationDegrees,
+      cropX: transform.cropLeft,
+      cropY: transform.cropTop,
+      cropWidth: transform.cropWidth,
+      cropHeight: transform.cropHeight,
+      flipHorizontal: transform.flipHorizontal,
+      flipVertical: transform.flipVertical,
+    );
+
+/// A caption, field for field. Every number is already a fraction on both
+/// sides of the boundary, so there is nothing to convert — which is the point
+/// of the document storing fractions in the first place.
+EngineText _engineTextFor(ClipText text) => EngineText(
+      text: text.text,
+      font: text.font,
+      size: text.size,
+      color: text.color,
+      strokeColor: text.strokeColor,
+      strokeWidth: text.strokeWidth,
+      shadowColor: text.shadowColor,
+      shadowDx: text.shadowOffsetX,
+      shadowDy: text.shadowOffsetY,
+      shadowBlur: text.shadowBlur,
+      boxColor: text.boxColor,
+      boxPadding: text.boxPadding,
+      boxRadius: text.boxRadius,
+      letterSpacing: text.letterSpacing,
+      lineSpacing: text.lineSpacing,
+      maxWidth: text.maxWidth,
+      alignment: switch (text.alignment) {
+        TextAlignment.left => EngineTextAlign.left,
+        TextAlignment.center => EngineTextAlign.center,
+        TextAlignment.right => EngineTextAlign.right,
+      },
+    );
