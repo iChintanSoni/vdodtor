@@ -113,7 +113,10 @@ class _EditorScreenState extends State<EditorScreen> {
         if (mounted) setState(() => _stats = _engine?.stats);
       });
 
-      if (selfTestRequested) {
+      // Its own project and no other. The passes below edit the document they
+      // are given, so a self-test build opening a project somebody made by
+      // hand must leave it exactly as they left it.
+      if (selfTestRequested && isSelfTestProject(_store.project)) {
         final library = File(widget.open.path).parent;
         if (_store.project.mainTrack.isEmpty) {
           await runImportSelfTest(_store,

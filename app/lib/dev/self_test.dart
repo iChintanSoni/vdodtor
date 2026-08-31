@@ -26,18 +26,29 @@ import '../ui/timeline/timeline_painter.dart';
 /// True when the app was launched to measure itself rather than to be used.
 bool get selfTestRequested => Platform.environment['VD_SELFTEST'] == '1';
 
+/// The project the self test owns, and the only one it may touch.
+const selfTestProjectName = 'Self test';
+
+/// True for the project the self test made for itself.
+///
+/// The self test *edits* the document it is given — it imports, it adds a
+/// caption, it puts a shape and a sticker on lanes it makes — so which project
+/// it is pointed at is not a detail. Gating on "the main track is empty" alone
+/// meant every project the user created by hand in a self-test build was
+/// filled with sample media, which reads as the editor inventing clips.
+bool isSelfTestProject(Project project) => project.name == selfTestProjectName;
+
 /// The self test measures the preview pipeline, which needs a document open,
 /// so it opens one: the same project every run, created on the first.
 Future<void> openSelfTestProject(Workspace workspace) async {
-  const name = 'Self test';
   for (final entry in workspace.projects) {
-    if (entry.exists && entry.name == name) {
+    if (entry.exists && entry.name == selfTestProjectName) {
       await workspace.openAt(entry.path);
       return;
     }
   }
   await workspace.create(
-    name: name,
+    name: selfTestProjectName,
     aspect: ProjectAspect.landscape16x9,
     frameRate: FrameRates.fps30,
   );
