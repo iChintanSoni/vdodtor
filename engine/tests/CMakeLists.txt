@@ -3,12 +3,22 @@
 # way so CI has nothing to fetch.
 set(VD_TEST_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/media")
 
-foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_engine_test vd_audio_test vd_thumbnail_test)
+# Committed reference frames, and where a failing comparison leaves the actual
+# frame and a difference image. The references live in the source tree because
+# approving one means reading a diff of the picture in review; the failures
+# live in the build tree because they are output, and CI uploads them from
+# there when the job goes red.
+set(VD_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
+set(VD_GOLDEN_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/golden-failures")
+
+foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test)
   add_executable(${test} ${test}.c)
   target_link_libraries(${test} PRIVATE vdodtor_engine)
   target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_definitions(${test}
-    PRIVATE VD_TEST_MEDIA_DIR="${VD_TEST_MEDIA_DIR}")
+    PRIVATE VD_TEST_MEDIA_DIR="${VD_TEST_MEDIA_DIR}"
+            VD_GOLDEN_DIR="${VD_GOLDEN_DIR}"
+            VD_GOLDEN_OUT_DIR="${VD_GOLDEN_OUT_DIR}")
   target_compile_options(${test} PRIVATE -Wall -Wextra)
   add_test(NAME ${test} COMMAND ${test})
 endforeach()
