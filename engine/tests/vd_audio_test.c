@@ -333,12 +333,10 @@ static void test_ring_across_threads(void) {
 // --- renderer --------------------------------------------------------------
 
 static VdTimelineClip audio_clip(VdTick start, VdTick duration) {
-  VdTimelineClip clip;
-  memset(&clip, 0, sizeof(clip));
+  VdTimelineClip clip = vd_timeline_clip_default();
   clip.path = fixture("cfr_30fps_stereo.mp4");  // 440 Hz sine, 2 s
   clip.start = start;
   clip.duration = duration;
-  clip.opacity = 1.0f;
   return clip;
 }
 
@@ -420,6 +418,152 @@ static void test_renderer_produces_the_signal(void) {
   VD_CHECK(rms(buffer, want) > 0.05);
 
   free(buffer);
+  vd_audio_renderer_destroy(r);
+}
+
+// --- levels ----------------------------------------------------------------
+
+// The same table as `_fadeTable` in app/test/model/clip_audio_test.dart.
+//
+// A fade the timeline draws and a fade the speakers play have to be the same
+// shape. Prose in two files saying so is not a mechanism; the same numbers
+// asserted on in two files is.
+static void test_the_fade_envelope_matches_the_document(void) {
+  const VdTick duration = 1000;
+  const VdTick fade_in = 200;
+  const VdTick fade_out = 400;
+
+  const struct {
+    VdTick offset;
+    float gain;
+  } table[] = {
+      {-1, 0.0f},       // before the clip
+      {0, 0.0f},        // silent at the very start of a fade in
+      {100, 0.5f},      // halfway up a 200-tick fade
+      {200, 1.0f},      // fade in is over
+      {500, 1.0f},      // the middle is untouched
+      {600, 1.0f},      // exactly where the fade out begins
+      {700, 0.75f},     // 300 of 400 remaining
+      {900, 0.25f},
+      {999, 0.0025f},   // one tick from the end, of a 400 fade
+      {1000, 0.0f},     // past the end
+  };
+
+  for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+    const float got =
+        vd_audio_fade_gain(table[i].offset, duration, fade_in, fade_out);
+    vd_checks++;
+    if (fabsf(got - table[i].gain) > 0.0005f) {
+      vd_failures++;
+      fprintf(stderr,
+              "FAIL fade gain at offset %lld\n  expected %.4f\n  actual   %.4f\n",
+              (long long)table[i].offset, table[i].gain, got);
+    }
+  }
+
+  // No fades at all is a flat 1, not a ramp of length zero that divides by it.
+  for (VdTick at = 0; at < duration; at += 250) {
+    VD_CHECK(vd_audio_fade_gain(at, duration, 0, 0) == 1.0f);
+  }
+  VD_CHECK(vd_audio_fade_gain(0, 0, 0, 0) == 0.0f);
+}
+
+// Pulls 250 ms and reports how loud it was.
+static double level_of(VdAudioRenderer* r) {
+  const int32_t want = VD_AUDIO_SAMPLE_RATE / 4;
+  float* buffer = calloc((size_t)want * VD_AUDIO_CHANNELS, sizeof(float));
+  if (!buffer) return -1;
+  vd_audio_renderer_pull(r, buffer, want);
+  const double level = rms(buffer, want);
+  free(buffer);
+  return level;
+}
+
+static double level_at_gain(float gain) {
+  VdAudioRenderer* r = vd_audio_renderer_create(NULL);
+  if (!r) return -1;
+  VdTimelineClip clip = audio_clip(0, 2 * VD_TICKS_PER_SECOND);
+  clip.gain = gain;
+  vd_audio_renderer_set_timeline(r, &clip, 1);
+  vd_audio_renderer_start(r, 0);
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 4);
+  const double level = level_of(r);
+  vd_audio_renderer_destroy(r);
+  return level;
+}
+
+static void test_gain_scales_what_comes_out(void) {
+  const double full = level_at_gain(1.0f);
+  const double half = level_at_gain(0.5f);
+  VD_CHECK(full > 0.05);
+
+  // Linear gain: halving the number halves the amplitude, and RMS is linear
+  // in amplitude, so the ratio comes straight through.
+  vd_checks++;
+  if (full <= 0 || fabs(half / full - 0.5) > 0.02) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL gain 0.5 gave %.4f against %.4f at unity (ratio %.3f)\n",
+            half, full, full > 0 ? half / full : 0.0);
+  }
+}
+
+static void test_a_muted_clip_is_silent_and_not_decoded(void) {
+  // Silence is the whole assertion; the mixer skipping the decode is what
+  // makes mute cost nothing, and a clip spends a long time muted.
+  const double level = level_at_gain(0.0f);
+  vd_checks++;
+  if (level > 1e-6) {
+    vd_failures++;
+    fprintf(stderr, "FAIL a muted clip was audible at %.6f\n", level);
+  }
+}
+
+static void test_a_fade_in_actually_ramps(void) {
+  VdAudioRenderer* r = vd_audio_renderer_create(NULL);
+  if (!r) return;
+
+  // A one-second fade in over a two-second clip.
+  VdTimelineClip clip = audio_clip(0, 2 * VD_TICKS_PER_SECOND);
+  clip.fade_in = VD_TICKS_PER_SECOND;
+  vd_audio_renderer_set_timeline(r, &clip, 1);
+  vd_audio_renderer_start(r, 0);
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE);
+
+  // Four consecutive quarter-seconds. Each must be louder than the one before
+  // it, which no constant gain can be — and the last is inside the fade's
+  // final quarter, so it is still short of full.
+  //
+  // Waiting between pulls, not only before the first: draining the ring faster
+  // than the decode thread fills it reads silence, and silence would look
+  // exactly like a fade that went the wrong way.
+  double level[4];
+  for (int i = 0; i < 4; i++) {
+    wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 4);
+    level[i] = level_of(r);
+  }
+
+  for (int i = 1; i < 4; i++) {
+    vd_checks++;
+    if (!(level[i] > level[i - 1])) {
+      vd_failures++;
+      fprintf(stderr,
+              "FAIL a fade in did not rise: quarter %d was %.4f, "
+              "quarter %d was %.4f\n",
+              i - 1, level[i - 1], i, level[i]);
+    }
+  }
+
+  // The first quarter of a one-second fade averages about an eighth of full
+  // scale; a fade applied once per 1024-frame chunk instead of per frame would
+  // still rise, so the shape is what is checked, not merely the direction.
+  vd_checks++;
+  if (!(level[0] < level[3] * 0.5)) {
+    vd_failures++;
+    fprintf(stderr, "FAIL the fade was too shallow: %.4f then %.4f\n",
+            level[0], level[3]);
+  }
+
   vd_audio_renderer_destroy(r);
 }
 
@@ -549,6 +693,10 @@ int main(void) {
   test_renderer_lifecycle();
   test_renderer_finds_the_audio();
   test_renderer_produces_the_signal();
+  test_the_fade_envelope_matches_the_document();
+  test_gain_scales_what_comes_out();
+  test_a_muted_clip_is_silent_and_not_decoded();
+  test_a_fade_in_actually_ramps();
   test_renderer_clock();
   test_renderer_silence_where_there_is_none();
   test_renderer_underruns_are_counted();

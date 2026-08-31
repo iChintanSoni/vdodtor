@@ -29,6 +29,7 @@ typedef struct {
   float opacity;
   VdFitMode fit;
   VdTransform transform;
+  bool has_video;
 
   VdDecoder* decoder;  // opened lazily
   int64_t last_used;
@@ -212,6 +213,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
   // Safe without `lock`: the clip array only changes under render_lock.
   for (int32_t i = 0; i < e->clip_count && active_count < VD_MAX_LAYERS; i++) {
     VdClipEntry* clip = &e->clips[i];
+    if (!clip->has_video) continue;  // sound only; the mixer has it
     if (position < clip->start || position >= clip->start + clip->duration) {
       continue;
     }
@@ -382,6 +384,16 @@ static void* render_thread(void* arg) {
 
 // --- lifecycle -------------------------------------------------------------
 
+VdTimelineClip vd_timeline_clip_default(void) {
+  VdTimelineClip clip;
+  memset(&clip, 0, sizeof(clip));
+  clip.opacity = 1.0f;
+  clip.gain = 1.0f;
+  clip.fit = VD_FIT_CONTAIN;
+  clip.has_video = true;
+  return clip;
+}
+
 VdEngineOptions vd_engine_default_options(void) {
   VdEngineOptions options = {.audio_output = 1};
   return options;
@@ -504,6 +516,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->opacity = src->opacity;
     dst->fit = src->fit;
     dst->transform = src->transform;
+    dst->has_video = src->has_video;
 
     for (int32_t j = 0; j < previous_count; j++) {
       VdClipEntry* old = &previous[j];

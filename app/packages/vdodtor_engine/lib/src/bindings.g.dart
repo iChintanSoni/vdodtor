@@ -542,6 +542,26 @@ class VdEngineBindings {
         int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Uint8>, int)
       >();
 
+  /// A clip with nothing said about it: fully opaque, full volume, contained, and
+  /// carrying a picture.
+  ///
+  /// Worth the four lines it costs. Unlike VdTransform, this struct cannot make a
+  /// zeroed value mean "no opinion" — gain 0 is silence and opacity 0 is
+  /// invisible, and both are things a caller might legitimately ask for, so
+  /// neither can double as "unset". A caller that memsets and fills in three
+  /// fields would get a silent, invisible clip, which is a bug that looks like
+  /// nothing happening at all.
+  VdTimelineClip vd_timeline_clip_default() {
+    return _vd_timeline_clip_default();
+  }
+
+  late final _vd_timeline_clip_defaultPtr =
+      _lookup<ffi.NativeFunction<VdTimelineClip Function()>>(
+        'vd_timeline_clip_default',
+      );
+  late final _vd_timeline_clip_default = _vd_timeline_clip_defaultPtr
+      .asFunction<VdTimelineClip Function()>();
+
   VdEngineOptions vd_engine_default_options() {
     return _vd_engine_default_options();
   }
@@ -1074,6 +1094,34 @@ class VdEngineBindings {
   late final _vd_audio_ring_clear = _vd_audio_ring_clearPtr
       .asFunction<void Function(ffi.Pointer<VdAudioRing>)>();
 
+  /// The multiplier a clip's sound gets `offset` ticks into a clip `duration`
+  /// long, given its fade lengths. 0 outside the clip, 0 at each edge a fade
+  /// reaches, 1 everywhere the fades do not touch.
+  ///
+  /// This is the same function as `ClipAudio.fadeShapeAt` in
+  /// `app/lib/model/clip.dart`, and the two test the same table — change one and
+  /// you must change the other. It is here rather than buried in the mixer
+  /// because a fade the document draws and a fade the device plays being the same
+  /// shape is not something to leave to two people reading the same prose.
+  ///
+  /// The ramps are linear in amplitude: the curve where the handle position means
+  /// what it looks like it means.
+  double vd_audio_fade_gain(
+    int offset,
+    int duration,
+    int fade_in,
+    int fade_out,
+  ) {
+    return _vd_audio_fade_gain(offset, duration, fade_in, fade_out);
+  }
+
+  late final _vd_audio_fade_gainPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Float Function(VdTick, VdTick, VdTick, VdTick)>
+      >('vd_audio_fade_gain');
+  late final _vd_audio_fade_gain = _vd_audio_fade_gainPtr
+      .asFunction<double Function(int, int, int, int)>();
+
   ffi.Pointer<VdAudioRenderer> vd_audio_renderer_create(
     ffi.Pointer<ffi.Int32> out_result,
   ) {
@@ -1534,7 +1582,13 @@ enum VdFitMode {
   VD_FIT_COVER(1),
 
   /// ignores aspect
-  VD_FIT_STRETCH(2);
+  VD_FIT_STRETCH(2),
+
+  /// Whole frame visible, and the bars filled with a blurred, cover-fitted
+  /// copy of the same picture rather than black. Costs three extra passes, and
+  /// only when there are bars to fill — a clip that already fills the output
+  /// takes the ordinary path.
+  VD_FIT_BLUR(3);
 
   final int value;
   const VdFitMode(this.value);
@@ -1543,6 +1597,7 @@ enum VdFitMode {
     0 => VD_FIT_CONTAIN,
     1 => VD_FIT_COVER,
     2 => VD_FIT_STRETCH,
+    3 => VD_FIT_BLUR,
     _ => throw ArgumentError('Unknown value for VdFitMode: $value'),
   };
 }
@@ -1690,6 +1745,31 @@ final class VdTimelineClip extends ffi.Struct {
   /// Where this clip sits inside the frame. A zeroed transform is the identity,
   /// so a caller with nothing to say about it can leave the field alone.
   external VdTransform transform;
+
+  /// False for a clip that contributes only sound: one on an audio lane, or a
+  /// file with no picture in it. The compositor skips it rather than opening a
+  /// decoder that will never yield a frame and holding a cache slot with it.
+  ///
+  /// The caller is told to say, rather than the engine probing to find out,
+  /// because the document already knows — and a music bed should not cost a
+  /// file open on every edit to establish that it has no video.
+  @ffi.Bool()
+  external bool has_video;
+
+  /// Linear gain on this clip's sound, 0 for silent. Mute is spelled 0 here:
+  /// the document keeps the difference between "muted" and "turned down",
+  /// because unmuting has to give the level back, but by the time it reaches
+  /// the engine that distinction has been decided and only the number matters.
+  @ffi.Float()
+  external double gain;
+
+  /// Ramps from silence over `fade_in` at the head and to silence over
+  /// `fade_out` at the tail. Ticks, like every other length that crosses here.
+  @VdTick()
+  external int fade_in;
+
+  @VdTick()
+  external int fade_out;
 }
 
 final class VdTimeline extends ffi.Struct {

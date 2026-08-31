@@ -75,6 +75,10 @@ class EngineClip {
     this.opacity = 1.0,
     this.fit = FitMode.contain,
     this.transform = EngineTransform.identity,
+    this.hasVideo = true,
+    this.gain = 1.0,
+    this.fadeInTicks = 0,
+    this.fadeOutTicks = 0,
   });
 
   final String path;
@@ -88,6 +92,17 @@ class EngineClip {
   final double opacity;
   final FitMode fit;
   final EngineTransform transform;
+
+  /// False for a clip that only makes a sound. The compositor skips it rather
+  /// than opening a decoder for a picture that is not there.
+  final bool hasVideo;
+
+  /// Linear gain, 0 for silent. Mute has already been folded in by the time a
+  /// clip gets here — the engine is told a number, not a state.
+  final double gain;
+
+  final int fadeInTicks;
+  final int fadeOutTicks;
 }
 
 /// The render list plus the output format.
@@ -223,6 +238,10 @@ class PreviewEngine extends ChangeNotifier {
         entry.track = clip.track;
         entry.opacity = clip.opacity;
         entry.fitAsInt = clip.fit.index;
+        entry.has_video = clip.hasVideo;
+        entry.gain = clip.gain;
+        entry.fade_in = clip.fadeInTicks;
+        entry.fade_out = clip.fadeOutTicks;
 
         final transform = clip.transform;
         entry.transform.offset_x = transform.offsetX;

@@ -1,8 +1,11 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../commands/document_store.dart';
 import '../commands/edits.dart';
 import '../model/clip.dart';
+import '../model/time.dart';
 import 'theme.dart';
 import 'timeline/timeline_controller.dart';
 
@@ -27,26 +30,83 @@ class Inspector extends StatelessWidget {
   /// continuation of this one.
   void _commit() => _store.endGesture();
 
+  void _setAudio(Clip clip, ClipAudio audio) =>
+      _store.run(SetClipAudio(clip.id, audio), fromGestureStart: true);
+
   @override
   Widget build(BuildContext context) {
     final clip = timeline.selectedClip;
+    if (clip == null) {
+      return const SizedBox(
+        width: width,
+        child: ColoredBox(color: VdColors.rail, child: _NothingSelected()),
+      );
+    }
+
+    // What a clip *is* decides which controls it gets. A clip on an audio lane
+    // has no picture to place, and one whose file is silent has no level to
+    // set — showing either would be a control that does nothing.
+    final track = timeline.project.trackOfClip(clip.id);
+    final asset = timeline.project.assetFor(clip);
+    final showsPicture =
+        (track?.kind.isVisual ?? true) && (asset?.probe.hasVideo ?? true);
+    final hasSound = asset?.probe.hasAudio ?? false;
 
     return Container(
       width: width,
       color: VdColors.rail,
-      child: clip == null
-          ? const _NothingSelected()
-          : _TransformControls(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(14, 14, 10, 20),
+        children: [
+          Row(
+            children: [
+              const Text('ADJUST',
+                  style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 0.8,
+                    fontWeight: FontWeight.w600,
+                    color: VdColors.dim,
+                  )),
+              const Spacer(),
+              if (showsPicture && !clip.transform.isIdentity)
+                TextButton(
+                  onPressed: () {
+                    _commit();
+                    _store.run(
+                        SetClipTransform(clip.id, ClipTransform.identity));
+                    _commit();
+                  },
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('Reset', style: TextStyle(fontSize: 11)),
+                ),
+            ],
+          ),
+          Text(
+            clip.label.isEmpty ? 'Clip' : clip.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: VdColors.text),
+          ),
+          const SizedBox(height: 12),
+          if (showsPicture)
+            _TransformControls(
               clip: clip,
               onChanged: (t) => _set(clip, t),
               onCommit: _commit,
-              onReset: () {
-                _commit();
-                _store.run(
-                    SetClipTransform(clip.id, ClipTransform.identity));
-                _commit();
-              },
             ),
+          // After the picture, because that is the order someone works in and
+          // because sound is the half you check last.
+          if (hasSound)
+            _AudioControls(
+              clip: clip,
+              onChanged: (a) => _setAudio(clip, a),
+              onCommit: _commit,
+            ),
+        ],
+      ),
     );
   }
 }
@@ -82,49 +142,19 @@ class _TransformControls extends StatelessWidget {
     required this.clip,
     required this.onChanged,
     required this.onCommit,
-    required this.onReset,
   });
 
   final Clip clip;
   final ValueChanged<ClipTransform> onChanged;
   final VoidCallback onCommit;
-  final VoidCallback onReset;
 
   @override
   Widget build(BuildContext context) {
     final t = clip.transform;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 14, 10, 20),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            const Text('ADJUST',
-                style: TextStyle(
-                  fontSize: 11,
-                  letterSpacing: 0.8,
-                  fontWeight: FontWeight.w600,
-                  color: VdColors.dim,
-                )),
-            const Spacer(),
-            if (!t.isIdentity)
-              TextButton(
-                onPressed: onReset,
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                ),
-                child: const Text('Reset', style: TextStyle(fontSize: 11)),
-              ),
-          ],
-        ),
-        Text(
-          clip.label.isEmpty ? 'Clip' : clip.label,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, color: VdColors.text),
-        ),
-        const SizedBox(height: 12),
         const _SectionLabel('FILL'),
         _FitPicker(
           fit: t.fit,
@@ -247,6 +277,134 @@ class _TransformControls extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Volume, mute and fades for a clip that makes a sound.
+///
+/// The fader is marked in decibels and stored as a linear multiplier — see
+/// [ClipAudio]. The ear is logarithmic, so a fader that moves linearly through
+/// gain spends most of its travel in the top few dB and is unusable for the
+/// quiet end, where all the useful adjustment is.
+class _AudioControls extends StatelessWidget {
+  const _AudioControls({
+    required this.clip,
+    required this.onChanged,
+    required this.onCommit,
+  });
+
+  final Clip clip;
+  final ValueChanged<ClipAudio> onChanged;
+  final VoidCallback onCommit;
+
+  /// The longest a fade may be: half the clip, so a fade in and a fade out can
+  /// both be at maximum without meeting in the middle.
+  Tick get _maxFade => Tick(clip.duration.raw ~/ 2);
+
+  @override
+  Widget build(BuildContext context) {
+    final a = clip.audio;
+    final maxFade = _maxFade.raw.toDouble();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            const _SectionLabel('SOUND'),
+            const Spacer(),
+            if (!a.isUnity)
+              TextButton(
+                onPressed: () {
+                  onCommit();
+                  onChanged(ClipAudio.unity);
+                  onCommit();
+                },
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Reset', style: TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        _MuteButton(
+          muted: a.muted,
+          onTap: () {
+            onCommit();
+            onChanged(a.copyWith(muted: !a.muted));
+            onCommit();
+          },
+        ),
+        const SizedBox(height: 6),
+        _Slider(
+          label: 'Volume',
+          value: a.volume,
+          min: 0,
+          max: ClipAudio.maxVolume,
+          format: _decibels,
+          onChanged: (v) => onChanged(a.copyWith(volume: v)),
+          onCommit: onCommit,
+        ),
+        // A clip one frame long cannot be faded, and a slider whose ends meet
+        // is worse than no slider.
+        if (maxFade > 0) ...[
+          _Slider(
+            label: 'Fade in',
+            value: a.fadeIn.raw.toDouble().clamp(0, maxFade),
+            min: 0,
+            max: maxFade,
+            format: _seconds,
+            onChanged: (v) => onChanged(a.copyWith(fadeIn: Tick(v.round()))),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Fade out',
+            value: a.fadeOut.raw.toDouble().clamp(0, maxFade),
+            min: 0,
+            max: maxFade,
+            format: _seconds,
+            onChanged: (v) => onChanged(a.copyWith(fadeOut: Tick(v.round()))),
+            onCommit: onCommit,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Gain as decibels, with silence spelled out rather than shown as the -inf it
+/// mathematically is.
+String _decibels(double gain) {
+  if (gain <= 0) return 'silent';
+  final db = 20 * (math.log(gain) / math.ln10);
+  if (db.abs() < 0.05) return '0.0 dB';
+  return '${db >= 0 ? '+' : ''}${db.toStringAsFixed(1)} dB';
+}
+
+String _seconds(double ticks) {
+  final s = ticks / Timebase.project.ticksPerSecond;
+  return s < 0.05 ? 'none' : '${s.toStringAsFixed(2)}s';
+}
+
+class _MuteButton extends StatelessWidget {
+  const _MuteButton({required this.muted, required this.onTap});
+
+  final bool muted;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+        onPressed: onTap,
+        icon: Icon(muted ? Icons.volume_off : Icons.volume_up, size: 15),
+        label: Text(muted ? 'Muted' : 'Mute', style: const TextStyle(fontSize: 11)),
+        style: TextButton.styleFrom(
+          foregroundColor: muted ? VdColors.accent : VdColors.dim,
+          visualDensity: VisualDensity.compact,
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
+      );
 }
 
 String _percentOfFrame(double v) => '${(v * 100).round()}%';

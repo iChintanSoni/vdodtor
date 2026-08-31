@@ -14,14 +14,20 @@
 // not repeatedly asked for fragments of one.
 #define VD_AUDIO_CHUNK_FRAMES 1024
 
-// Matches the product's six audio tracks.
-#define VD_AUDIO_MAX_ACTIVE 6
+// Six audio lanes, plus the main track and three overlays — a video clip is a
+// source of sound as much as an audio one, and the ceiling has to cover the
+// whole document rather than only the lanes named after audio.
+#define VD_AUDIO_MAX_ACTIVE 10
 
 typedef struct {
   char* path;
   VdTick start;
   VdTick duration;
   VdTick source_in;
+
+  float gain;
+  VdTick fade_in;
+  VdTick fade_out;
 
   VdAudioSource* source;
   bool open_failed;
@@ -91,6 +97,27 @@ static VdAudioSource* source_for(VdAudioRenderer* r, VdAudioClip* clip) {
   return clip->source;
 }
 
+// --- the fade envelope -----------------------------------------------------
+
+float vd_audio_fade_gain(VdTick offset, VdTick duration, VdTick fade_in,
+                         VdTick fade_out) {
+  if (duration <= 0) return 0.0f;
+  if (offset < 0 || offset >= duration) return 0.0f;
+
+  float gain = 1.0f;
+  if (fade_in > 0 && offset < fade_in) {
+    gain *= (float)((double)offset / (double)fade_in);
+  }
+  // Measured from the far edge, so the last tick of a clip is as quiet as the
+  // first. A fade out that reached zero a tick early would leave a click
+  // exactly where the fade was put to prevent one.
+  const VdTick remaining = duration - offset;
+  if (fade_out > 0 && remaining < fade_out) {
+    gain *= (float)((double)remaining / (double)fade_out);
+  }
+  return gain;
+}
+
 // --- decoding --------------------------------------------------------------
 
 // Fills `out` with `frames` of mixed audio for timeline position `position`.
@@ -107,6 +134,14 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
       continue;
     }
 
+    // A muted clip is not decoded at all. Reading it and multiplying by zero
+    // would sound the same and cost a seek and a decode per chunk, and mute is
+    // exactly the state a clip spends a long time in.
+    if (clip->gain <= 0.0f) {
+      clip->positioned = false;
+      continue;
+    }
+
     VdAudioSource* source = source_for(r, clip);
     if (!source) continue;
 
@@ -119,10 +154,27 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
     const int32_t got = vd_audio_source_read(source, r->scratch, frames);
     clip->expected_position = vd_audio_source_position(source);
 
-    // Sum. M1 only ever has one source here, but summing is the same loop
-    // that six audio tracks need, and mixing is not where cleverness pays.
-    for (int32_t sample = 0; sample < got * VD_AUDIO_CHANNELS; sample++) {
-      out[sample] += r->scratch[sample];
+    const bool fading = clip->fade_in > 0 || clip->fade_out > 0;
+    const VdTick offset = position - clip->start;
+
+    // Sum. M1 only ever had one source here, but summing is the same loop that
+    // ten of them need, and mixing is not where cleverness pays.
+    for (int32_t frame = 0; frame < got; frame++) {
+      float gain = clip->gain;
+      if (fading) {
+        // Per frame, not per chunk. A chunk is 1024 frames — 21 ms — and a
+        // fade that stepped once a chunk would be a staircase of about fifty
+        // steps, which is not a fade but a series of small clicks.
+        const VdTick at =
+            offset + (VdTick)(((int64_t)frame * VD_TICKS_PER_SECOND) /
+                              VD_AUDIO_SAMPLE_RATE);
+        gain *= vd_audio_fade_gain(at, clip->duration, clip->fade_in,
+                                   clip->fade_out);
+      }
+      for (int32_t ch = 0; ch < VD_AUDIO_CHANNELS; ch++) {
+        const int32_t i = frame * VD_AUDIO_CHANNELS + ch;
+        out[i] += r->scratch[i] * gain;
+      }
     }
     mixed++;
   }
@@ -245,6 +297,9 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
     next[i].start = clips[i].start;
     next[i].duration = clips[i].duration;
     next[i].source_in = clips[i].source_in;
+    next[i].gain = clips[i].gain;
+    next[i].fade_in = clips[i].fade_in;
+    next[i].fade_out = clips[i].fade_out;
 
     // Carry over an already-open source for the same file, so an edit does
     // not reopen and re-seek everything.

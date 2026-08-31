@@ -123,6 +123,112 @@ final class SetClipTransform extends EditCommand {
       next is SetClipTransform && next.clipId == clipId ? next : null;
 }
 
+/// Sets a clip's volume, mute and fades.
+///
+/// The audio counterpart of [SetClipTransform], and merged the same way: a
+/// drag on the volume fader is one decision however many values it passes
+/// through, and so is a run across the fader and then the fade fields.
+final class SetClipAudio extends EditCommand {
+  const SetClipAudio(this.clipId, this.audio);
+
+  final String clipId;
+  final ClipAudio audio;
+
+  @override
+  String get label => 'Adjust audio';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    // Clamped against this clip's own length, so no fader can ask for a fade
+    // longer than the clip it is on.
+    final next = audio.clampedTo(clip.duration);
+    if (clip.audio == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(audio: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipAudio && next.clipId == clipId ? next : null;
+}
+
+/// One video clip's sound, lifted onto an audio lane as a clip of its own.
+///
+/// Two edits that have to be one: the new audio clip appears *and* the video
+/// clip it came from goes silent. Apart, the intermediate state plays
+/// everything twice, and undo would take two presses to get back from an edit
+/// that felt like one.
+///
+/// The video clip is muted rather than stripped, because there is nothing to
+/// strip — a clip is a window onto a file, and the file still has the sound in
+/// it. That is also what makes the edit reversible by hand: unmute the
+/// original and delete the detached clip.
+typedef AudioDetachment = ({String fromClipId, String toTrackId, Clip clip});
+
+final class DetachAudio extends EditCommand {
+  const DetachAudio(this.detachments, {this.newTracks = const []});
+
+  final List<AudioDetachment> detachments;
+
+  /// Lanes to make before placing anything, when the ones that exist have no
+  /// room. Passed in rather than invented here, so that detaching four
+  /// overlapping clips at once stays a single undo entry instead of an
+  /// AddTrack the user has to press ⌘Z through on the way back.
+  final List<Track> newTracks;
+
+  @override
+  String get label =>
+      detachments.length == 1 ? 'Detach audio' : 'Detach audio from '
+          '${detachments.length} clips';
+
+  @override
+  Project apply(Project project) {
+    if (detachments.isEmpty) return project;
+
+    var next = project;
+    for (final track in newTracks) {
+      next = AddTrack(track).apply(next);
+    }
+
+    for (final d in detachments) {
+      final source = next.clipById(d.fromClipId);
+      if (source == null) throw EditException('no clip ${d.fromClipId}');
+      final asset = next.assetFor(source);
+      if (asset == null || !asset.probe.hasAudio) {
+        throw EditException('clip ${d.fromClipId} has no sound to detach');
+      }
+      final to = next.trackById(d.toTrackId);
+      if (to == null) throw EditException('no track ${d.toTrackId}');
+      if (to.kind != TrackKind.audio) {
+        throw EditException('${d.toTrackId} is not an audio lane');
+      }
+    }
+
+    // Mute the originals first. Doing it after the insert would work too, but
+    // this way the project is never momentarily louder than it started.
+    for (final d in detachments) {
+      final track = next.trackOfClip(d.fromClipId)!;
+      next = next.replaceTrack(track.withClips([
+        for (final c in track.clips)
+          c.id == d.fromClipId
+              ? c.copyWith(audio: c.audio.copyWith(muted: true))
+              : c,
+      ]));
+    }
+
+    return InsertClips(
+      [for (final d in detachments) (trackId: d.toTrackId, clip: d.clip, index: null)],
+      label: label,
+    ).apply(next);
+  }
+}
+
 /// Puts a clip somewhere: along its lane, and — with [toTrackId] — onto a
 /// different one.
 ///
@@ -175,7 +281,7 @@ final class MoveClip extends EditCommand {
   Project _moveAcross(Project project, Track from, Clip clip, Tick target) {
     final to = project.trackById(toTrackId!);
     if (to == null) throw EditException('no track $toTrackId');
-    if (!accepts(to, project.assetFor(clip))) return project;
+    if (!accepts(to, project.assetFor(clip), from: from.kind)) return project;
 
     final moved = clip.movedTo(target);
     final emptied = from
@@ -199,15 +305,25 @@ final class MoveClip extends EditCommand {
     return next;
   }
 
-  /// Whether a clip could land on [track].
+  /// Whether a clip coming from a lane of kind [from] could land on [track].
   ///
-  /// Sound goes on audio lanes and pictures go on visual ones. Detaching a
-  /// video clip's audio onto an audio lane is a real edit, but it is a
-  /// different one — it makes a new clip rather than moving this one.
-  static bool accepts(Track track, MediaAsset? asset) {
+  /// Sound goes on audio lanes and pictures go on visual ones. The asymmetry
+  /// worth knowing is on the audio side: a lane there takes anything that
+  /// *makes a sound*, but only from another audio lane or from a file with no
+  /// picture. A video clip dragged down onto an audio lane would throw its
+  /// picture away without saying so, and [DetachAudio] is how that gets asked
+  /// for on purpose.
+  ///
+  /// Which is why [from] has to be here at all: after a detach, an audio lane
+  /// holds a clip whose *file* still has video, and it has to be free to move
+  /// between the six audio lanes like anything else.
+  static bool accepts(Track track, MediaAsset? asset,
+      {TrackKind from = TrackKind.main}) {
     if (track.locked) return false;
     if (asset == null) return track.kind.isVisual;
-    return track.kind.isVisual ? asset.probe.hasVideo : !asset.probe.hasVideo;
+    if (track.kind.isVisual) return asset.probe.hasVideo;
+    if (!asset.probe.hasAudio) return false;
+    return from == TrackKind.audio || !asset.probe.hasVideo;
   }
 
   /// A drag is one undo entry: fold consecutive moves of the same clip.

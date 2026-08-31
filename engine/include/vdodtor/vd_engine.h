@@ -51,7 +51,38 @@ typedef struct {
   // Where this clip sits inside the frame. A zeroed transform is the identity,
   // so a caller with nothing to say about it can leave the field alone.
   VdTransform transform;
+
+  // False for a clip that contributes only sound: one on an audio lane, or a
+  // file with no picture in it. The compositor skips it rather than opening a
+  // decoder that will never yield a frame and holding a cache slot with it.
+  //
+  // The caller is told to say, rather than the engine probing to find out,
+  // because the document already knows — and a music bed should not cost a
+  // file open on every edit to establish that it has no video.
+  bool has_video;
+
+  // Linear gain on this clip's sound, 0 for silent. Mute is spelled 0 here:
+  // the document keeps the difference between "muted" and "turned down",
+  // because unmuting has to give the level back, but by the time it reaches
+  // the engine that distinction has been decided and only the number matters.
+  float gain;
+
+  // Ramps from silence over `fade_in` at the head and to silence over
+  // `fade_out` at the tail. Ticks, like every other length that crosses here.
+  VdTick fade_in;
+  VdTick fade_out;
 } VdTimelineClip;
+
+// A clip with nothing said about it: fully opaque, full volume, contained, and
+// carrying a picture.
+//
+// Worth the four lines it costs. Unlike VdTransform, this struct cannot make a
+// zeroed value mean "no opinion" — gain 0 is silence and opacity 0 is
+// invisible, and both are things a caller might legitimately ask for, so
+// neither can double as "unset". A caller that memsets and fills in three
+// fields would get a silent, invisible clip, which is a bug that looks like
+// nothing happening at all.
+VD_EXPORT VdTimelineClip vd_timeline_clip_default(void);
 
 typedef struct {
   int32_t width;

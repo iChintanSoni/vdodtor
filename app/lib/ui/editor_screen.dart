@@ -229,6 +229,8 @@ class _EditorScreenState extends State<EditorScreen> {
             _timeline?.splitAtPlayhead(),
         const SingleActivator(LogicalKeyboardKey.keyD, meta: true): () =>
             _timeline?.duplicateSelected(),
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true, shift: true):
+            () => _timeline?.detachAudio(),
         const SingleActivator(LogicalKeyboardKey.delete): () =>
             _timeline?.deleteSelected(),
         const SingleActivator(LogicalKeyboardKey.backspace): () =>
@@ -609,6 +611,21 @@ class _TransportBar extends StatelessWidget {
             onPressed: timeline.canAddOverlayTrack
                 ? timeline.addOverlayTrack
                 : null,
+          ),
+          IconButton(
+            tooltip: timeline.canAddAudioTrack
+                ? 'Add an audio track'
+                : 'A project may have six audio tracks',
+            icon: const Icon(Icons.graphic_eq, size: 20),
+            onPressed:
+                timeline.canAddAudioTrack ? timeline.addAudioTrack : null,
+          ),
+          IconButton(
+            tooltip: timeline.canDetachAudio
+                ? "Detach the selection's audio onto its own lane (⌘⇧D)"
+                : 'Select a clip with sound to detach it',
+            icon: const Icon(Icons.call_split, size: 20),
+            onPressed: timeline.canDetachAudio ? timeline.detachAudio : null,
           ),
           const SizedBox(width: 4),
           IconButton(

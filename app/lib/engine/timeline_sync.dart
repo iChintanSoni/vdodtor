@@ -14,14 +14,31 @@ EngineTimeline engineTimelineFor(Project project) {
 
   for (var index = 0; index < project.tracks.length; index++) {
     final track = project.tracks[index];
-    // Audio has its own path to the device; hidden tracks are not composited.
-    if (!track.kind.isVisual || track.hidden) continue;
 
     for (final clip in track.clips) {
       if (!clip.enabled) continue;
       final asset = project.assetFor(clip);
       if (asset == null) continue;
-      if (!asset.probe.hasVideo) continue;
+
+      // The lane decides which half of a file a clip contributes. A clip on an
+      // audio lane is sound even when its file has a picture — that is what a
+      // detached clip is — and the picture must not come back with it.
+      final showsPicture =
+          track.kind.isVisual && !track.hidden && asset.probe.hasVideo;
+
+      // `hidden` and `muted` are separate switches, so they do separate
+      // things: hiding a video lane leaves its sound playing, and muting it
+      // leaves the picture. Folding them together would make each one a
+      // surprise.
+      final gain =
+          asset.probe.hasAudio && !track.muted ? clip.audio.effectiveVolume : 0.0;
+
+      // Only a clip with neither stream is left out. One that is merely silent
+      // or hidden right now still goes, because it is still part of how long
+      // the project is, and dropping it would make playback stop short of the
+      // end the moment someone muted the last clip. The mixer decodes nothing
+      // at zero gain, so silence costs a slot in the list and no more.
+      if (!asset.probe.hasVideo && !asset.probe.hasAudio) continue;
 
       final transform = clip.transform;
       clips.add(EngineClip(
@@ -31,6 +48,13 @@ EngineTimeline engineTimelineFor(Project project) {
         sourceInTicks: clip.sourceIn.raw,
         // List order is z-order: the main track is first, so it renders first.
         track: index,
+        hasVideo: showsPicture,
+        gain: gain,
+        // The fades go across as lengths rather than as a computed gain,
+        // because the engine has to evaluate them per audio frame — a fade
+        // resolved here, once per edit, would arrive as a staircase.
+        fadeInTicks: clip.audio.fadeIn.raw,
+        fadeOutTicks: clip.audio.fadeOut.raw,
         opacity: transform.opacity,
         fit: switch (transform.fit) {
           ClipFit.blurFill => FitMode.blurFill,

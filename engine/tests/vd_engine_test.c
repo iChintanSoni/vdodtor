@@ -77,18 +77,15 @@ static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
 
 // Green for the first second, orange for the second. One track, no gaps.
 static VdTimeline two_clip_timeline(VdTimelineClip* clips) {
-  memset(clips, 0, sizeof(VdTimelineClip) * 2);
+  clips[0] = vd_timeline_clip_default();
   clips[0].path = fixture("solid_sd_601.mp4");
   clips[0].start = 0;
   clips[0].duration = SECOND;
-  clips[0].opacity = 1.0f;
-  clips[0].fit = VD_FIT_CONTAIN;
 
+  clips[1] = vd_timeline_clip_default();
   clips[1].path = fixture("solid_sd_orange.mp4");
   clips[1].start = SECOND;
   clips[1].duration = SECOND;
-  clips[1].opacity = 1.0f;
-  clips[1].fit = VD_FIT_CONTAIN;
 
   VdTimeline timeline;
   memset(&timeline, 0, sizeof(timeline));
@@ -508,17 +505,75 @@ static void* pull_thread(void* arg) {
   return NULL;
 }
 
+// A music bed: sound on the timeline that carries no picture at all.
+//
+// This is the shape the whole audio-lane feature rests on, and until the
+// levels work nothing of the kind ever reached the engine — the render list
+// was built from visual tracks only, so anything on an audio lane was silent
+// no matter what was on it.
+static void test_a_clip_with_no_picture_still_makes_a_sound(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");  // silent, and all picture
+  clips[0].start = 0;
+  clips[0].duration = 2 * SECOND;
+
+  clips[1] = vd_timeline_clip_default();
+  clips[1].path = fixture("audio_only.m4a");  // 220 Hz, and all sound
+  clips[1].start = 0;
+  clips[1].duration = 2 * SECOND;
+  clips[1].track = 1;
+  clips[1].has_video = false;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK(stats.audio_available);
+
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  vd_engine_stats(e, &stats);
+  // One layer, not two. The music has no picture and must not cost a decoder
+  // or a layer slot to establish that.
+  VD_CHECK_EQ(stats.active_layers, 1);
+
+  vd_engine_play(e);
+  PullJob job = {
+      .renderer = vd_engine_audio_renderer(e),
+      .frames = VD_AUDIO_SAMPLE_RATE / 2,
+      .stop = false,
+  };
+  pthread_t thread;
+  pthread_create(&thread, NULL, pull_thread, &job);
+  pthread_join(thread, NULL);
+
+  // And the sound came out: half a second of audio moved the playhead, which
+  // only an audio clock that has something to count can do.
+  VD_CHECK(vd_engine_position(e) > SECOND / 4);
+
+  vd_engine_pause(e);
+  vd_engine_destroy(e);
+}
+
 static void test_audio_is_the_master_clock(void) {
   VdEngine* e = make_engine();
   if (!e) return;
 
-  VdTimelineClip clip;
-  memset(&clip, 0, sizeof(clip));
+  VdTimelineClip clip = vd_timeline_clip_default();
   clip.path = fixture("cfr_30fps_stereo.mp4");  // the fixture with sound
   clip.start = 0;
   clip.duration = 10 * SECOND;  // longer than the file, so it cannot end early
-  clip.opacity = 1.0f;
-  clip.fit = VD_FIT_CONTAIN;
 
   VdTimeline timeline;
   memset(&timeline, 0, sizeof(timeline));
@@ -591,12 +646,10 @@ static void test_audio_follows_a_seek(void) {
   VdEngine* e = make_engine();
   if (!e) return;
 
-  VdTimelineClip clip;
-  memset(&clip, 0, sizeof(clip));
+  VdTimelineClip clip = vd_timeline_clip_default();
   clip.path = fixture("cfr_30fps_stereo.mp4");
   clip.start = 0;
   clip.duration = 10 * SECOND;
-  clip.opacity = 1.0f;
 
   VdTimeline timeline;
   memset(&timeline, 0, sizeof(timeline));
@@ -645,6 +698,7 @@ int main(void) {
   test_destroy_while_playing();
   test_seek_storm_while_playing();
   test_png_dump();
+  test_a_clip_with_no_picture_still_makes_a_sound();
   test_audio_is_the_master_clock();
   test_a_silent_timeline_uses_the_wall_clock();
   test_audio_follows_a_seek();
