@@ -7,7 +7,11 @@ import 'dart:io';
 /// unsandboxed run. That is deliberate: the same code has to work in both, and
 /// nothing in this file may ever need a file panel.
 final class AppPaths {
-  const AppPaths._({required this.support, required this.library});
+  const AppPaths._({
+    required this.support,
+    required this.library,
+    required this.peaks,
+  });
 
   /// App-private state: the recents list, the session marker, caches. Nothing
   /// the user is meant to open in Finder.
@@ -22,6 +26,16 @@ final class AppPaths {
   /// A project that lives somewhere the app can always reach is a project that
   /// always reopens; that is worth more in M1 than letting the user file it.
   final Directory library;
+
+  /// Waveform peak files, one per media file the timeline has drawn.
+  ///
+  /// Under `support` because it is a cache: every file in here is derived from
+  /// a media file and can be rebuilt from it, so losing the lot costs some
+  /// seconds of decoding and nothing else. It is not in the project folder for
+  /// the same reason — two projects using the same music bed should analyse it
+  /// once between them, and a project copied to another machine should not
+  /// carry megabytes of something that machine can work out for itself.
+  final Directory peaks;
 
   File get recentsFile => File('${support.path}/recents.json');
   File get sessionFile => File('${support.path}/session.json');
@@ -56,7 +70,11 @@ final class AppPaths {
       );
     }
 
-    return AppPaths._(support: support, library: await _canonical(library));
+    return AppPaths._(
+      support: support,
+      library: await _canonical(library),
+      peaks: await Directory('${support.path}/Peaks').create(recursive: true),
+    );
   }
 
   /// The real path, not the route taken to it.

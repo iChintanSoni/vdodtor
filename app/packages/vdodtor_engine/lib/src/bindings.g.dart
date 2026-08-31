@@ -1371,6 +1371,52 @@ class VdEngineBindings {
       >('vd_audio_device_stop');
   late final _vd_audio_device_stop = _vd_audio_device_stopPtr
       .asFunction<int Function(ffi.Pointer<VdAudioDevice>)>();
+
+  /// Reads the audio of `path` end to end and builds the pyramid.
+  ///
+  /// Returns VD_OK, or a negative VdResult: VD_ERR_INVALID_ARG for the
+  /// arguments, VD_ERR_OPEN for a file that will not open, VD_ERR_NO_STREAMS for
+  /// one with no audio — which is where silent video lands, and is a fact about
+  /// the file rather than a failure — and VD_ERR_DECODE when there is an audio
+  /// stream that yields no samples. `out` is zeroed on every failure.
+  int vd_peaks_analyze(ffi.Pointer<ffi.Char> path, ffi.Pointer<VdPeaks> out) {
+    return _vd_peaks_analyze(path, out);
+  }
+
+  late final _vd_peaks_analyzePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Pointer<VdPeaks>)
+        >
+      >('vd_peaks_analyze');
+  late final _vd_peaks_analyze = _vd_peaks_analyzePtr
+      .asFunction<int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<VdPeaks>)>();
+
+  /// Where level `level` starts in `buckets`, counted in buckets. Negative for a
+  /// level the pyramid does not have.
+  int vd_peaks_level_offset(ffi.Pointer<VdPeaks> peaks, int level) {
+    return _vd_peaks_level_offset(peaks, level);
+  }
+
+  late final _vd_peaks_level_offsetPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int64 Function(ffi.Pointer<VdPeaks>, ffi.Int32)>
+      >('vd_peaks_level_offset');
+  late final _vd_peaks_level_offset = _vd_peaks_level_offsetPtr
+      .asFunction<int Function(ffi.Pointer<VdPeaks>, int)>();
+
+  /// Frees the buckets and zeroes the struct. Safe on a zeroed value, and safe
+  /// twice.
+  void vd_peaks_free(ffi.Pointer<VdPeaks> peaks) {
+    return _vd_peaks_free(peaks);
+  }
+
+  late final _vd_peaks_freePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdPeaks>)>>(
+        'vd_peaks_free',
+      );
+  late final _vd_peaks_free = _vd_peaks_freePtr
+      .asFunction<void Function(ffi.Pointer<VdPeaks>)>();
 }
 
 /// An instant or a duration, in ticks. Signed: negative offsets are legal.
@@ -1903,6 +1949,49 @@ final class VdAudioStats extends ffi.Struct {
 
 final class VdAudioDevice extends ffi.Opaque {}
 
+/// The pyramid. `buckets` holds every level concatenated finest-first, two
+/// int16 per bucket — the minimum then the maximum sample in it, scaled by
+/// 32767 and clamped to +/-32767.
+///
+/// Signed, and both ends kept, because sound is not symmetrical: a rectified
+/// waveform drawn from absolute values looks tidier and hides which way a
+/// transient went, and mirroring one half is a picture of a file nobody has.
+final class VdPeaks extends ffi.Struct {
+  @ffi.Int32()
+  external int level_count;
+
+  /// Level 0's bucket size, in audio frames. Level n's is this << n.
+  @ffi.Int32()
+  external int frames_per_bucket;
+
+  @ffi.Int32()
+  external int sample_rate;
+
+  /// Channels the peaks were taken across. The minimum and maximum are over
+  /// every sample of every channel in the bucket, not over a mono downmix:
+  /// summing to mono lets two out-of-phase channels cancel into a flat line
+  /// for audio that is plainly audible.
+  @ffi.Int32()
+  external int channels;
+
+  /// Audio frames scanned, and the same length in ticks.
+  @ffi.Int64()
+  external int frame_count;
+
+  @VdTick()
+  external int duration;
+
+  @ffi.Array.multi([16])
+  external ffi.Array<ffi.Int32> bucket_counts;
+
+  /// Sum of bucket_counts; `buckets` holds twice this many int16.
+  @ffi.Int64()
+  external int bucket_total;
+
+  /// Owned by the caller; release with vd_peaks_free.
+  external ffi.Pointer<ffi.Int16> buckets;
+}
+
 const int VD_TICKS_PER_SECOND = 120000;
 
 const int VD_NANOS_PER_SECOND = 1000000000;
@@ -1910,3 +1999,7 @@ const int VD_NANOS_PER_SECOND = 1000000000;
 const int VD_AUDIO_SAMPLE_RATE = 48000;
 
 const int VD_AUDIO_CHANNELS = 2;
+
+const int VD_PEAKS_FRAMES_PER_BUCKET = 128;
+
+const int VD_PEAKS_MAX_LEVELS = 16;

@@ -31,11 +31,12 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 
 ```
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
-           `lib/media` — import, thumbnails, sandbox file access — and `lib/ui`)
+           `lib/media` — import, thumbnails, waveforms, sandbox file access — and
+           `lib/ui`)
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_probe, vd_decoder, vd_compositor
-           (Metal), vd_audio_*, vd_engine (transport), vd_thumbnail
+           (Metal), vd_audio_*, vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 
@@ -84,6 +85,14 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   turns `vd_golden_test` red — including changes that are correct. That is the point:
   re-approve with the command above and look at the image diff. A failing run leaves the
   actual frame and an amplified difference in `build/engine/tests/golden-failures/`.
+- **The engine analyses peaks; the app owns the peak file.** `vd_peaks_analyze` returns
+  a pyramid in memory and knows nothing about where it is kept.
+  `app/lib/media/peaks.dart` is the only definition of the on-disk format, so there is
+  one parser rather than a C writer and a Dart reader to keep in step. Bump
+  `PeakFile.version` for any change to the layout and every cached file is thrown away
+  unread, which is the whole migration story a cache needs. Peaks are a property of the
+  **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
+  about a clip can invalidate one.
 - **`spikes/` is throwaway M0 code.** Read it for reference; do not build on it.
 
 Remote: `https://github.com/iChintanSoni/vdodtor.git` (branch `master`, also the main branch).

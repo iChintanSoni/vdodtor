@@ -1,3 +1,4 @@
+import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/engine/media_probe.dart';
 import 'package:vdodtor/media/file_access.dart';
 import 'package:vdodtor/model/media.dart';
@@ -109,3 +110,15 @@ MediaProbe nothingPlayableProbe() => const MediaProbe(
       kind: MediaKind.video,
       duration: Tick.zero,
     );
+
+/// Waits for [done], pumping the event loop.
+///
+/// The media caches are asynchronous by design — a thumbnail decodes on an
+/// isolate, a waveform reads a file and then decodes a whole track — and what
+/// these tests are about is what they do across those awaits.
+Future<void> pumpUntil(bool Function() done, {int rounds = 400}) async {
+  for (var i = 0; i < rounds && !done(); i++) {
+    await Future<void>.delayed(Duration.zero);
+  }
+  expect(done(), isTrue, reason: 'timed out waiting for the cache');
+}

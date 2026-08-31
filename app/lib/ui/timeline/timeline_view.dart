@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../../media/waveforms.dart';
 import '../../model/track.dart';
 import '../theme.dart';
 import 'timeline_controller.dart';
@@ -18,9 +19,14 @@ import 'timeline_geometry.dart';
 /// while the playhead is moving. That ticker runs only during playback, and
 /// what it drives is a repaint of one [RepaintBoundary], never a rebuild.
 class TimelineView extends StatefulWidget {
-  const TimelineView({super.key, required this.controller});
+  const TimelineView({super.key, required this.controller, this.waveforms});
 
   final TimelineController controller;
+
+  /// Where clip waveforms come from. Optional: a timeline without one draws
+  /// clips without waveforms, which is what a test about dragging wants and
+  /// what the editor shows before the first analysis lands.
+  final WaveformCache? waveforms;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -113,7 +119,8 @@ class _TimelineViewState extends State<TimelineView>
                 children: [
                   RepaintBoundary(
                     child: CustomPaint(
-                      painter: TimelinePainter(widget.controller),
+                      painter: TimelinePainter(widget.controller,
+                          waveforms: widget.waveforms),
                       size: Size(constraints.maxWidth, constraints.maxHeight),
                       child: const SizedBox.expand(),
                     ),

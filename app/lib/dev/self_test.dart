@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
@@ -8,9 +9,15 @@ import '../commands/document_store.dart';
 import '../engine/media_probe.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
+import '../media/peaks.dart';
 import '../media/thumbnails.dart';
+import '../media/waveforms.dart';
+import '../model/clip.dart';
+import '../model/media.dart';
 import '../model/project.dart';
 import '../model/time.dart';
+import '../ui/timeline/timeline_controller.dart';
+import '../ui/timeline/timeline_painter.dart';
 
 /// True when the app was launched to measure itself rather than to be used.
 bool get selfTestRequested => Platform.environment['VD_SELFTEST'] == '1';
@@ -93,7 +100,7 @@ Future<void> runSelfTest(PreviewEngine engine, Project project) async {
 /// The self test runs unattended, so it cannot open a file panel and cannot be
 /// dropped on. The App Sandbox lets the app read its own bundle, which makes
 /// these the only files it can reach without a user — everyone else imports.
-List<File> sampleMediaFiles() {
+List<File> sampleMediaFiles({String suffix = '.mp4'}) {
   final exe = File(Platform.resolvedExecutable).parent; // …/Contents/MacOS
   final bundled = Directory('${exe.parent.path}/Frameworks/App.framework/'
       'Resources/flutter_assets/assets/dev');
@@ -105,7 +112,7 @@ List<File> sampleMediaFiles() {
   return dir
       .listSync()
       .whereType<File>()
-      .where((f) => f.path.endsWith('.mp4'))
+      .where((f) => f.path.endsWith(suffix))
       .toList()
     ..sort((a, b) => a.path.compareTo(b.path));
 }
@@ -121,7 +128,14 @@ List<File> stageSampleMedia(Directory into) {
   final staged = Directory('${into.path}/self-test-media');
   staged.createSync(recursive: true);
   return [
-    for (final source in sampleMediaFiles())
+    for (final source in [
+      ...sampleMediaFiles(),
+      // A file with no picture, so the import lands on an audio lane rather
+      // than the main track. That branch of `place` had never been walked by
+      // anything unattended, and a music bed on an audio lane is the shape
+      // this milestone exits on.
+      ...sampleMediaFiles(suffix: '.m4a'),
+    ])
       source.copySync('${staged.path}/${source.uri.pathSegments.last}'),
   ];
 }
@@ -193,4 +207,187 @@ Future<void> runImportSelfTest(
   } catch (error) {
     stdout.writeln('[selftest] thumbnail: FAILED $error');
   }
+}
+
+/// Analyses a file's audio through the real engine and prints the envelope it
+/// produced, then does it again to show the cache doing its job.
+///
+/// The fixture it prefers is `audio_steps.m4a`, whose shape is known by
+/// construction: a second of silence, a second at a quarter, and a second at
+/// nine tenths on one channel only. Printed a second at a time, a correct
+/// analysis reads 0.00 / 0.25 / 0.90 straight down the page — which is a check
+/// anyone can make at a glance, where a number of buckets is a check on
+/// nothing.
+Future<void> runWaveformSelfTest() async {
+  final samples = [
+    ...sampleMediaFiles(suffix: 'audio_steps.m4a'),
+    ...sampleMediaFiles(),
+  ];
+  if (samples.isEmpty) {
+    stdout.writeln('[selftest] waveform: no sample to analyse');
+    return;
+  }
+  final sample = samples.first;
+
+  final clock = Stopwatch()..start();
+  final NativePeaks? native;
+  try {
+    native = await Peaks.analyze(sample.path);
+  } catch (error) {
+    stdout.writeln('[selftest] waveform: FAILED $error');
+    return;
+  }
+  clock.stop();
+
+  if (native == null) {
+    stdout.writeln('[selftest] waveform: ${sample.uri.pathSegments.last} '
+        'has no audio');
+    return;
+  }
+
+  final peaks = PeakPyramid.fromNative(native);
+  stdout.writeln('[selftest] waveform: ${sample.uri.pathSegments.last} '
+      '${peaks.levelCount} levels, ${peaks.buckets.length ~/ 2} buckets, '
+      '${(peaks.duration.raw / 120000).toStringAsFixed(2)}s, '
+      '${PeakFile.encode(peaks).length ~/ 1024} KB, '
+      '${clock.elapsedMilliseconds} ms');
+
+  // One pixel per second, then one per tenth: the same file read at two
+  // resolutions has to agree about where the loud part is, and that is the
+  // whole claim the pyramid makes. A column is always at least one whole
+  // bucket wide, so at the coarse end a step smears by up to a bucket — which
+  // at one column per second is most of a column, and at any zoom the timeline
+  // actually offers is a pixel.
+  for (final perPixel in [1.0, 0.1]) {
+    final ticksPerPixel = 120000 * perPixel;
+    final pixels = (peaks.duration.raw / ticksPerPixel).floor();
+    if (pixels < 1) continue;
+    final envelope = peaks.envelope(
+        from: Tick.zero, ticksPerPixel: ticksPerPixel, pixels: pixels);
+    final heights = [
+      for (var i = 0; i < pixels; i++) envelope[i * 2 + 1].toStringAsFixed(2),
+    ];
+    stdout.writeln('[selftest] waveform: ${perPixel}s per column — '
+        '${heights.join(" ")}');
+  }
+
+  // And the cache, end to end: written on the first ask, read on the second.
+  // In a scratch directory rather than the app's real one: this measures a
+  // cold cache, and it would not be cold twice if it shared the app's.
+  final directory =
+      Directory.systemTemp.createTempSync('vdodtor_peaks_selftest_');
+  final asset = MediaAsset(
+    id: 'selftest-waveform',
+    path: sample.path,
+    displayName: sample.uri.pathSegments.last,
+    probe: MediaProbe(kind: MediaKind.audio, duration: peaks.duration,
+        hasAudio: true),
+  );
+  for (final pass in ['analysed', 'cached']) {
+    final passClock = Stopwatch()..start();
+    final one = WaveformCache(directory: directory);
+    one.request(asset);
+    for (var i = 0; i < 4000; i++) {
+      if (one.stateOf(asset.id) != WaveformState.pending) break;
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    passClock.stop();
+    stdout.writeln('[selftest] waveform: $pass in '
+        '${passClock.elapsedMilliseconds} ms, '
+        'state ${one.stateOf(asset.id).name}');
+    one.dispose();
+  }
+
+  await drawWaveformSelfTest(sample, peaks, directory);
+}
+
+/// Draws the timeline with the analysed file on an audio lane and writes it
+/// out, so what a waveform built from real peaks looks like is something
+/// anyone can open rather than something to take on trust.
+Future<void> drawWaveformSelfTest(
+    File sample, PeakPyramid peaks, Directory cache) async {
+  const size = Size(900, 134);
+
+  final asset = MediaAsset(
+    id: 'wave',
+    path: sample.path,
+    displayName: sample.uri.pathSegments.last,
+    probe: MediaProbe(
+        kind: MediaKind.audio, duration: peaks.duration, hasAudio: true),
+  );
+  final project = Project.empty(
+    id: 'wave',
+    name: 'Waveform',
+    format: ProjectFormat.fromAspect(ProjectAspect.landscape16x9,
+        frameRate: FrameRates.fps30),
+    mainTrackId: 'tr-main',
+    audioTrackId: 'tr-audio',
+  ).addMedia(asset).updateTrack(
+        'tr-audio',
+        (t) => t.withClips([
+          Clip(
+            id: 'c1',
+            mediaId: asset.id,
+            start: Tick.zero,
+            duration: peaks.duration,
+            label: asset.displayName,
+          ),
+        ]),
+      );
+
+  final store = DocumentStore(project);
+  final controller = TimelineController(
+      store: store, transport: _StillTransport(peaks.duration.raw));
+  controller.zoomToFit(size.width);
+
+  final waveforms = WaveformCache(directory: cache);
+  waveforms.request(asset);
+  for (var i = 0; i < 4000; i++) {
+    if (waveforms.stateOf(asset.id) != WaveformState.pending) break;
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+
+  final recorder = PictureRecorder();
+  TimelinePainter(controller, waveforms: waveforms)
+      .paint(Canvas(recorder), size);
+  final image = await recorder
+      .endRecording()
+      .toImage(size.width.round(), size.height.round());
+  final png = await image.toByteData(format: ImageByteFormat.png);
+  image.dispose();
+  waveforms.dispose();
+  controller.dispose();
+  store.dispose();
+
+  if (png == null) {
+    stdout.writeln('[selftest] waveform: could not encode the timeline');
+    return;
+  }
+  final out = File('${Directory.systemTemp.path}/vdodtor_waveform.png');
+  await out.writeAsBytes(png.buffer.asUint8List());
+  stdout.writeln('[selftest] waveform: timeline drawn to ${out.path}');
+}
+
+/// A playhead that never moves. The timeline needs one to draw; nothing here
+/// is playing.
+class _StillTransport implements TimelineTransport {
+  _StillTransport(this.durationTicks);
+
+  @override
+  final int durationTicks;
+
+  @override
+  int get positionTicks => 0;
+
+  @override
+  bool get isPlaying => false;
+
+  @override
+  void seek(int ticks) {}
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }

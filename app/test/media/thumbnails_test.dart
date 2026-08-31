@@ -175,12 +175,3 @@ void main() {
     });
   });
 }
-
-/// Waits for [done], pumping the event loop. The cache is asynchronous by
-/// design and the tests are about what it does across those awaits.
-Future<void> pumpUntil(bool Function() done, {int rounds = 200}) async {
-  for (var i = 0; i < rounds && !done(); i++) {
-    await Future<void>.delayed(Duration.zero);
-  }
-  expect(done(), isTrue, reason: 'timed out waiting for the cache');
-}

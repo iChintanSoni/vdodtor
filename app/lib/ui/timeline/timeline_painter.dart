@@ -1,5 +1,10 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 
+import '../../media/waveforms.dart';
 import '../../model/clip.dart';
 import '../../model/media.dart';
 import '../../model/time.dart';
@@ -18,9 +23,27 @@ import 'timeline_geometry.dart';
 /// the repaint signal, and it already fires for the document, the transport
 /// and the view.
 class TimelinePainter extends CustomPainter {
-  TimelinePainter(this.controller) : super(repaint: controller);
+  TimelinePainter(this.controller, {this.waveforms})
+      : super(
+          repaint: waveforms == null
+              ? controller
+              : Listenable.merge([controller, waveforms]),
+        );
 
   final TimelineController controller;
+
+  /// Where the clips' waveforms come from, or null to draw none — which is
+  /// what a widget test that is not about waveforms wants, and what the
+  /// timeline shows for the moment before the first analysis lands.
+  final WaveformCache? waveforms;
+
+  /// Scratch for the envelope and the line segments it becomes.
+  ///
+  /// Static and grown on demand rather than owned: a painter is constructed
+  /// on every build, and a timeline that allocated two buffers per clip per
+  /// frame would spend more of playback in the collector than on the canvas.
+  static Float32List _envelope = Float32List(0);
+  static Float32List _columns = Float32List(0);
 
   /// Laid-out text is expensive and the same strings recur every frame —
   /// lane names, ruler labels, clip labels. Bounded because a scrub across a
@@ -144,12 +167,12 @@ class TimelinePainter extends CustomPainter {
       final x1 = geometry.xOfTick(clip.end);
       // Culled here, which is what keeps the cost flat in clip count.
       if (x1 < TimelineGeometry.headerWidth || x0 > size.width) continue;
-      _paintClip(canvas, clip, track, x0, x1, top);
+      _paintClip(canvas, clip, track, x0, x1, top, size.width);
     }
   }
 
   void _paintClip(Canvas canvas, Clip clip, Track track, double x0, double x1,
-      double top) {
+      double top, double viewWidth) {
     final asset = controller.project.assetFor(clip);
     final missing = asset == null ||
         controller.unreachableMediaIds.contains(asset.id);
@@ -159,11 +182,9 @@ class TimelinePainter extends CustomPainter {
 
     // Half a pixel of inset on each side, so two clips butted flush on a
     // magnetic track still read as two clips rather than one long one.
-    final rect = RRect.fromRectAndRadius(
-      Rect.fromLTRB(x0 + 0.5, top + 3, x1 - 0.5,
-          top + TimelineGeometry.trackHeight - 3),
-      const Radius.circular(3),
-    );
+    final body = Rect.fromLTRB(x0 + 0.5, top + 3, x1 - 0.5,
+        top + TimelineGeometry.trackHeight - 3);
+    final rect = RRect.fromRectAndRadius(body, const Radius.circular(3));
 
     final base = _colorOf(track.kind);
     canvas.drawRRect(
@@ -184,6 +205,10 @@ class TimelinePainter extends CustomPainter {
       );
     }
     final width = x1 - x0;
+
+    if (!missing) {
+      _paintWaveform(canvas, clip, track, asset, rect, x0, x1, viewWidth);
+    }
 
     if (selected) {
       canvas.drawRRect(
@@ -218,6 +243,104 @@ class TimelinePainter extends CustomPainter {
         9.5,
       ).paint(canvas, Offset(x0 + 7, top + 25));
     }
+    canvas.restore();
+  }
+
+  /// The clip's sound, drawn as one vertical line per pixel column.
+  ///
+  /// The envelope comes from the file and the height comes from the clip:
+  /// volume, fades and mute scale it here, at paint time. That split is what
+  /// makes a fader instant — pulling one repaints, where anything cached per
+  /// clip would have to be rebuilt — and it is also what lets one analysis
+  /// serve every clip cut from the same file.
+  ///
+  /// A lane's worth of columns is filled from the pyramid in one pass, at
+  /// whatever level matches the zoom, so this costs the same whether the view
+  /// is showing two seconds or half an hour.
+  void _paintWaveform(Canvas canvas, Clip clip, Track track, MediaAsset asset,
+      RRect clipRect, double clipLeft, double clipRight, double viewWidth) {
+    final waveforms = this.waveforms;
+    if (waveforms == null || !asset.probe.hasAudio) return;
+    // A clip on a picture lane whose sound was detached is silent here and
+    // drawn on the audio lane the sound went to; `enabled` covers the rest.
+    if (!clip.enabled) return;
+
+    waveforms.request(asset);
+    final peaks = waveforms.peaksOf(asset.id);
+    if (peaks == null) return;
+
+    // Only the part on screen. A ten-minute clip scrolled mostly out of view
+    // costs what its visible sliver costs, which is what keeps this flat in
+    // clip length as well as in clip count.
+    final left = math.max(clipLeft, TimelineGeometry.headerWidth);
+    final right = math.min(clipRight, viewWidth);
+    final columns = (right - left).floor();
+    if (columns < 2) return;
+
+    // An audio lane gives its whole clip to the waveform. A picture lane gives
+    // it a strip along the bottom: what identifies a video clip is its name,
+    // and its sound is the thing you look for underneath.
+    final body = clipRect.outerRect;
+    final band = track.kind == TrackKind.audio
+        ? body.deflate(5)
+        : Rect.fromLTRB(body.left, body.bottom - body.height * 0.40,
+            body.right, body.bottom - 3);
+    if (band.height < 4) return;
+
+    final ticksPerPixel = 1 / controller.geometry.pxPerTick;
+    final into = (left - clipLeft) * ticksPerPixel;
+
+    if (_envelope.length < columns * 2) _envelope = Float32List(columns * 2);
+    peaks.envelopeInto(
+      _envelope,
+      from: Tick((clip.sourceIn.raw + into).round()),
+      ticksPerPixel: ticksPerPixel,
+      pixels: columns,
+    );
+
+    if (_columns.length < columns * 4) _columns = Float32List(columns * 4);
+    final centre = band.center.dy;
+    final half = band.height / 2;
+    final last = clip.duration.raw - 1;
+
+    for (var i = 0; i < columns; i++) {
+      final offset = (into + i * ticksPerPixel).round();
+      final gain =
+          clip.audio.gainAt(Tick(offset > last ? last : offset), clip.duration);
+      // Clamped after the gain rather than before it: a clip boosted past full
+      // scale draws as a block against the rails, which is what it will sound
+      // like.
+      final low = (_envelope[i * 2] * gain).clamp(-1.0, 1.0);
+      final high = (_envelope[i * 2 + 1] * gain).clamp(-1.0, 1.0);
+
+      var upper = centre - high * half;
+      var lower = centre - low * half;
+      // Silence is a line through the middle, not a gap. A lane that went
+      // blank wherever a recording went quiet would read as missing media,
+      // and a muted clip — every column of which lands here — would look like
+      // no clip at all.
+      if (lower - upper < 1) {
+        upper = centre - 0.5;
+        lower = centre + 0.5;
+      }
+      final x = left + i + 0.5;
+      _columns[i * 4] = x;
+      _columns[i * 4 + 1] = upper;
+      _columns[i * 4 + 2] = x;
+      _columns[i * 4 + 3] = lower;
+    }
+
+    canvas.save();
+    // The rounded rect, not its bounds: a column at the very edge of a clip
+    // would otherwise paint the half pixel outside the corner.
+    canvas.clipRRect(clipRect);
+    canvas.drawRawPoints(
+      ui.PointMode.lines,
+      Float32List.sublistView(_columns, 0, columns * 4),
+      Paint()
+        ..color = VdColors.waveform.withValues(alpha: 0.55)
+        ..strokeWidth = 1,
+    );
     canvas.restore();
   }
 

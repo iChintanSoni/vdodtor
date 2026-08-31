@@ -25,6 +25,18 @@ rm -f rotated_tmp.mp4
 ffmpeg $common -f lavfi -i "sine=frequency=220:duration=3:sample_rate=44100" \
   -ac 1 -c:a aac -b:a 32k audio_only.m4a
 
+# Three seconds in three amplitudes, for the peak analyser: a second of
+# silence, a second at 0.25 on both channels, and a second at 0.9 on the LEFT
+# only. Built with aevalsrc rather than sine because the amplitudes have to be
+# exact — `sine` peaks at 0.125 and converting it from mono costs another 3 dB,
+# so a fixture built that way tests a level nobody chose. The last second is
+# the interesting one: it is the case that tells a waveform taken across both
+# channels apart from one taken over their average, which would draw it at half
+# the height it should be.
+ffmpeg $common -f lavfi \
+  -i 'aevalsrc=exprs=0.25*sin(2*PI*440*t)*between(t\,1\,2)+0.9*sin(2*PI*440*t)*between(t\,2\,3)|0.25*sin(2*PI*440*t)*between(t\,1\,2):s=48000:d=3:c=stereo' \
+  -c:a aac -b:a 128k audio_steps.m4a
+
 # Irregular timestamps: r_frame_rate and avg_frame_rate diverge.
 ffmpeg $common -f lavfi -i "testsrc2=size=320x240:rate=60:duration=2" \
   -vf "select='not(mod(n,3))'" -fps_mode vfr \

@@ -23,6 +23,11 @@ abstract final class VdColors {
   static const clipAudio = Color(0xFF2F6152);
   static const clipText = Color(0xFF7A4A5E);
 
+  /// The waveform inside a clip. Pale and cool, so it reads on the green of
+  /// an audio lane and the blue of a video one without being recoloured for
+  /// either.
+  static const waveform = Color(0xFFA6E9D0);
+
   /// The playhead. The one thing on screen allowed to be loud.
   static const playhead = Color(0xFFFF5C5C);
 }

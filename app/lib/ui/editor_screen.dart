@@ -15,6 +15,7 @@ import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
 import '../media/thumbnails.dart';
+import '../media/waveforms.dart';
 import '../model/media.dart';
 import '../model/time.dart';
 import 'inspector.dart';
@@ -38,6 +39,7 @@ class EditorScreen extends StatefulWidget {
     required this.onClose,
     required this.access,
     this.prober = const EngineMediaProber(),
+    this.peakCache,
   });
 
   final OpenProject open;
@@ -48,6 +50,11 @@ class EditorScreen extends StatefulWidget {
 
   /// Injected so an import can be exercised without the native engine.
   final MediaProber prober;
+
+  /// Where analysed waveforms are kept between sessions. Null keeps them in
+  /// memory for the session only, which is what a test without a home
+  /// directory gets.
+  final Directory? peakCache;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -62,6 +69,8 @@ class _EditorScreenState extends State<EditorScreen> {
   late final MediaImporter _importer;
   TimelineController? _timeline;
   final ThumbnailCache _thumbnails = ThumbnailCache();
+  late final WaveformCache _waveforms =
+      WaveformCache(directory: widget.peakCache);
   StreamSubscription<MediaDrop>? _drops;
   bool _importing = false;
   bool _syncQueued = false;
@@ -75,6 +84,9 @@ class _EditorScreenState extends State<EditorScreen> {
     _importer = MediaImporter(prober: widget.prober, access: widget.access);
     _store.addListener(_onDocumentChanged);
     _drops = MediaAccess.drops.listen(_onDrop);
+    // Once per open, not once per write: peak files are cheap to keep and dear
+    // to lose, so the sweep should be rare and take the oldest when it runs.
+    unawaited(_waveforms.prune());
     unawaited(_start());
   }
 
@@ -102,12 +114,16 @@ class _EditorScreenState extends State<EditorScreen> {
       });
 
       if (selfTestRequested) {
+        final library = File(widget.open.path).parent;
         if (_store.project.mainTrack.isEmpty) {
           await runImportSelfTest(_store,
-              library: File(widget.open.path).parent,
+              library: library,
               access: widget.access,
               prober: widget.prober);
         }
+        // Not inside the import check: a waveform is worth measuring on every
+        // run, and the import only happens on the first.
+        await runWaveformSelfTest();
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
@@ -174,6 +190,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _store.run(RemoveMedia(asset.id));
     _store.endGesture();
     _thumbnails.forget(asset.id);
+    _waveforms.forget(asset.id);
     final timeline = _timeline;
     if (timeline != null) {
       timeline.unreachableMediaIds =
@@ -196,6 +213,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _timeline?.dispose();
     unawaited(_engine?.dispose());
     _thumbnails.dispose();
+    _waveforms.dispose();
     super.dispose();
   }
 
@@ -306,7 +324,10 @@ class _EditorScreenState extends State<EditorScreen> {
                     ),
                     SizedBox(
                       height: timelineHeightFor(_store.project.tracks.length),
-                      child: TimelineView(controller: _timeline!),
+                      child: TimelineView(
+                        controller: _timeline!,
+                        waveforms: _waveforms,
+                      ),
                     ),
                     _StatsStrip(stats: _stats, store: _store),
                   ],

@@ -82,6 +82,7 @@ add_library(vdodtor_engine STATIC
   src/vd_audio_renderer.c
   src/vd_audio_device.c
   src/vd_thumbnail.c
+  src/vd_peaks.c
   ${VD_EXTRA_SOURCES}
 )
 target_include_directories(vdodtor_engine

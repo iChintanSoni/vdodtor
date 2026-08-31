@@ -11,7 +11,7 @@ set(VD_TEST_MEDIA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/media")
 set(VD_GOLDEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/golden")
 set(VD_GOLDEN_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/golden-failures")
 
-foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test)
+foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test vd_peaks_test)
   add_executable(${test} ${test}.c)
   target_link_libraries(${test} PRIVATE vdodtor_engine)
   target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
