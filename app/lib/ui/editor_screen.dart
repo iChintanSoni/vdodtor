@@ -128,6 +128,9 @@ class _EditorScreenState extends State<EditorScreen> {
         // ducked timeline and the duck is something to listen to as well as
         // something to read off a page.
         await runVolumeLineSelfTest(_store);
+        // Before the play pass for the same reason the duck is: what it
+        // dumps comes from a timeline nothing else has moved yet.
+        await runSourceGeometrySelfTest(engine, _store.project);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {

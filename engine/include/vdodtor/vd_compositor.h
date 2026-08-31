@@ -85,6 +85,17 @@ typedef struct {
   // Clockwise degrees to rotate for display: 0, 90, 180, 270.
   int32_t rotation_degrees;
 
+  // The source's sample aspect: how much wider one of its pixels is than it
+  // is tall. {0,0} and {1,1} both mean square, so a caller with square pixels
+  // can leave it zeroed. Applied before the rotation, because a turn swaps
+  // which axis the stretch is on.
+  //
+  // This is what makes a 4:3 DVD frame stored as 720x480 come out 4:3 rather
+  // than squeezed to 3:2. It belongs on the layer rather than being folded
+  // into the coded size by the decoder, because the pixels really are 720
+  // across — only the shape they are meant to be shown at differs.
+  VdRational pixel_aspect;
+
   // Copied straight from the VdFrame the buffer came out of.
   VdColorMatrix color_matrix;
   bool full_range;

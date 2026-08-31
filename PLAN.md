@@ -11,8 +11,9 @@ built and *how far* along it is. Update it in the same commit as the work it des
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
 > M2 has started: the timeline cuts, the compositor is pinned by golden frames, the
-> audio lanes make a sound, the clips on them show what that sound looks like, and a
-> volume line on a clip can duck it.**
+> audio lanes make a sound, the clips on them show what that sound looks like, a
+> volume line on a clip can duck it, and a clip is now drawn the shape and the way up
+> its own file asks for.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -60,7 +61,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > Sound works: six audio lanes that actually reach the mixer, per-clip volume, mute and
 > fades, and ⌘⇧D to lift a clip's audio onto a lane of its own. A music bed on an audio
 > lane was silent until this — the render list was built from visual tracks only — which
-> is the half of M2's exit criteria that was missing.
+> is the half of M2's exit criteria that was missing. A source's own metadata is believed
+> now too: a clip shot upright plays upright, non-square pixels are the shape the file
+> asks for rather than the shape it is stored in, and a variable-rate source shows the
+> frame it says is on screen instead of one from half a second later.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -622,7 +626,79 @@ audio, scrub anywhere, quit and reopen with everything restored.
       draws the timeline so the amber line and its four handles are something
       to look at. The duck is left on the clip, so the play pass that follows
       is playing it: **30.0 fps, 0 late frames, 0 underruns**
-- [ ] Rotation metadata honored; VFR sources normalized to project timebase
+- [x] Rotation metadata honored; VFR sources normalized to project timebase
+      — both halves were half-built, and both were wrong in the same way: the
+      *file's* opinion about itself was being read and then not believed.
+      Rotation had a path from the display matrix all the way to the vertex
+      shader and nothing anywhere proved it went the right way round. Every
+      rotation test used a flat colour, and a flat colour cannot tell a quarter
+      turn clockwise from a quarter turn the other way — both move the bars to
+      the sides and leave the centre alone. `quadrants_cw90.mp4` fixes that: it
+      is the **same bitstream** as `quadrants.mp4` with a display matrix bolted
+      on by `-c copy`, so the pair isolates the metadata rather than the
+      encoder. Turned clockwise, the bottom left arrives at the top left, and
+      reversing the shader's two odd cases now fails four assertions and
+      nothing else.
+      **VFR was the real bug, and it was not subtle.** The decoder read each
+      frame's presentation interval as `[pts, pts + duration)` with the
+      duration the container supplied, and on a source whose timestamps are
+      genuinely irregular that put frames from the *future* on screen: on the
+      new `vfr_bursts.mp4`, asking for 0.07 s returned the frame that belongs
+      at 0.5 s, and held it for fourteen project frames. Then it swallowed two
+      frames whose time a neighbour's duration had claimed. The claims are not
+      wrong by accident — a muxer writes per-frame durations in **decode**
+      order, so with B-frames they simply land on the wrong frames.
+      The rule that replaces them is the one that is always true: **a frame is
+      on screen until the next frame starts.** So the walk decodes until a
+      frame lands *after* the time asked for; that frame is not the answer, it
+      is what proves the one before it is, by ending its interval. It costs one
+      decode past the frame wanted and never more than one, because it goes in
+      the cache and becomes the next answer rather than being thrown away —
+      the total decode count over a playthrough is unchanged. Cached durations
+      carry a `confirmed` flag, since an unconfirmed one can be too long as
+      easily as too short and a long one hides the frames it swallows.
+      Two things fell out. A source already walked to EOF now answers from the
+      cache instead of seeking back and decoding the whole tail to rediscover
+      that there is nothing after the last frame. And `position` stopped
+      meaning "where the next frame will be" and started meaning "where the
+      last one was", which is the exact test for whether walking forward can
+      still reach a given moment — the old value was a guess built from the
+      same durations that were the bug.
+      The fixture that used to stand for this, `vfr.mp4`, is **not** variable
+      rate: selecting every third frame of 60 fps makes `r_frame_rate` and
+      `avg_frame_rate` diverge, which is what the detection heuristic reads,
+      but the timestamps that come out are a perfectly regular 20 fps. It is
+      kept, for the heuristic. `vfr_bursts.mp4` is the one with irregular
+      timestamps — bursts a sixtieth apart separated by holds of half a second,
+      the shape adaptive-rate phone capture produces in changing light — and
+      the test against it asserts the whole mapping rather than a property of
+      it: for every project tick, the frame the file says is on screen.
+      **Sample aspect came with it**, because it is the same defect and it was
+      live: the thumbnail sized its box from the display aspect and the
+      compositor fitted the coded size, so an anamorphic clip was one shape in
+      the bin and another in the preview — against the one thing
+      `vd_thumbnail.h` promises. `VdLayer` carries `pixel_aspect` now, applied
+      *before* the rotation because a quarter turn puts the stretch on the
+      other axis, and the app's `MediaProbe` carries it too so the bin's label
+      agrees with the bin's picture. The five existing goldens came back byte
+      for byte, which is the proof it is a no-op on square pixels.
+      A sixth golden is the case this bullet is really about: a clip shot
+      upright, in a 16:9 project, blur-filled. Rotation and blur fill meet
+      there and nothing else checks that they do — a blur pass that sampled the
+      source in its coded orientation would fill the pillars with a sideways
+      wash and look convincing doing it.
+      13 new engine tests across probe, decoder, compositor, thumbnail and
+      transport, including one that plays a turned clip through the whole
+      engine and reads the four quarters of the output.
+      Confirmed in the running editor: `VD_SELFTEST=1` imports all six picture
+      fixtures through the real probe and prints, per file, the coded size, the
+      metadata and the display size that has to follow from them —
+      `anamorphic_sar2.mp4 coded 160x240 par 2 rot 0 -> display 320x240`,
+      `quadrants_cw90.mp4 coded 320x240 par 1 rot 90 -> display 240x320` — and
+      then dumps a composited frame of each turned clip. That frame reads blue,
+      red, yellow, green clockwise from the top left: the file's own quarter
+      turn, on screen, through the real preview. The play pass that follows is
+      **30.0 fps, 0 late frames, 0 underruns**
 - [ ] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge
 
 **Exit criteria:** cut a real 2-minute multi-track video (picture-in-picture + music bed)

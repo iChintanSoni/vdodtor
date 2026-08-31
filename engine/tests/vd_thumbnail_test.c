@@ -99,6 +99,28 @@ static void test_rotation_is_applied_to_the_shape(void) {
   vd_thumbnail_free(&t);
 }
 
+// Non-square pixels decide the shape too, and — the part that was wrong — the
+// picture has to fill the shape they decided. The box has always been sized
+// from the display aspect, so a compositor that fitted the coded size drew a
+// 4:3 thumbnail with the picture pillarboxed inside it: right outline, wrong
+// contents, in a 60-pixel-wide picture where nobody would ever notice.
+static void test_sample_aspect_is_applied_to_the_shape(void) {
+  VdThumbnail t;
+  VD_CHECK_EQ(
+      vd_thumbnail_render(fixture("anamorphic_sar2.mp4"), 0, 160, 160, &t),
+      VD_OK);
+  // 320x240 on screen from 160x240 coded, bounded by the width: 160x120.
+  VD_CHECK_EQ(t.width, 160);
+  VD_CHECK_EQ(t.height, 120);
+  // And no bars: a box already cut to the source's own shape has nothing left
+  // over, so every edge is picture.
+  check_pixel_is(&t, 2, 60, SOLID_R, SOLID_G, SOLID_B, "left edge");
+  check_pixel_is(&t, 157, 60, SOLID_R, SOLID_G, SOLID_B, "right edge");
+  check_pixel_is(&t, 80, 2, SOLID_R, SOLID_G, SOLID_B, "top edge");
+  check_pixel_is(&t, 80, 117, SOLID_R, SOLID_G, SOLID_B, "bottom edge");
+  vd_thumbnail_free(&t);
+}
+
 // The colour has to be the compositor's colour, because the compositor is what
 // renders it. If this ever disagrees with vd_compositor_test.c, a second
 // imaging path has grown.
@@ -197,6 +219,7 @@ int main(void) {
   test_fits_the_box_and_keeps_the_aspect();
   test_never_upscales();
   test_rotation_is_applied_to_the_shape();
+  test_sample_aspect_is_applied_to_the_shape();
   test_colour_matches_the_compositor();
   test_time_past_the_end_clamps();
   test_failures_leave_nothing_behind();

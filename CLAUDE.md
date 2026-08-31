@@ -82,6 +82,18 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   curve instead of dragging the curve with it, a split needs no dividing, and points
   outside a clip's window are kept rather than swept up. Anything that changes a clip's
   length or window must leave `ClipAudio.points` alone.
+- **A frame is on screen until the next frame starts.** Not for the duration the
+  container gave it: muxers write per-frame durations in *decode* order, so with B-frames
+  they land on the wrong frames, and on a variable-rate source believing them puts frames
+  from the future on screen. `vd_decoder_frame_at` therefore decodes one frame past the
+  one it wants — that frame is what ends the previous one's interval — and a cached
+  duration is only trusted once `confirmed` says the next frame set it.
+- **A source's shape comes from its metadata, and the same metadata everywhere.**
+  `VdLayer` carries both `rotation_degrees` and `pixel_aspect`, applied in that order
+  (widen, then turn — a quarter turn puts the stretch on the other axis). Preview,
+  thumbnail and `MediaProbe.displayWidth` all derive the display size the same way, and
+  they have to: the bin drawing one shape while the preview draws another is the failure
+  `vd_thumbnail.h` exists to prevent.
 - **The lane decides which half of a file a clip contributes.** A clip on an audio lane is
   sound even when its source has a picture — that is what a detached clip is — so
   `timeline_sync` sets `hasVideo` from the track kind, not from the probe alone.

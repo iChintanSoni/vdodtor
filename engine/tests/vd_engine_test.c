@@ -32,6 +32,12 @@ static const int GREEN[3] = {0, 200, 100};   // solid_sd_601.mp4
 static const int ORANGE[3] = {200, 100, 0};  // solid_sd_orange.mp4
 static const int BLACK[3] = {0, 0, 0};
 
+// quadrants_cw90.mp4: four flat colours, one per quarter of the picture.
+static const int QUAD_RED[3] = {192, 0, 0};
+static const int QUAD_GREEN[3] = {0, 192, 0};
+static const int QUAD_BLUE[3] = {0, 0, 192};
+static const int QUAD_YELLOW[3] = {192, 192, 0};
+
 static void sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
 
 // No output device: ctest must not make a noise, and the audio path is
@@ -47,7 +53,10 @@ static bool near_enough(int a, int b) {
   return (d < 0 ? -d : d) <= TOLERANCE;
 }
 
-static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
+// `fx` and `fy` are fractions of the output, so a caller says "the top left
+// quarter" rather than doing arithmetic against a frame size it has to know.
+static void check_frame_pixel_is(VdEngine* e, double fx, double fy,
+                                 const int rgb[3], const char* what) {
   void* buffer = vd_engine_copy_output(e);
   vd_checks++;
   if (!buffer) {
@@ -59,8 +68,8 @@ static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
   CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
   const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(pixels);
   const size_t stride = CVPixelBufferGetBytesPerRow(pixels);
-  const size_t x = CVPixelBufferGetWidth(pixels) / 2;
-  const size_t y = CVPixelBufferGetHeight(pixels) / 2;
+  const size_t x = (size_t)(fx * (double)CVPixelBufferGetWidth(pixels));
+  const size_t y = (size_t)(fy * (double)CVPixelBufferGetHeight(pixels));
   const uint8_t* px = base + y * stride + x * 4;  // BGRA
   const int b = px[0], g = px[1], r = px[2];
   CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
@@ -73,6 +82,10 @@ static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
             "FAIL %s\n  expected RGB (%d, %d, %d)\n  actual   RGB (%d, %d, %d)\n",
             what, rgb[0], rgb[1], rgb[2], r, g, b);
   }
+}
+
+static void check_frame_is(VdEngine* e, const int rgb[3], const char* what) {
+  check_frame_pixel_is(e, 0.5, 0.5, rgb, what);
 }
 
 // Green for the first second, orange for the second. One track, no gaps.
@@ -170,6 +183,46 @@ static void test_position_selects_the_clip(void) {
   vd_engine_seek(e, 2 * SECOND - 1);
   VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
   check_frame_is(e, ORANGE, "end of the second clip");
+
+  vd_engine_destroy(e);
+}
+
+// The whole of rotation, from the container to the screen.
+//
+// The compositor's own tests hand it a rotation; this one never mentions one.
+// The engine has to read the display matrix off the file and pass it on, and
+// the layer it builds is the one place that could quietly drop it — nothing
+// else in the engine would notice, and a portrait clip playing on its side is
+// not a subtle bug to ship.
+static void test_a_turned_source_plays_upright(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.path = fixture("quadrants_cw90.mp4");
+  clip.start = 0;
+  clip.duration = SECOND;
+  // Stretched, so the four quarters of the source are the four quarters of
+  // the output and reading which is where needs no arithmetic.
+  clip.fit = VD_FIT_STRETCH;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 320;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  // A quarter turn clockwise brings the bottom left up to the top left.
+  check_frame_pixel_is(e, 0.25, 0.25, QUAD_BLUE, "top left was bottom left");
+  check_frame_pixel_is(e, 0.75, 0.25, QUAD_RED, "top right was top left");
+  check_frame_pixel_is(e, 0.25, 0.75, QUAD_YELLOW,
+                       "bottom left was bottom right");
+  check_frame_pixel_is(e, 0.75, 0.75, QUAD_GREEN, "bottom right was top right");
 
   vd_engine_destroy(e);
 }
@@ -685,6 +738,7 @@ int main(void) {
   test_lifecycle();
   test_rejects_a_bad_timeline();
   test_position_selects_the_clip();
+  test_a_turned_source_plays_upright();
   test_a_gap_renders_black();
   test_seek_clamps();
   test_play_advances_and_ends();

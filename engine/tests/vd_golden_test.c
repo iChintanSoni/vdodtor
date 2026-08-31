@@ -311,7 +311,8 @@ static void check_golden(VdCompositor* c, const char* name) {
 
 // The frame covering `t`, not "the first frame". Every scene names its own
 // timestamp so the same bytes come out on every run.
-static bool frame_at(const char* name, VdTick t, VdFrame* out) {
+static bool frame_at_with_info(const char* name, VdTick t, VdFrame* out,
+                               VdProbeInfo* info) {
   VdDecoderOptions options = vd_decoder_default_options();
   int32_t result = 0;
   VdDecoder* d = vd_decoder_open(fixture(name), options, &result);
@@ -320,6 +321,7 @@ static bool frame_at(const char* name, VdTick t, VdFrame* out) {
     fprintf(stderr, "FAIL could not open %s (%d)\n", name, result);
     return false;
   }
+  if (info) vd_decoder_info(d, info);
   const bool ok = vd_decoder_frame_at(d, t, out) == VD_OK;
   if (!ok) {
     vd_failures++;
@@ -328,6 +330,10 @@ static bool frame_at(const char* name, VdTick t, VdFrame* out) {
   }
   vd_decoder_close(d);
   return ok;
+}
+
+static bool frame_at(const char* name, VdTick t, VdFrame* out) {
+  return frame_at_with_info(name, t, out, NULL);
 }
 
 static VdLayer layer_of(const VdFrame* frame, VdFitMode fit, float opacity) {
@@ -486,6 +492,37 @@ static void scene_picture_in_picture(void) {
   vd_frame_release(&background);
 }
 
+// A clip shot upright, in a landscape project, with the bars filled — which is
+// what happens the first time anyone drops a phone video into a 16:9 timeline,
+// and so the single most-seen frame in this file.
+//
+// It is here because rotation and blur fill meet, and nothing else checks that
+// they do. The point tests can say a quarter turn moves the bars to the sides
+// and that the bars are not black; only a whole frame can say the backdrop
+// behind a *turned* picture is the turned picture — a blur pass that sampled
+// the source in its coded orientation would fill the pillars with a sideways
+// wash and look, at a glance, entirely convincing.
+static void scene_upright_clip_blur_filled(void) {
+  VdFrame frame;
+  VdProbeInfo info;
+  if (!frame_at_with_info("rotated_cw90.mp4", TICK_FRAME_10, &frame, &info)) {
+    return;
+  }
+  VD_CHECK_EQ(info.rotation_degrees, 90);
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    // Read from the file rather than written here: the golden is then a
+    // picture of what the container asked for, not of what the test asked for.
+    layer.rotation_degrees = info.rotation_degrees;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_golden(c, "upright_clip_blur_filled");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
 // Crop, scale, rotation and flip at once. Each of these has a point test of
 // its own; what none of them covers is the *order*, which the header pins down
 // and which nothing would notice changing — a rotation applied before the fit
@@ -556,6 +593,7 @@ int main(void) {
   test_the_harness_round_trips();
   scene_pattern_contain();
   scene_pattern_blur_fill();
+  scene_upright_clip_blur_filled();
   scene_picture_in_picture();
   scene_transform_stack();
   scene_three_layer_blend();

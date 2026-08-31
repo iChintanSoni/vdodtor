@@ -60,6 +60,7 @@ Map<String, Object?> _assetToJson(MediaAsset a) => {
         'frameRate': a.probe.frameRate.toString(),
         'variableFrameRate': a.probe.variableFrameRate,
         'rotationDegrees': a.probe.rotationDegrees,
+        'pixelAspect': a.probe.pixelAspect.toString(),
         'hasVideo': a.probe.hasVideo,
         'hasAudio': a.probe.hasAudio,
         'audioChannels': a.probe.audioChannels,
@@ -265,6 +266,11 @@ MediaAsset _assetFromJson(Map<String, Object?> json, String at) {
       frameRate: _rational(probeJson, 'frameRate', '$at.probe.frameRate'),
       variableFrameRate: _bool(probeJson, 'variableFrameRate', false),
       rotationDegrees: _int(probeJson, 'rotationDegrees', '$at.probe.rotation'),
+      // Absent in projects written before sample aspect was carried, and
+      // square is what those files were being drawn as anyway.
+      pixelAspect: probeJson.containsKey('pixelAspect')
+          ? _rational(probeJson, 'pixelAspect', '$at.probe.pixelAspect')
+          : Rational.one,
       hasVideo: _bool(probeJson, 'hasVideo', false),
       hasAudio: _bool(probeJson, 'hasAudio', false),
       audioChannels: _int(probeJson, 'audioChannels', '$at.probe.audioChannels'),

@@ -343,6 +343,108 @@ static void test_variable_frame_rate_source(void) {
   vd_decoder_close(d);
 }
 
+// vfr_bursts.mp4: eleven frames on the 60 fps grid, in bursts separated by
+// holds of half a second. A sixtieth of a second is 2000 ticks.
+static const VdTick VFR_BURST_PTS[] = {0,      2000,   4000,   60000,
+                                       62000,  120000, 180000, 182000,
+                                       184000, 186000, 238000};
+#define VFR_BURST_COUNT \
+  ((int)(sizeof(VFR_BURST_PTS) / sizeof(VFR_BURST_PTS[0])))
+
+// The frame the source itself says is on screen at `t`: the last one to have
+// started. This is the whole definition, and the test below is only ever
+// asking whether the decoder agrees with it.
+static VdTick vfr_burst_expected(VdTick t) {
+  VdTick best = VFR_BURST_PTS[0];
+  for (int i = 0; i < VFR_BURST_COUNT; i++) {
+    if (VFR_BURST_PTS[i] <= t) best = VFR_BURST_PTS[i];
+  }
+  return best;
+}
+
+// The one that matters for variable-rate sources, and the one that was
+// missing: a frame is on screen until the *next* frame starts, whatever
+// duration the container claims for it.
+//
+// Before this was true the decoder read those claims literally, and on this
+// fixture that showed the frame from 0.5 s at 0.07 s — half a second of the
+// future, on screen, for fourteen project frames — and then swallowed two
+// frames whose time a neighbour's duration had claimed. The claims are not
+// even wrong by accident: muxers write per-frame durations in decode order,
+// so with B-frames they simply land on the wrong frames.
+static void test_a_frame_is_on_screen_until_the_next_one(void) {
+  VdDecoder* d = open_fixture("vfr_bursts.mp4", 1);
+  if (!d) return;
+
+  // Played at 30 fps, which is what "normalised to the project timebase"
+  // means from the outside: the project asks on its own grid, not the file's.
+  VdTick previous = -1;
+  for (int i = 0; i < 63; i++) {
+    const VdTick t = (VdTick)i * TICKS_PER_FRAME;
+    VdFrame frame;
+    VD_CHECK_EQ(vd_decoder_frame_at(d, t, &frame), VD_OK);
+    VD_CHECK_EQ(frame.pts, vfr_burst_expected(t));
+    VD_CHECK(frame.pts <= t);          // never a frame from the future
+    VD_CHECK(frame.pts >= previous);   // and never one from the past
+    previous = frame.pts;
+    vd_frame_release(&frame);
+  }
+
+  vd_decoder_close(d);
+}
+
+// The smallest cache there is still answers correctly, on the source where
+// answering needs two frames at once. A walk holds the frame that covers the
+// time and the one that ends its interval, and the eviction that would break
+// this is the one that throws away the answer to make room for its proof.
+static void test_a_tiny_cache_still_answers_correctly(void) {
+  VdDecoderOptions options = vd_decoder_default_options();
+  options.cache_capacity = 1;  // clamped up; one could not work
+  int32_t result = 0;
+  VdDecoder* d = vd_decoder_open(fixture("vfr_bursts.mp4"), options, &result);
+  VD_CHECK(d != NULL);
+  if (!d) return;
+
+  for (int i = 0; i < 63; i++) {
+    const VdTick t = (VdTick)i * TICKS_PER_FRAME;
+    VdFrame frame;
+    VD_CHECK_EQ(vd_decoder_frame_at(d, t, &frame), VD_OK);
+    VD_CHECK_EQ(frame.pts, vfr_burst_expected(t));
+    vd_frame_release(&frame);
+  }
+
+  vd_decoder_close(d);
+}
+
+// The same answers by seeking as by walking. A scrub arrives at a time from
+// wherever it happens to be, and a decoder that agrees with itself only when
+// asked in order would put a different frame on screen for the same tick
+// depending on which way the playhead came from.
+static void test_irregular_timestamps_answer_the_same_from_any_direction(void) {
+  VdDecoder* d = open_fixture("vfr_bursts.mp4", 1);
+  if (!d) return;
+
+  for (int i = 62; i >= 0; i--) {
+    const VdTick t = (VdTick)i * TICKS_PER_FRAME;
+    VdFrame frame;
+    VD_CHECK_EQ(vd_decoder_frame_at(d, t, &frame), VD_OK);
+    VD_CHECK_EQ(frame.pts, vfr_burst_expected(t));
+    vd_frame_release(&frame);
+  }
+
+  // And every frame the file holds is reachable, including the two a
+  // sixtieth apart inside a burst, which is the case a decoder that trusted
+  // durations skipped entirely.
+  for (int i = 0; i < VFR_BURST_COUNT; i++) {
+    VdFrame frame;
+    VD_CHECK_EQ(vd_decoder_frame_at(d, VFR_BURST_PTS[i], &frame), VD_OK);
+    VD_CHECK_EQ(frame.pts, VFR_BURST_PTS[i]);
+    vd_frame_release(&frame);
+  }
+
+  vd_decoder_close(d);
+}
+
 static void test_rotated_source_reports_coded_size(void) {
   VdDecoder* d = open_fixture("rotated_cw90.mp4", 1);
   if (!d) return;
@@ -441,6 +543,9 @@ int main(void) {
   test_keyframe_index();
   test_software_path_agrees_with_hardware();
   test_variable_frame_rate_source();
+  test_a_frame_is_on_screen_until_the_next_one();
+  test_irregular_timestamps_answer_the_same_from_any_direction();
+  test_a_tiny_cache_still_answers_correctly();
   test_rotated_source_reports_coded_size();
   test_a_long_scrub_does_not_grow();
   test_many_open_close_cycles();

@@ -62,6 +62,13 @@ typedef struct {
   VdPixelFormat format;
 
   // The presentation interval this frame covers: [pts, pts + duration).
+  //
+  // `duration` runs to the presentation time of the frame that follows, which
+  // is not always what the container claims — muxers write per-frame durations
+  // in decode order, so with B-frames they land on the wrong frames, and on a
+  // variable-rate source the difference is frames from the future rather than
+  // a rounding error. The last frame of a source is the exception: nothing
+  // follows it, so it carries the nominal duration and queries past it clamp.
   VdTick  pts;
   VdTick  duration;
 

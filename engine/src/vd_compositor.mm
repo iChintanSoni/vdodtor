@@ -392,18 +392,25 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       const int32_t src_w = (int32_t)CVPixelBufferGetWidth(buffer);
       const int32_t src_h = (int32_t)CVPixelBufferGetHeight(buffer);
       const int32_t turns = ((layer.rotation_degrees % 360) + 360) % 360 / 90;
-      // Rotation changes what the viewer sees, so the fit is computed against
-      // the rotated dimensions.
-      const int32_t disp_w = (turns % 2 == 0) ? src_w : src_h;
-      const int32_t disp_h = (turns % 2 == 0) ? src_h : src_w;
+
+      // The size the source asks to be shown at: coded pixels widened by the
+      // sample aspect, and then turned, because a quarter turn puts the
+      // stretch on the other axis. Rotation changes what the viewer sees, so
+      // the fit is computed against this rather than against the coded size.
+      double wide = (double)src_w;
+      if (layer.pixel_aspect.num > 0 && layer.pixel_aspect.den > 0) {
+        wide *= (double)layer.pixel_aspect.num / (double)layer.pixel_aspect.den;
+      }
+      const double disp_w = (turns % 2 == 0) ? wide : (double)src_h;
+      const double disp_h = (turns % 2 == 0) ? (double)src_h : wide;
 
       const VdTransform transform = normalise(layer.transform);
 
       // Cropping changes the aspect ratio, so it has to be known before the
       // fit is computed — fitting first would letterbox the part that was
       // about to be thrown away.
-      const int32_t crop_w = (int32_t)((double)disp_w * transform.crop_w + 0.5);
-      const int32_t crop_h = (int32_t)((double)disp_h * transform.crop_h + 0.5);
+      const int32_t crop_w = (int32_t)(disp_w * transform.crop_w + 0.5);
+      const int32_t crop_h = (int32_t)(disp_h * transform.crop_h + 0.5);
 
       // Blur fill shows the whole frame, like contain, and fills what is left
       // over with a blurred copy instead of black.

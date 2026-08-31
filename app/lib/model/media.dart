@@ -14,6 +14,7 @@ final class MediaProbe {
     this.frameRate = Rational.one,
     this.variableFrameRate = false,
     this.rotationDegrees = 0,
+    this.pixelAspect = Rational.one,
     this.hasVideo = false,
     this.hasAudio = false,
     this.audioChannels = 0,
@@ -39,6 +40,11 @@ final class MediaProbe {
   /// Display rotation from container metadata: 0, 90, 180 or 270.
   final int rotationDegrees;
 
+  /// Sample aspect: how much wider one coded pixel is than it is tall. 1 for
+  /// the square pixels almost everything shot this century has, 2 for the
+  /// anamorphic footage that is the reason this is not assumed.
+  final Rational pixelAspect;
+
   final bool hasVideo;
   final bool hasAudio;
   final int audioChannels;
@@ -46,9 +52,18 @@ final class MediaProbe {
   final String? videoCodec;
   final String? audioCodec;
 
-  /// Dimensions as the viewer sees them, with rotation applied.
-  int get displayWidth => rotationDegrees % 180 == 0 ? width : height;
-  int get displayHeight => rotationDegrees % 180 == 0 ? height : width;
+  /// Dimensions as the viewer sees them: coded pixels widened by
+  /// [pixelAspect], then turned by [rotationDegrees]. Rotation comes second
+  /// because a quarter turn puts the stretch on the other axis.
+  ///
+  /// This is the size the engine lays the clip out at, so it is the size to
+  /// put next to the thumbnail — a bin that labels a clip with its coded size
+  /// and draws it at its display size is telling two stories about one file.
+  int get displayWidth => rotationDegrees % 180 == 0 ? _widened : height;
+  int get displayHeight => rotationDegrees % 180 == 0 ? height : _widened;
+
+  int get _widened =>
+      (width * pixelAspect.numerator / pixelAspect.denominator).round();
 
   MediaProbe copyWith({
     MediaKind? kind,
@@ -58,6 +73,7 @@ final class MediaProbe {
     Rational? frameRate,
     bool? variableFrameRate,
     int? rotationDegrees,
+    Rational? pixelAspect,
     bool? hasVideo,
     bool? hasAudio,
     int? audioChannels,
@@ -73,6 +89,7 @@ final class MediaProbe {
         frameRate: frameRate ?? this.frameRate,
         variableFrameRate: variableFrameRate ?? this.variableFrameRate,
         rotationDegrees: rotationDegrees ?? this.rotationDegrees,
+        pixelAspect: pixelAspect ?? this.pixelAspect,
         hasVideo: hasVideo ?? this.hasVideo,
         hasAudio: hasAudio ?? this.hasAudio,
         audioChannels: audioChannels ?? this.audioChannels,
@@ -91,6 +108,7 @@ final class MediaProbe {
       other.frameRate == frameRate &&
       other.variableFrameRate == variableFrameRate &&
       other.rotationDegrees == rotationDegrees &&
+      other.pixelAspect == pixelAspect &&
       other.hasVideo == hasVideo &&
       other.hasAudio == hasAudio &&
       other.audioChannels == audioChannels &&
@@ -100,8 +118,8 @@ final class MediaProbe {
 
   @override
   int get hashCode => Object.hash(kind, duration.raw, width, height, frameRate,
-      variableFrameRate, rotationDegrees, hasVideo, hasAudio, audioChannels,
-      audioSampleRate, videoCodec, audioCodec);
+      variableFrameRate, rotationDegrees, pixelAspect, hasVideo, hasAudio,
+      audioChannels, audioSampleRate, videoCodec, audioCodec);
 }
 
 /// A file the project refers to. The project never copies media; it points at
