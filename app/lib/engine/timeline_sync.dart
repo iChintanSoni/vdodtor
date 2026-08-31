@@ -1,6 +1,7 @@
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../model/clip.dart';
+import '../model/media.dart';
 import '../model/project.dart';
 
 /// Turns the document into the flat render list the engine composites from.
@@ -65,6 +66,11 @@ EngineTimeline engineTimelineFor(Project project) {
       final transform = clip.transform;
       clips.add(EngineClip(
         path: asset.path,
+        // How the engine opens the file, not what it does with it afterwards:
+        // an animated overlay is decoded whole and looped rather than seeked
+        // in. The document already knows, so the engine is told rather than
+        // left probing a path it was handed. See vd_sticker.h.
+        sticker: asset.probe.kind == MediaKind.sticker,
         startTicks: clip.start.raw,
         durationTicks: clip.duration.raw,
         sourceInTicks: clip.sourceIn.raw,

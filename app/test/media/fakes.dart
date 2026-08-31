@@ -104,6 +104,20 @@ MediaProbe imageProbe() => const MediaProbe(
       hasVideo: true,
     );
 
+/// An animated overlay. A picture, no sound, and a length that is one loop
+/// rather than a limit — which is what puts it on an overlay lane at the
+/// still-image length rather than on the main track at its own.
+MediaProbe stickerProbe({double seconds = 1}) => MediaProbe(
+      kind: MediaKind.sticker,
+      duration:
+          Timebase.project.fromSeconds(Rational((seconds * 1000).round(), 1000)),
+      width: 480,
+      height: 480,
+      frameRate: FrameRates.fps30,
+      hasVideo: true,
+      videoCodec: 'gif',
+    );
+
 /// A container that opened but holds nothing to play — the failure mode that
 /// is not a failure to open.
 MediaProbe nothingPlayableProbe() => const MediaProbe(

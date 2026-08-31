@@ -1,7 +1,30 @@
 import 'time.dart';
 
 /// What a media file can contribute to the timeline.
-enum MediaKind { video, audio, image }
+///
+/// Serialised by name, so these may be added to but not renamed.
+enum MediaKind {
+  video,
+  audio,
+  image,
+
+  /// An animated overlay: a GIF, an animated WebP, an APNG. A file with a
+  /// picture, like [video], and with no length of its own, like [image] —
+  /// because it loops, so a one-second sticker fits a ten-second clip and the
+  /// only thing bounding it is the clip.
+  ///
+  /// Its own kind rather than a flavour of [video] because the engine opens it
+  /// differently: decoded whole and looped instead of seeked in, and handed to
+  /// the compositor as premultiplied BGRA instead of YCbCr. See vd_sticker.h.
+  sticker;
+
+  /// True for the kinds that put something on screen.
+  bool get isVisual => this != MediaKind.audio;
+
+  /// True for the kinds with no length of their own, which the timeline may
+  /// therefore stretch as far as anybody drags them.
+  bool get isEndless => this == MediaKind.image || this == MediaKind.sticker;
+}
 
 /// What probing a file told us about it. Filled by the engine's media probe;
 /// cached in the project so opening a file does not re-probe every launch.
@@ -64,6 +87,40 @@ final class MediaProbe {
 
   int get _widened =>
       (width * pixelAspect.numerator / pixelAspect.denominator).round();
+
+  /// The codecs that mean "animated overlay" rather than "video".
+  ///
+  /// **This list is written twice** — here and in `vd_sticker_is_sticker_codec`
+  /// in `engine/src/vd_sticker.c` — and the same table is asserted in both test
+  /// suites, exactly as `vd_time.c` and `time.dart` are. The engine needs it
+  /// because a second frontend would have to classify a file without Dart; the
+  /// app needs it because a project loaded from disk is classified with no
+  /// engine alive, and a widget test has none.
+  ///
+  /// The *codec* rather than the extension, because a `.webp` may hold either
+  /// a still or an animation and the container is the thing that knows.
+  /// `webp` covers both, deliberately: a still WebP is a one-frame animation,
+  /// and going down the sticker path is how it keeps its alpha.
+  static const stickerCodecs = {'gif', 'apng', 'webp', 'webp_anim'};
+
+  /// What kind of thing a file with these facts is.
+  ///
+  /// One rule in one place, called both by the probe that first reads a file
+  /// and by the decoder that reads a project back — so a GIF imported by a
+  /// version that had never heard of stickers opens as one, with no migration
+  /// step and nothing to remember to run.
+  static MediaKind kindFor({
+    required bool hasVideo,
+    required Tick duration,
+    String? videoCodec,
+  }) {
+    if (!hasVideo) return MediaKind.audio;
+    if (videoCodec != null && stickerCodecs.contains(videoCodec)) {
+      return MediaKind.sticker;
+    }
+    // No duration and a picture is a still: one frame, and nothing to seek.
+    return duration.raw == 0 ? MediaKind.image : MediaKind.video;
+  }
 
   MediaProbe copyWith({
     MediaKind? kind,

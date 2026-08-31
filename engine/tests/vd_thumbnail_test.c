@@ -157,6 +157,48 @@ static void test_time_past_the_end_clamps(void) {
   vd_thumbnail_free(&t);
 }
 
+// An animated overlay gets a thumbnail too, and it has to: vd_decoder cannot
+// open one at all — it exports VideoToolbox or YUV420P and a GIF is neither —
+// so without a branch of its own every sticker in the bin is a blank
+// rectangle. The bug this catches is silent and looks like a slow import.
+static void test_a_sticker_gets_a_thumbnail(void) {
+  VdThumbnail t;
+  VD_CHECK_EQ(vd_thumbnail_render(fixture("sticker_4up.gif"), 0, 64, 64, &t),
+              VD_OK);
+  VD_CHECK_EQ(t.width, 16);
+  VD_CHECK_EQ(t.height, 16);
+  VD_CHECK(t.pixels != NULL);
+
+  // The first frame is red, which is how this tells a picture apart from an
+  // empty buffer that also happens to be the right size.
+  if (t.pixels) {
+    const uint8_t* middle = t.pixels + ((size_t)8 * 16 + 8) * 4;
+    VD_CHECK(middle[2] > 150);  // R
+    VD_CHECK(middle[1] < 80);   // G
+    VD_CHECK(middle[0] < 80);   // B
+  }
+  vd_thumbnail_free(&t);
+
+  // And the time is a time, not a frame number: half a second in is the third
+  // frame, which is blue.
+  VD_CHECK_EQ(vd_thumbnail_render(fixture("sticker_4up.gif"),
+                                  VD_TICKS_PER_SECOND / 2, 64, 64, &t),
+              VD_OK);
+  if (t.pixels) {
+    const uint8_t* middle = t.pixels + ((size_t)8 * 16 + 8) * 4;
+    VD_CHECK(middle[0] > 150);  // B
+    VD_CHECK(middle[2] < 80);   // R
+  }
+  vd_thumbnail_free(&t);
+
+  // An APNG, through the same call and a different decoder.
+  VD_CHECK_EQ(vd_thumbnail_render(fixture("sticker_alpha.apng"), 0, 64, 64, &t),
+              VD_OK);
+  VD_CHECK_EQ(t.width, 16);
+  VD_CHECK(t.pixels != NULL);
+  vd_thumbnail_free(&t);
+}
+
 static void test_failures_leave_nothing_behind(void) {
   VdThumbnail t;
 
@@ -222,6 +264,7 @@ int main(void) {
   test_sample_aspect_is_applied_to_the_shape();
   test_colour_matches_the_compositor();
   test_time_past_the_end_clamps();
+  test_a_sticker_gets_a_thumbnail();
   test_failures_leave_nothing_behind();
   test_many_in_a_row();
   return VD_REPORT();

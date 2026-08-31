@@ -26,18 +26,29 @@ import '../ui/timeline/timeline_painter.dart';
 /// True when the app was launched to measure itself rather than to be used.
 bool get selfTestRequested => Platform.environment['VD_SELFTEST'] == '1';
 
+/// The project the self test owns, and the only one it may touch.
+const selfTestProjectName = 'Self test';
+
+/// True for the project the self test made for itself.
+///
+/// The self test *edits* the document it is given — it imports, it adds a
+/// caption, it puts a shape and a sticker on lanes it makes — so which project
+/// it is pointed at is not a detail. Gating on "the main track is empty" alone
+/// meant every project the user created by hand in a self-test build was
+/// filled with sample media, which reads as the editor inventing clips.
+bool isSelfTestProject(Project project) => project.name == selfTestProjectName;
+
 /// The self test measures the preview pipeline, which needs a document open,
 /// so it opens one: the same project every run, created on the first.
 Future<void> openSelfTestProject(Workspace workspace) async {
-  const name = 'Self test';
   for (final entry in workspace.projects) {
-    if (entry.exists && entry.name == name) {
+    if (entry.exists && entry.name == selfTestProjectName) {
       await workspace.openAt(entry.path);
       return;
     }
   }
   await workspace.create(
-    name: name,
+    name: selfTestProjectName,
     aspect: ProjectAspect.landscape16x9,
     frameRate: FrameRates.fps30,
   );
@@ -139,6 +150,9 @@ List<File> stageSampleMedia(Directory into) {
       // anything unattended, and a music bed on an audio lane is the shape
       // this milestone exits on.
       ...sampleMediaFiles(suffix: '.m4a'),
+      // And an animated overlay, which walks the third branch: an overlay lane
+      // the project does not have yet, made as part of the same edit.
+      ...sampleMediaFiles(suffix: '.gif'),
     ])
       source.copySync('${staged.path}/${source.uri.pathSegments.last}'),
   ];
@@ -617,6 +631,91 @@ Future<Clip?> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
   stdout.writeln('[selftest] caption: after 8 seeks, rasters='
       '${engine.stats.textRasters} (was ${drawn.textRasters})');
   return clip;
+}
+
+/// An animated overlay, imported the way a user would and then watched.
+///
+/// The engine's own tests check which frame is on screen when; what they
+/// cannot check is that a GIF gets there *through the app* — classified by its
+/// codec rather than its extension, placed on an overlay lane rather than
+/// repacked into the main one, and opened as a sticker rather than handed to a
+/// video decoder that cannot export a BGRA frame at all. The last of those
+/// fails silently, as a clip that renders as a gap.
+///
+/// It prints the frame counter before and after a scrub, which is the number
+/// that says the retiming is happening: a sticker should change frames at its
+/// own rate and not at the project's.
+Future<void> runStickerSelfTest(PreviewEngine engine, DocumentStore store,
+    TimelineController timeline) async {
+  final sticker = store.project.media.values
+      .where((a) => a.probe.kind == MediaKind.sticker)
+      .firstOrNull;
+  if (sticker == null) {
+    stdout.writeln('[selftest] sticker: none in the project');
+    return;
+  }
+
+  final clip = store.project.tracks
+      .expand((t) => t.clips)
+      .where((c) => c.mediaId == sticker.id)
+      .firstOrNull;
+  if (clip == null) {
+    stdout.writeln('[selftest] sticker: ${sticker.displayName} is in the bin '
+        'and not on the timeline');
+    return;
+  }
+  final track = store.project.trackOfClip(clip.id)!;
+  stdout.writeln('[selftest] sticker: ${sticker.displayName} '
+      'codec=${sticker.probe.videoCodec} '
+      '${sticker.probe.displayWidth}x${sticker.probe.displayHeight} '
+      'loop=${(sticker.probe.duration.raw / 120000).toStringAsFixed(2)}s '
+      'on ${track.name} (${track.kind.name}) for '
+      '${(clip.duration.raw / 120000).toStringAsFixed(2)}s');
+
+  final sent = engineTimelineFor(store.project)
+      .clips
+      .where((c) => c.sticker)
+      .toList();
+  stdout.writeln('[selftest] sticker: ${sent.length} reached the engine as '
+      'stickers');
+
+  // Over the middle of the shot rather than on black, so the dumped frame
+  // shows the overlay compositing and not just existing.
+  timeline.seekTo(clip.start);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_sticker_');
+  final before = engine.stats;
+  // Four frames across one loop of the animation: if the retiming works these
+  // are four different pictures, and if it does not they are all the first.
+  for (var i = 0; i < 4; i++) {
+    engine.seek(clip.start.raw + sticker.probe.duration.raw * i ~/ 4);
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    engine.dumpPng('${out.path}/frame_$i.png');
+  }
+  final scrubbed = engine.stats;
+  stdout.writeln('[selftest] sticker: 4 seeks across one loop put '
+      '${scrubbed.stickerFrames - before.stickerFrames} further frames on '
+      'screen, opens=${scrubbed.stickerOpens} '
+      'held=${(scrubbed.stickerBytes / 1024).round()} KiB');
+
+  // The ratio is the claim. Thirty renders across an animation that changes
+  // four times has to put four frames on screen, not thirty — which is what
+  // "retimed to the project's rate" means when nothing resamples anything.
+  final dense = engine.stats;
+  for (var i = 0; i < 30; i++) {
+    engine.seek(clip.start.raw + sticker.probe.duration.raw * i ~/ 30);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+  stdout.writeln('[selftest] sticker: 30 renders across the same loop cost '
+      '${engine.stats.stickerFrames - dense.stickerFrames} frame changes');
+
+  // And past the end of the animation, where it has to start again rather than
+  // freeze — which is what makes a one-second GIF usable on a longer clip.
+  engine.seek(clip.start.raw + sticker.probe.duration.raw * 2);
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/looped.png');
+  stdout.writeln('[selftest] sticker: frames in ${out.path}');
 }
 
 /// A shape on the timeline, drawn by the engine and dumped as a PNG.

@@ -5,6 +5,7 @@ import 'package:vdodtor/commands/document_store.dart';
 import 'package:vdodtor/media/file_access.dart';
 import 'package:vdodtor/media/media_import.dart';
 import 'package:vdodtor/model/ids.dart';
+import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/media.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/time.dart';
@@ -96,6 +97,106 @@ void main() {
 
       expect(store.project.mainTrack.clips.single.duration,
           secs(stillImageDuration.inSeconds));
+    });
+
+    test('an animated overlay goes on an overlay lane, not the main one',
+        () async {
+      // On the magnetic main lane a sticker would repack the footage around it
+      // and then composite underneath it, which is two surprises for one drop
+      // — where the thing somebody dropped a GIF to get is one *over* the shot.
+      final store = DocumentStore(blank());
+      final importer = importerFor({'/f/wave.gif': stickerProbe()});
+
+      final result = await importer.import(store, granted(['/f/wave.gif']));
+
+      expect(result.clipsPlaced, 1);
+      expect(store.project.mainTrack.clips, isEmpty);
+      final overlay = store.project.tracks
+          .firstWhere((t) => t.kind == TrackKind.overlay);
+      expect(overlay.clips.single.mediaId, result.added.single.id);
+    });
+
+    test('the overlay lane is made if there is not one, with the clip on it',
+        () async {
+      // A new project has no overlay lane, so the first sticker has to bring
+      // one — and the lane and the clip have to be *one* command, or undoing
+      // the clip leaves an empty lane behind that nobody asked for.
+      final store = DocumentStore(blank());
+      expect(store.project.tracks.where((t) => t.kind == TrackKind.overlay),
+          isEmpty);
+      final importer = importerFor({'/f/wave.gif': stickerProbe()});
+
+      await importer.import(store, granted(['/f/wave.gif']));
+      expect(store.project.tracks.where((t) => t.kind == TrackKind.overlay),
+          hasLength(1));
+
+      store.undo();
+      expect(store.project.tracks.where((t) => t.kind == TrackKind.overlay),
+          isEmpty);
+
+      // And the rest of the import comes back off with the presses after it,
+      // the way every other import does.
+      while (store.canUndo) {
+        store.undo();
+      }
+      expect(store.project.media, isEmpty);
+    });
+
+    test('a sticker lands contained, not blur-filled', () async {
+      // Blur-fill is the default every other clip gets, and on a sticker it
+      // paints a blurred copy of the overlay across the whole shot — hiding
+      // the picture it is an overlay on, and with it the transparency the
+      // format was chosen for.
+      final store = DocumentStore(blank());
+      final importer = importerFor({'/f/wave.gif': stickerProbe()});
+
+      await importer.import(store, granted(['/f/wave.gif']));
+
+      final overlay = store.project.tracks
+          .firstWhere((t) => t.kind == TrackKind.overlay);
+      expect(overlay.clips.single.transform.fit, ClipFit.contain);
+      expect(overlay.clips.single.transform.scale, lessThan(1.0));
+    });
+
+    test('a video still lands blur-filled', () async {
+      final store = DocumentStore(blank());
+      final importer = importerFor({'/f/a.mp4': videoProbe()});
+
+      await importer.import(store, granted(['/f/a.mp4']));
+
+      expect(store.project.mainTrack.clips.single.transform,
+          ClipTransform.identity);
+    });
+
+    test('a sticker gets a length rather than its own', () async {
+      // It loops, so one loop is not a length anybody is stuck with — and
+      // using it would make a half-second GIF a clip too short to see.
+      final store = DocumentStore(blank());
+      final importer =
+          importerFor({'/f/wave.gif': stickerProbe(seconds: 0.5)});
+
+      await importer.import(store, granted(['/f/wave.gif']));
+
+      final overlay = store.project.tracks
+          .firstWhere((t) => t.kind == TrackKind.overlay);
+      expect(overlay.clips.single.duration,
+          secs(stillImageDuration.inSeconds));
+    });
+
+    test('several stickers queue up on the lane rather than colliding',
+        () async {
+      final store = DocumentStore(blank());
+      final importer = importerFor({
+        '/f/a.gif': stickerProbe(),
+        '/f/b.gif': stickerProbe(),
+      });
+
+      await importer.import(store, granted(['/f/a.gif', '/f/b.gif']));
+
+      final overlay = store.project.tracks
+          .firstWhere((t) => t.kind == TrackKind.overlay);
+      expect(overlay.clips, hasLength(2));
+      expect(overlay.clips[0].end, overlay.clips[1].start);
     });
 
     test('clips land in the order the files were given', () async {

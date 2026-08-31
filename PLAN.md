@@ -16,8 +16,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
-> **M3 has started: the editor can put words on the picture, draw shapes beside them, and
-> make both arrive.** A caption is a clip with no
+> **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
+> animated stickers over them, and make them all arrive.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -33,6 +33,16 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > preset but the typewriter is the same pixels moved about, so an animated caption is laid
 > out **once** however much it moves; the typewriter redraws once per *character*, never
 > once per frame, because the caption cache is keyed on how much of it has been typed.
+>
+> **Stickers** are the third kind of layer and the first that comes out of a file the
+> engine does not decode like video: a GIF, an animated WebP or an APNG is decoded whole
+> at open and then costs nothing per frame, because it has no keyframes to seek to, its
+> alpha is the point of it, and it is small enough to hold. Retiming to the project's rate
+> falls out of asking by *time* rather than by frame number — nothing in `vd_sticker`
+> knows what rate the project runs at. It loops, so like a still image nothing bounds how
+> long it may be, and it lands on an overlay lane rather than in the magnetic main one.
+> Measured in the running app: opened once, and **thirty renders across one loop cost four
+> frame changes**.
 >
 > And it can now draw **shapes**: a rectangle, an ellipse, a line and an arrow, with a
 > fill, a stroke, a corner and a shadow — ⌘R at the playhead, on the lanes the captions
@@ -993,7 +1003,77 @@ start to finish without touching another editor; undo works through the whole se
       costs nothing per frame doing so.
 
 ### Stickers & GIFs
-- [ ] GIF / animated WebP / APNG decode → cached RGBA sequences, retimed to project fps
+- [x] GIF / animated WebP / APNG decode → cached RGBA sequences, retimed to project fps
+      — the third kind of layer, and the first one that is a *file* the engine
+      does not decode like video. `vd_sticker` is the opposite trade from
+      `vd_decoder`: all the work at open, none of it per frame. Three reasons,
+      and each one rules the decoder out rather than merely preferring not to
+      use it.
+      **It has no keyframes to seek to.** Every frame of a GIF is a patch on
+      the one before it, disposal method and all, so "seek to 3.4 s" means
+      decoding from the beginning whatever happens — and a decoder built around
+      seeking would do that on every scrub.
+      **The alpha is the point.** `vd_decoder` hands the compositor YCbCr and
+      refuses anything that is not VideoToolbox or YUV420P, so a GIF does not
+      merely look wrong through it, it produces no frame at all. A sticker
+      arrives as premultiplied BGRA — the same thing a caption and a shape
+      arrive as, through the same `VdLayer` — which is why an overlay
+      composites over the shot instead of being a rectangle with a picture
+      painted on it.
+      **It is small enough to hold.** A whole animation is a few megabytes of
+      RGBA, less than the frame cache a decoder would need to scrub it.
+      **Retiming to the project's rate falls out of asking by time**, which is
+      the part worth remembering. Each frame carries the interval it is on
+      screen for, in ticks, and a lookup finds the interval containing the
+      instant — so a 4 fps sticker shows each frame for fifteen frames at 60 fps
+      and for six at 24, and nothing resamples anything. Nothing in `vd_sticker`
+      knows the project's frame rate. `sticker_uneven.gif` is the fixture that
+      pins it: read at its nominal rate 0.4 s would be the second frame, and
+      read by time it is still the first, because the first frame's delay is
+      half a second.
+      **A sticker loops**, which is what makes a one-second GIF usable on a
+      ten-second clip — and therefore what makes it *endless* on the timeline,
+      like a still image: its own length is not a limit on it, so it lands at
+      the still-image length rather than at one loop and `maxDurationFor`
+      returns nothing at all.
+      **One buffer, not one per frame.** The frames live as one flat
+      allocation of premultiplied BGRA and the current one is copied into a
+      single IOSurface when it changes — a hundred-frame GIF would otherwise
+      spend a hundred IOSurfaces to show one. That copy is also the
+      measurement: `VdEngineStats::sticker_frames` ticks at the *sticker's*
+      rate, and thirty renders across a four-frame loop cost four.
+      **The budget scales rather than truncates.** An animation too big for its
+      64 MB is decoded *smaller*, never *shorter*: losing resolution on an
+      overlay is a compromise somebody might not notice, and losing the second
+      half of the animation is a bug they certainly would. The engine's own cap
+      is in bytes rather than in files, because a sticker's cost is memory and
+      not a file handle — a cap on the count would let one big one through
+      while turning a dozen small ones away.
+      **A sticker is decided by its codec**, and that list is written twice —
+      `vd_sticker_is_sticker_codec` and `MediaProbe.stickerCodecs` — with one
+      table asserted in both test suites, exactly as `vd_time.c` and `time.dart`
+      are. It has to be: the engine classifies a file with no Dart, and the app
+      classifies one with no engine, because a project is read back before
+      anything native is alive. The codec rather than the extension, because a
+      `.webp` may be either and the container is the thing that knows — and
+      because it means a GIF in a project written *before* this milestone opens
+      as a sticker with no migration step for anybody to forget to run.
+      **A sticker is an overlay, and lands like one.** On the magnetic main lane
+      it would repack the footage around it and then composite underneath it,
+      which is two surprises for one drop. It goes on an overlay lane, made in
+      the same command as the clip so undo cannot leave an empty one behind —
+      and *contained at two fifths*, because the default every other clip gets
+      is blur-fill, which would paint a blurred copy of the sticker across the
+      whole shot and hide the very picture it is an overlay on. That one was
+      found by looking at the frame rather than at the test.
+      Thumbnails needed a head of their own for the same reason the compositor
+      did: `vd_decoder` cannot open one of these at all, so without it every
+      sticker in the bin is a blank rectangle — a silent failure that looks
+      like a slow import.
+      Measured in the running app: a GIF imported through the real importer
+      lands on a lane made for it, opens **once**, holds 4 KiB, and **thirty
+      renders across one loop cost four frame changes**. Two seconds into a
+      one-second animation it is showing its first frame again, over the shot.
 
 ### Transitions
 - [ ] Cross-dissolve, slide/push, wipe, fade-to-black, fade-to-white; adjustable duration;

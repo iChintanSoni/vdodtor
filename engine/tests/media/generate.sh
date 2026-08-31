@@ -102,3 +102,58 @@ ffmpeg $common -f lavfi -i "color=c=0xC86400:size=320x240:rate=30:duration=1" \
 printf 'this is not a video\n' > not_media.txt
 
 ls -la
+
+# --- stickers ---------------------------------------------------------------
+# Animated overlays, which the engine decodes whole rather than seeking in.
+# Built from PNG frames through the image2 and concat demuxers because that is
+# the only way to say exactly how long each frame is on screen — and how long
+# each frame is on screen is the whole thing the sticker path has to get right.
+#
+# A tiny palette rather than the default: four solid colours need eight
+# entries, and the 256-entry table ffmpeg writes per frame otherwise makes a
+# 1 KB fixture 40 KB.
+mkdir -p .sticker_frames
+i=1
+for c in 0xC00000 0x00C000 0x0000C0 0xC0C000; do
+  ffmpeg $common -f lavfi -i "color=c=$c:size=16x16:d=1" -frames:v 1 \
+    ".sticker_frames/f$i.png"
+  i=$((i + 1))
+done
+# One palette for the whole animation — `stats_mode=full`, which is the
+# default — because a per-frame palette written to a single file leaves only
+# the last frame's colours and maps every frame onto them.
+ffmpeg $common -framerate 4 -i .sticker_frames/f%d.png \
+  -vf "palettegen=max_colors=8" -update 1 .sticker_frames/pal.png
+
+# Four frames, a quarter of a second each: red, green, blue, yellow.
+ffmpeg $common -framerate 4 -i .sticker_frames/f%d.png -i .sticker_frames/pal.png \
+  -lavfi "paletteuse" -loop 0 sticker_4up.gif
+
+# The same four colours with delays of 0.5, 0.25, 0.25 and whatever the muxer
+# gives the last one. This is the fixture that tells indexing by *time* apart
+# from indexing by frame number: at 0.4 s a sticker read at its nominal 4 fps
+# would be showing green, and this one is still red.
+{
+  echo "file 'f1.png'"; echo "duration 0.5"
+  echo "file 'f2.png'"; echo "duration 0.25"
+  echo "file 'f3.png'"; echo "duration 0.25"
+  echo "file 'f4.png'"
+} > .sticker_frames/uneven.txt
+ffmpeg $common -f concat -safe 0 -i .sticker_frames/uneven.txt \
+  -i .sticker_frames/pal.png -lavfi "paletteuse" -fps_mode vfr -loop 0 \
+  sticker_uneven.gif
+
+# An APNG with a real alpha channel — a red then a green square inside a
+# transparent border. GIF has one transparent colour and no partial alpha, so
+# it cannot be the fixture that checks a sticker composites over the picture
+# instead of over a black square.
+i=1
+for c in 0xC00000 0x00C000; do
+  ffmpeg $common -f lavfi -i "color=c=$c:size=8x8:d=1" -frames:v 1 \
+    -vf "format=rgba,pad=16:16:4:4:color=0x00000000@0x0" ".sticker_frames/a$i.png"
+  i=$((i + 1))
+done
+ffmpeg $common -framerate 2 -i .sticker_frames/a%d.png -plays 0 -f apng \
+  sticker_alpha.apng
+
+rm -rf .sticker_frames

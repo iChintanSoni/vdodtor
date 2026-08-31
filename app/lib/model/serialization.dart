@@ -391,6 +391,24 @@ Project projectFromJson(Map<String, Object?> json) {
   );
 }
 
+/// The kind a stored asset really is.
+///
+/// The stored value decides between video, audio and image — those are facts
+/// about the file that this version reads the same way the one that wrote them
+/// did. What it cannot decide is *sticker*, because a project written before
+/// that kind existed calls a GIF a video, so the codec beside it gets the last
+/// word. [MediaProbe.kindFor] holds the rule; this only says which questions
+/// to ask it.
+MediaKind _mediaKindFromJson(Map<String, Object?> json, String at) {
+  final stored = _enum(MediaKind.values, json, 'kind', '$at.kind');
+  final upgraded = MediaProbe.kindFor(
+    hasVideo: _bool(json, 'hasVideo', false),
+    duration: Tick(_int(json, 'duration', '$at.duration')),
+    videoCodec: json['videoCodec'] as String?,
+  );
+  return upgraded == MediaKind.sticker ? upgraded : stored;
+}
+
 MediaAsset _assetFromJson(Map<String, Object?> json, String at) {
   final probeJson = _map(json, 'probe', '$at.probe');
   return MediaAsset(
@@ -399,7 +417,12 @@ MediaAsset _assetFromJson(Map<String, Object?> json, String at) {
     displayName: _string(json, 'displayName', '$at.displayName'),
     bookmark: json['bookmark'] as String?,
     probe: MediaProbe(
-      kind: _enum(MediaKind.values, probeJson, 'kind', '$at.probe.kind'),
+      // Recomputed rather than believed, when the codec says the stored kind
+      // is out of date: a GIF imported by a version that had never heard of
+      // stickers was written down as video, and the codec beside it is enough
+      // to know better. One rule, in MediaProbe.kindFor, and no migration step
+      // for anybody to forget to run.
+      kind: _mediaKindFromJson(probeJson, '$at.probe'),
       duration: Tick(_int(probeJson, 'duration', '$at.probe.duration')),
       width: _int(probeJson, 'width', '$at.probe.width'),
       height: _int(probeJson, 'height', '$at.probe.height'),

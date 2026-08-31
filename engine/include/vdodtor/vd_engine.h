@@ -19,6 +19,7 @@
 #include "vdodtor/vd_anim.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_shape.h"
+#include "vdodtor/vd_sticker.h"
 #include "vdodtor/vd_text.h"
 #include "vdodtor/vd_time.h"
 
@@ -67,6 +68,16 @@ typedef struct {
   // cached on exactly the terms `text` is: a shape whose spec did not change
   // keeps the pixels it already had. See vd_shape.h.
   const VdShapeSpec* shape;
+
+  // True when `path` is an animated overlay — a GIF, an animated WebP, an
+  // APNG — rather than video. It is decoded whole and looped instead of being
+  // seeked in, which is a different enough thing to be a different module: see
+  // vd_sticker.h.
+  //
+  // The caller is told to say rather than the engine probing to find out, for
+  // the same reason `has_video` is: the document already knows, and a sticker
+  // should not cost a file open on every edit to establish what it is.
+  bool sticker;
 
   VdTick start;      // position on the timeline
   VdTick duration;   // length on the timeline
@@ -247,6 +258,19 @@ typedef struct {
   // an animation can invalidate per character, and folding a shape's into it
   // would blunt exactly the measurement text_rasters exists to make.
   int64_t shape_rasters;
+
+  // Times a sticker put a *different* frame on screen. This is what says the
+  // retiming is happening: a 4 fps sticker on a 60 fps timeline should tick
+  // this four times a second, not sixty. A stream of them at the project's
+  // rate means every frame is being copied again to show the same picture.
+  int64_t sticker_frames;
+
+  // Stickers decoded whole since the engine started, and what they are
+  // holding. An open is expensive and a byte is scarce, so both are worth
+  // watching: a count that climbs during playback means the cache is thrashing
+  // its budget, and the bytes are the budget it is thrashing.
+  int64_t sticker_opens;
+  int64_t sticker_bytes;
 } VdEngineStats;
 
 VD_EXPORT void vd_engine_stats(VdEngine* engine, VdEngineStats* out);

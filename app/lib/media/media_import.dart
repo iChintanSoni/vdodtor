@@ -70,11 +70,32 @@ const Set<String> importableExtensions = {
   '.mp3', '.m4a', '.aac', '.wav', '.aiff', '.aif', '.flac', '.ogg', '.opus',
   '.caf', //
   '.jpg', '.jpeg', '.png', '.heic', '.gif', '.webp', '.tiff', '.tif', '.bmp',
+  // An APNG is usually called .png, and is told apart from a still by its
+  // codec rather than by its name — but the explicit extension exists too and
+  // a drop that skipped it would be a file the editor can play perfectly well
+  // and would not look at.
+  '.apng',
 };
 
-/// How long a still image lasts when it lands on the timeline. A picture has
-/// no duration of its own, and something has to be picked; five seconds is
-/// long enough to read and short enough to trim down rather than up.
+/// Where an animated overlay lands: contained, and at a size that reads as an
+/// overlay rather than as a backdrop.
+///
+/// **Never blur-filled**, which is the default every other clip gets. Blur-fill
+/// exists to fill the bars beside a picture that does not reach the edges of
+/// the frame, and a sticker's "bars" are the transparency it was chosen for —
+/// so the default would paint a blurred copy of the sticker across the whole
+/// shot and hide the very thing it is an overlay on.
+///
+/// Contained alone would still fill the frame's height, because that is what
+/// containing a square in a landscape frame means. Two fifths of it is small
+/// enough to be an overlay and big enough to see, and everything after the
+/// first impression is a drag in the inspector.
+const stickerTransform = ClipTransform(fit: ClipFit.contain, scale: 0.4);
+
+/// How long a lengthless clip lasts when it lands on the timeline. A picture
+/// has no duration of its own and a sticker's own length is not a limit on it,
+/// so something has to be picked; five seconds is long enough to read and short
+/// enough to trim down rather than up.
 const Duration stillImageDuration = Duration(seconds: 5);
 
 /// Turns files the user handed over into media assets and clips on the
@@ -169,34 +190,74 @@ final class MediaImporter {
     );
   }
 
-  /// Appends a clip for [asset] to whichever track can hold it: anything with
-  /// a picture goes on the main track, and audio-only files go on the audio
-  /// track. Returns false when the project has no lane for it.
+  /// Appends a clip for [asset] to whichever track can hold it: video and
+  /// stills go on the main track, animated overlays on an overlay track, and
+  /// audio-only files on the audio track. Returns false when the project has
+  /// no lane for it and none may be made.
   ///
   /// Public because the media bin places assets that were imported in an
   /// earlier session, and it should do it exactly the way import does.
   bool place(DocumentStore store, MediaAsset asset) {
     final project = store.project;
-    final kind = asset.probe.hasVideo ? TrackKind.main : TrackKind.audio;
-    final track = _trackOfKind(project, kind);
-    if (track == null) return false;
+    // A sticker is an overlay, which is the whole reason it is worth telling
+    // apart from video. On the magnetic main lane it would repack the footage
+    // around it and then composite underneath it — two surprises for one drop
+    // — where the thing somebody dropped a GIF to get is one *over* the shot.
+    final kind = switch (asset.probe.kind) {
+      MediaKind.audio => TrackKind.audio,
+      MediaKind.sticker => TrackKind.overlay,
+      MediaKind.video || MediaKind.image => TrackKind.main,
+    };
 
-    final duration = asset.probe.duration.raw > 0
-        ? asset.probe.duration
-        : project.timebase.fromSeconds(
-            Rational(stillImageDuration.inMilliseconds, 1000));
+    var track = _trackOfKind(project, kind);
+    Track? created;
+    if (track == null) {
+      // Only overlays are missing from a new project, and a sticker with
+      // nowhere to land would be a drop that appeared to do nothing. The lane
+      // goes in with the clip as one command rather than as an AddTrack before
+      // it, so undoing the clip cannot leave an empty lane behind — the same
+      // thing InsertClips.newTracks does for the first caption in a project.
+      if (kind != TrackKind.overlay ||
+          !project.canAddTrackOfKind(TrackKind.overlay)) {
+        return false;
+      }
+      created = Track.of(
+        id: _ids.next('tr-'),
+        kind: TrackKind.overlay,
+        name: 'Overlay ${project.trackCountOfKind(TrackKind.overlay) + 1}',
+      );
+      track = created;
+    }
 
-    store.run(InsertClip(
-      track.id,
-      Clip(
-        id: _ids.next('c-'),
-        mediaId: asset.id,
-        // The main track is magnetic and appends whatever this says; the audio
-        // track is not, so it has to be told where the end is.
-        start: track.isMagnetic ? Tick.zero : track.duration,
-        duration: duration,
-        label: asset.displayName,
-      ),
+    // A sticker loops, so the length of one loop is not a length anybody is
+    // stuck with — and using it would make a half-second GIF a clip too short
+    // to see. It gets what every other lengthless thing gets.
+    final duration = asset.probe.kind.isEndless || asset.probe.duration.raw == 0
+        ? project.timebase
+            .fromSeconds(Rational(stillImageDuration.inMilliseconds, 1000))
+        : asset.probe.duration;
+
+    store.run(InsertClips(
+      [
+        (
+          trackId: track.id,
+          clip: Clip(
+            id: _ids.next('c-'),
+            mediaId: asset.id,
+            // The main track is magnetic and appends whatever this says; the
+            // others are not, so they have to be told where the end is.
+            start: track.isMagnetic ? Tick.zero : track.duration,
+            duration: duration,
+            label: asset.displayName,
+            transform: asset.probe.kind == MediaKind.sticker
+                ? stickerTransform
+                : ClipTransform.identity,
+          ),
+          index: null,
+        ),
+      ],
+      label: 'Import',
+      newTracks: created == null ? const [] : [created],
     ));
     return true;
   }

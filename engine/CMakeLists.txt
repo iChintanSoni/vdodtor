@@ -69,7 +69,8 @@ if(APPLE)
     VERBATIM COMMENT "Embedding vd_shaders.metallib")
 
   list(APPEND VD_EXTRA_SOURCES "${VD_METAL_EMBED}" src/vd_compositor.mm
-       src/vd_raster.c src/vd_text.mm src/vd_shape.c)
+       src/vd_raster.c src/vd_text.mm src/vd_shape.c
+       src/vd_sticker.c)
 endif()
 
 # --- engine -----------------------------------------------------------------

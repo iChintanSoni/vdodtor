@@ -113,7 +113,10 @@ class _EditorScreenState extends State<EditorScreen> {
         if (mounted) setState(() => _stats = _engine?.stats);
       });
 
-      if (selfTestRequested) {
+      // Its own project and no other. The passes below edit the document they
+      // are given, so a self-test build opening a project somebody made by
+      // hand must leave it exactly as they left it.
+      if (selfTestRequested && isSelfTestProject(_store.project)) {
         final library = File(widget.open.path).parent;
         if (_store.project.mainTrack.isEmpty) {
           await runImportSelfTest(_store,
@@ -144,6 +147,10 @@ class _EditorScreenState extends State<EditorScreen> {
         // things the engine draws, on the lanes they share, in the order they
         // composite.
         await runShapeSelfTest(engine, _store, timeline);
+        // Last of the drawn things, and the only one that came out of a file:
+        // it goes after the others so the frames it dumps show an overlay on
+        // top of a shot that already has a caption and a shape on it.
+        await runStickerSelfTest(engine, _store, timeline);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
