@@ -35,6 +35,31 @@ const _fadeDuration = 1000;
 const _fadeIn = 200;
 const _fadeOut = 400;
 
+/// A duck, as a table: full level, down to a quarter over 200 ticks, held for
+/// 400, and back up.
+///
+/// The engine computes this same shape in C — `vd_audio_automation_gain` — and
+/// `engine/tests/vd_audio_test.c` asserts on the identical numbers, for the
+/// reason the fade table exists and by the same mechanism.
+const _duck = <VolumePoint>[
+  VolumePoint(Tick(1000), 1),
+  VolumePoint(Tick(1200), 0.25),
+  VolumePoint(Tick(1600), 0.25),
+  VolumePoint(Tick(1800), 1),
+];
+
+const _automationTable = <({int at, double gain})>[
+  (at: 0, gain: 1), // before the first point, held flat at its value
+  (at: 1000, gain: 1), // on it
+  (at: 1100, gain: 0.625), // halfway down the ramp
+  (at: 1200, gain: 0.25), // the bottom
+  (at: 1400, gain: 0.25), // the floor of the duck
+  (at: 1600, gain: 0.25), // the last tick of the floor
+  (at: 1700, gain: 0.625), // halfway back up
+  (at: 1800, gain: 1), // on the last point
+  (at: 9999, gain: 1), // after them all, held flat — not ramped to unity
+];
+
 void main() {
   group('the value', () {
     test('a clip nobody touched is at unity', () {
@@ -119,6 +144,134 @@ void main() {
     });
   });
 
+  group('the volume line', () {
+    test('matches the table the engine tests', () {
+      for (final row in _automationTable) {
+        expect(
+          ClipAudio.automationAt(_duck, Tick(row.at)),
+          closeTo(row.gain, 0.0005),
+          reason: 'at ${row.at}',
+        );
+      }
+    });
+
+    test('no line at all is a flat one, and one point is a flat that', () {
+      expect(ClipAudio.automationAt(const [], const Tick(500)), 1);
+      const lone = [VolumePoint(Tick(500), 0.4)];
+      expect(ClipAudio.automationAt(lone, Tick.zero), 0.4);
+      expect(ClipAudio.automationAt(lone, const Tick(5000)), 0.4);
+    });
+
+    test('two points at the same tick are a step, not a division by zero', () {
+      const step = [
+        VolumePoint(Tick(0), 1),
+        VolumePoint(Tick(500), 1),
+        VolumePoint(Tick(500), 0),
+      ];
+      expect(ClipAudio.automationAt(step, const Tick(499)), greaterThan(0.99));
+      expect(ClipAudio.automationAt(step, const Tick(500)), 0);
+    });
+
+    test('gainAt folds the line in with the fader, mute and the fades', () {
+      const a = ClipAudio(volume: 0.5, points: _duck);
+      final clip = Clip(
+        id: 'a',
+        mediaId: 'm1',
+        start: secs(3),
+        duration: const Tick(4000),
+        audio: a,
+      );
+      // Half the fader, a quarter from the line.
+      expect(clip.gainAt(const Tick(1400)), closeTo(0.125, 1e-9));
+      expect(
+          clip.copyWith(audio: a.copyWith(muted: true)).gainAt(const Tick(1400)),
+          0);
+    });
+
+    test('the line is read at the source time, not the clip offset', () {
+      // The whole reason points are stored in the source's own time: a clip
+      // trimmed past the duck plays the level after it, not the level before.
+      const a = ClipAudio(points: _duck);
+      final head =
+          Clip(id: 'a', mediaId: 'm1', start: Tick.zero, duration: const Tick(4000),
+              audio: a);
+      final trimmed = head.trimHeadBy(const Tick(1400));
+      // 200 ticks into the trimmed clip is source tick 1600 — the floor.
+      expect(trimmed.gainAt(const Tick(200)), closeTo(0.25, 1e-9));
+      // The same offset on the untrimmed clip is still full level.
+      expect(head.gainAt(const Tick(200)), closeTo(1, 1e-9));
+    });
+
+    test('trimming a clip leaves the line alone entirely', () {
+      // Non-destructive, so trimming in and back out brings the duck back.
+      const a = ClipAudio(points: _duck);
+      final clip = Clip(
+        id: 'a',
+        mediaId: 'm1',
+        start: Tick.zero,
+        duration: const Tick(4000),
+        audio: a,
+      );
+      final tiny = clip.trimTailBy(const Tick(-3900));
+      expect(tiny.audio.points, _duck);
+      expect(tiny.trimTailBy(const Tick(3900)).audio.points, _duck);
+    });
+
+    test('adding a point keeps the list sorted, and replaces at the same tick',
+        () {
+      var a = ClipAudio.unity.withPoint(const Tick(500), 0.5);
+      a = a.withPoint(const Tick(100), 0.9);
+      a = a.withPoint(const Tick(900), 0.1);
+      expect(a.points.map((p) => p.sourceTime.raw), [100, 500, 900]);
+
+      a = a.withPoint(const Tick(500), 0.2);
+      expect(a.points, hasLength(3));
+      expect(a.points[1].value, 0.2);
+    });
+
+    test('a point cannot be added louder than the fader goes', () {
+      final a = ClipAudio.unity.withPoint(const Tick(0), 99);
+      expect(a.points.single.value, ClipAudio.maxVolume);
+    });
+
+    test('a moved point is clamped between its neighbours', () {
+      // Otherwise a drag reorders the list under itself and the point being
+      // dragged is suddenly a different one.
+      var a = ClipAudio.unity
+          .withPoint(const Tick(100), 1)
+          .withPoint(const Tick(500), 0.5)
+          .withPoint(const Tick(900), 1);
+
+      a = a.movePoint(1, sourceTime: const Tick(-9999));
+      expect(a.points[1].sourceTime.raw, 100);
+      a = a.movePoint(1, sourceTime: const Tick(9999));
+      expect(a.points[1].sourceTime.raw, 900);
+      expect(a.points.map((p) => p.sourceTime.raw), [100, 900, 900]);
+    });
+
+    test('moving or removing a point that is not there changes nothing', () {
+      // An index is a fact about a document, and undo can change one under
+      // the pointer still holding it.
+      final a = ClipAudio.unity.withPoint(const Tick(100), 0.5);
+      expect(identical(a.movePoint(7, value: 0.1), a), isTrue);
+      expect(identical(a.withoutPoint(-1), a), isTrue);
+      expect(a.withoutPoint(0).points, isEmpty);
+      expect(a.withoutPoint(0).hasAutomation, isFalse);
+    });
+
+    test('two clips with the same line are equal, and differ when it moves',
+        () {
+      expect(const ClipAudio(points: _duck), const ClipAudio(points: _duck));
+      expect(const ClipAudio(points: _duck).hashCode,
+          const ClipAudio(points: _duck).hashCode);
+      expect(const ClipAudio(points: _duck) == ClipAudio.unity, isFalse);
+      expect(
+          const ClipAudio(points: _duck) ==
+              const ClipAudio(points: _duck).movePoint(0, value: 0.5),
+          isFalse);
+    });
+  });
+
   group('persistence', () {
     Project projectWith(ClipAudio audio) {
       final p = emptyProject();
@@ -160,6 +313,45 @@ void main() {
       final back = projectFromJson(json);
       expect(back.clipById('a')!.audio.fadeIn.raw,
           lessThanOrEqualTo(secs(4).raw));
+    });
+
+    test('the volume line survives a save, in the source\'s own time', () {
+      const audio = ClipAudio(volume: 0.8, points: _duck);
+      final back = projectFromJson(projectToJson(projectWith(audio)));
+      expect(back.clipById('a')!.audio.points, _duck);
+      expect(back.clipById('a')!.audio, audio);
+    });
+
+    test('a file whose points are out of order is sorted on the way in', () {
+      // Sortedness is what every reader of the line assumes, and a hand-edited
+      // file is exactly where it stops being true.
+      final json = projectToJson(projectWith(ClipAudio.unity));
+      final tracks = json['tracks']! as List<Object?>;
+      final clip = ((tracks.first as Map<String, Object?>)['clips']!
+          as List<Object?>).first as Map<String, Object?>;
+      clip['audio'] = {
+        'volumePoints': [
+          {'t': 900, 'v': 1.0},
+          {'t': 100, 'v': 0.2},
+        ],
+      };
+      final back = projectFromJson(json);
+      expect(back.clipById('a')!.audio.points.map((p) => p.sourceTime.raw),
+          [100, 900]);
+    });
+
+    test('a point with no level is an error, not a point at unity', () {
+      final json = projectToJson(projectWith(ClipAudio.unity));
+      final tracks = json['tracks']! as List<Object?>;
+      final clip = ((tracks.first as Map<String, Object?>)['clips']!
+          as List<Object?>).first as Map<String, Object?>;
+      clip['audio'] = {
+        'volumePoints': [
+          {'t': 100},
+        ],
+      };
+      expect(() => projectFromJson(json),
+          throwsA(isA<ProjectDecodeException>()));
     });
 
     test('a fade written as a string is an error, not a silent zero', () {
@@ -238,6 +430,25 @@ void main() {
       expect(bed.gain, 0.25);
       expect(bed.fadeInTicks, secs(1).raw);
       expect(bed.fadeOutTicks, secs(2).raw);
+    });
+
+    test('the volume line crosses as points, not as a resolved gain', () {
+      // The mixer has to evaluate it per audio frame. Resolved here, once per
+      // edit, it would arrive as a staircase — the same argument as the fades.
+      final timeline = engineTimelineFor(
+          withMusic(audio: const ClipAudio(volume: 0.5, points: _duck)));
+      final bed =
+          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+      expect(bed.gain, 0.5);
+      expect(bed.volumePoints.map((p) => p.sourceTicks), [1000, 1200, 1600, 1800]);
+      expect(bed.volumePoints.map((p) => p.value), [1, 0.25, 0.25, 1]);
+    });
+
+    test('a clip with no line sends none', () {
+      final timeline = engineTimelineFor(withMusic());
+      final bed =
+          timeline.clips.firstWhere((c) => c.path.endsWith('music.m4a'));
+      expect(bed.volumePoints, isEmpty);
     });
 
     test('hiding a video lane leaves its sound playing', () {

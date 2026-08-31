@@ -171,6 +171,85 @@ void main() {
     expect(inked.first, closeTo(bandCentre, 3));
   });
 
+  /// The row in column [x] the volume line was drawn on: the one furthest from
+  /// the clip's cool fill towards the warm colour the line is painted in.
+  ///
+  /// Returns null when nothing there is warm, which is what "no line" looks
+  /// like — the waveform's mint and every clip colour are all bluer than they
+  /// are red.
+  int? volumeLineRow(Uint8List rgba, int x, int from, int to) {
+    var best = 0;
+    int? at;
+    for (var y = from + 2; y <= to - 2; y++) {
+      final pixel = pixelAt(rgba, x, y);
+      final warmth = ((pixel >> 16) & 0xff) - (pixel & 0xff);
+      if (warmth > best) {
+        best = warmth;
+        at = y;
+      }
+    }
+    return best > 40 ? at : null;
+  }
+
+  group('the volume line', () {
+    /// Ducked from full to a quarter between one second and two.
+    ClipAudio ducked() => ClipAudio(points: [
+          VolumePoint(secs(1), 1),
+          VolumePoint(secs(2), 0.25),
+        ]);
+
+    /// The column at [seconds] into a clip that starts at zero.
+    int columnAt(double seconds) =>
+        (TimelineGeometry.headerWidth + seconds * geometry.pxPerSecond).round();
+
+    test('an untouched clip nobody selected has no line on it', () async {
+      final cache = WaveformCache(analyzer: (path) async => steady());
+      addTearDown(cache.dispose);
+      final rgba = await render(withMusic(), cache);
+      expect(volumeLineRow(rgba, columnAt(1.5), bodyTop, bodyBottom), isNull,
+          reason: 'a line across every clip is a lot of ink for nothing');
+    });
+
+    test('a ducked clip is drawn with the line lower where it dips', () async {
+      final cache = WaveformCache(analyzer: (path) async => steady());
+      addTearDown(cache.dispose);
+      final rgba = await render(withMusic(audio: ducked()), cache);
+
+      final before = volumeLineRow(rgba, columnAt(0.5), bodyTop, bodyBottom);
+      final middle = volumeLineRow(rgba, columnAt(1.5), bodyTop, bodyBottom);
+      final after = volumeLineRow(rgba, columnAt(3), bodyTop, bodyBottom);
+
+      expect(before, isNotNull);
+      expect(middle, isNotNull);
+      expect(after, isNotNull);
+      // Down the screen is down in level, and the ramp is halfway there in
+      // the middle of it.
+      expect(middle!, greaterThan(before!));
+      expect(after!, greaterThan(middle));
+      expect(middle, closeTo((before + after) / 2, 2));
+    });
+
+    test('and the waveform under it is drawn shorter there', () async {
+      // The line is not decoration: the same gain draws the envelope, which
+      // is what makes a duck something you can see rather than only measure.
+      final cache = WaveformCache(analyzer: (path) async => steady());
+      addTearDown(cache.dispose);
+      final rgba = await render(withMusic(audio: ducked()), cache);
+
+      // The top half only. The line itself is ink in this band too, and it
+      // sits at or below the centre for every level at or under unity — so
+      // measuring the whole band would measure the line as well as the sound.
+      int reach(int x) {
+        final fill = pixelAt(rgba, x, bodyTop + 1);
+        final inked = inkedRows(rgba, x, bodyTop, bandCentre - 1, fill);
+        return inked.isEmpty ? 0 : bandCentre - inked.first;
+      }
+
+      expect(reach(columnAt(3)), lessThan(reach(columnAt(0.5)) / 2));
+      expect(reach(columnAt(3)), greaterThan(0));
+    });
+  });
+
   test('a video clip wears its waveform along the bottom', () async {
     final cache = WaveformCache(analyzer: (path) async => steady());
     addTearDown(cache.dispose);

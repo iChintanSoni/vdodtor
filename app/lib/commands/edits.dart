@@ -473,15 +473,32 @@ final class SplitClip extends EditCommand {
     final cut = Timebase.project.snapToFrame(at, project.format.frameRate);
     if (cut <= clip.start || cut >= clip.end) return project;
 
-    final head = clip.copyWith(duration: cut - clip.start);
+    // Both halves keep everything the clip had. A tail that came back at full
+    // volume, unfaded and untransformed would make splitting a destructive
+    // edit to properties the cut had nothing to do with.
+    //
+    // The fades are the one thing that has to be divided rather than copied:
+    // each half keeps the fade at the end it still has, because a fade in on
+    // the tail would be a ramp out of the middle of a continuous sound. The
+    // volume line is copied whole to both, and needs no dividing at all —
+    // being measured in the source, each half already reads the part of the
+    // curve its own window lands on.
+    final headDuration = cut - clip.start;
+    final tailDuration = clip.end - cut;
+    final head = clip.copyWith(
+      duration: headDuration,
+      audio: clip.audio.copyWith(fadeOut: Tick.zero).clampedTo(headDuration),
+    );
     final tail = Clip(
       id: newClipId,
       mediaId: clip.mediaId,
       start: cut,
-      duration: clip.end - cut,
+      duration: tailDuration,
       sourceIn: clip.sourceTimeAt(cut),
       label: clip.label,
       enabled: clip.enabled,
+      transform: clip.transform,
+      audio: clip.audio.copyWith(fadeIn: Tick.zero).clampedTo(tailDuration),
     );
 
     final index = track.indexOfClip(clipId);

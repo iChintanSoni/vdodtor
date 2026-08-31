@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/commands/command.dart';
 import 'package:vdodtor/commands/document_store.dart';
 import 'package:vdodtor/commands/edits.dart';
+import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/media.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/serialization.dart';
@@ -283,6 +284,48 @@ void main() {
       store.run(SplitClip('b', secs(3), newClipId: 'b2'));
       store.undo();
       expect(encodeProject(store.project), before);
+    });
+
+    test('both halves keep what the clip had', () {
+      // A tail that came back at full volume and untransformed would make a
+      // cut a destructive edit to properties it had nothing to do with.
+      const transform = ClipTransform(scale: 0.35, offsetX: 0.3);
+      const audio = ClipAudio(
+        volume: 0.6,
+        points: [VolumePoint(Tick(0), 1), VolumePoint(Tick(9999), 0.2)],
+      );
+      final store = DocumentStore(projectWithThreeClips());
+      store.run(SetClipTransform('b', transform));
+      store.run(SetClipAudio('b', audio));
+      store.run(SplitClip('b', secs(3), newClipId: 'b2'));
+
+      final head = store.project.clipById('b')!;
+      final tail = store.project.clipById('b2')!;
+      expect(tail.transform, transform);
+      expect(head.audio.volume, 0.6);
+      expect(tail.audio.volume, 0.6);
+      // The line is copied whole to both and needs no dividing: measured in
+      // the source, each half already reads the part its window lands on.
+      expect(tail.audio.points, audio.points);
+      expect(head.gainAt(head.duration - const Tick(1)),
+          closeTo(tail.gainAt(Tick.zero), 0.001),
+          reason: 'the level has to be continuous across the cut');
+    });
+
+    test('the fades go to the ends that still have them', () {
+      // A fade in on the tail would be a ramp out of the middle of a
+      // continuous sound.
+      final store = DocumentStore(projectWithThreeClips());
+      store.run(SetClipAudio(
+          'b', ClipAudio(fadeIn: secs(1), fadeOut: secs(1))));
+      store.run(SplitClip('b', secs(3), newClipId: 'b2'));
+
+      final head = store.project.clipById('b')!;
+      final tail = store.project.clipById('b2')!;
+      expect(head.audio.fadeIn, secs(1));
+      expect(head.audio.fadeOut, Tick.zero);
+      expect(tail.audio.fadeIn, Tick.zero);
+      expect(tail.audio.fadeOut, secs(1));
     });
   });
 

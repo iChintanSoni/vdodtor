@@ -11,7 +11,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
 > M2 has started: the timeline cuts, the compositor is pinned by golden frames, the
-> audio lanes make a sound, and the clips on them show what that sound looks like.**
+> audio lanes make a sound, the clips on them show what that sound looks like, and a
+> volume line on a clip can duck it.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -551,7 +552,76 @@ audio, scrub anywhere, quit and reopen with everything restored.
       `audio_steps.m4a` stepping from a hairline to a half band to a full one,
       `audio_only.m4a` a steady line the length of the clip, `cfr_30fps_stereo.mp4`
       wearing a quiet strip along its bottom, and the two silent files wearing nothing
-- [ ] Keyframed volume (manual ducking)
+- [x] Keyframed volume (manual ducking)
+      — a volume line on the clip, and one decision decides everything else:
+      **where a point is measured from.** Not from the head of the clip, from
+      the *source* — the coordinate `sourceIn` is already in. A duck is drawn
+      against a word, and the head of a clip is a thing a trim moves; anchored
+      there, trimming two seconds off the front would slide the whole curve two
+      seconds along the audio it was drawn for and leave the dip somewhere
+      nobody chose.
+      Everything awkward then disappears rather than needing code. A **trim**
+      is non-destructive: points outside the window are kept rather than swept
+      up, so trimming in and back out brings the duck back. A **split** copies
+      the line whole to both halves and divides nothing, because each half's
+      window already reads the part of the curve it lands on — the level is
+      continuous across the cut, and the test that says so compares the head's
+      last tick with the tail's first. A **copy** carries the curve because the
+      curve is part of the clip.
+      Fixing the split turned up something next door: `SplitClip` built its
+      tail with a fresh `Clip` and had never carried `transform` or `audio`
+      across at all, so cutting a picture-in-picture put the tail back at full
+      frame and cutting a quiet clip put it back at full volume. Both halves
+      keep everything now, with the fades the one thing divided rather than
+      copied — the head keeps its fade in and the tail its fade out, because a
+      fade in on the tail is a ramp out of the middle of a continuous sound.
+      The curve is **linear in amplitude**, like the fades and for the same
+      reason, and **held flat outside its outermost points** rather than ramped
+      back to unity — the first thing anyone does is drop one point and expect
+      everything before it to stay put. It **multiplies** the fader instead of
+      replacing it, so pulling the fader after drawing a duck moves the whole
+      curve rather than flattening it, and mute still wins over both. Two
+      points at the same tick are a step, not a division by zero.
+      `vd_audio_automation_gain` joins `vd_audio_fade_gain` as a function
+      written in two languages and asserted against one table, and the mixer
+      evaluates it **per audio frame** for the reason the fade is: a curve
+      stepped once per 1024-frame chunk is fifty small clicks. It walks the
+      points with a cursor rather than searching per frame, and the arithmetic
+      is one static function the cursor and the one-off lookup both call, so
+      the *search* exists twice and the *maths* does not. This is the first
+      thing on `VdTimelineClip` that is not a scalar; the array is copied on
+      `set_timeline` like `path` is, and a test frees the caller's array before
+      a single frame is decoded to prove it.
+      On screen the line is amber over the waveform, hidden until the clip
+      either carries a curve or is the one clip selected — a line across every
+      clip is a lot of ink for a control almost nobody is using. Level maps
+      linearly down the same band the waveform occupies, so unity is halfway
+      up; a scale that gave ducking more room would have to bend somewhere, and
+      a bent scale is one nobody can read a number off. **⌥-click** puts a
+      point down, ⌥-click on one takes it away, and a plain drag on one moves
+      it in time and level at once — points are a third kind of handle
+      alongside the trim ones, checked before them and told apart by height, so
+      a press at the same time but a different height still trims. Placing a
+      point and pulling it down is **one** undo entry, and a drag measures from
+      where the gesture began, so dragging back the way you came puts the point
+      back. The inspector counts the points, clears them, and adds one at the
+      playhead — ⌥-click on a waveform is not a gesture anyone guesses, so
+      there is a way in that does not need to be.
+      One rectangle moved to make this honest: the clip body and the strip its
+      sound is drawn in now come from `TimelineGeometry`, so what the eye grabs
+      and what the controller grabs cannot drift apart. A handle you can see
+      and cannot hit is worse than no handle.
+      39 new Dart tests and 5 new engine ones, including pixel tests that read
+      the drawn line's height column by column and confirm the waveform under
+      it shrinks where it dips.
+      Confirmed in the running editor, not only in tests: `VD_SELFTEST=1` puts
+      a duck on a real imported clip through the real command and prints the
+      envelope a tenth of a second at a time — **1.00 eight times, 0.84, 0.52,
+      0.20 for eleven, then 0.52, 0.84, 1.00** — reports what crossed to the
+      engine as four points at their source ticks rather than as a number, and
+      draws the timeline so the amber line and its four handles are something
+      to look at. The duck is left on the clip, so the play pass that follows
+      is playing it: **30.0 fps, 0 late frames, 0 underruns**
 - [ ] Rotation metadata honored; VFR sources normalized to project timebase
 - [ ] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge
 

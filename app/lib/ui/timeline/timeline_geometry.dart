@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show Rect;
 
 import '../../model/time.dart';
 
@@ -55,6 +56,48 @@ final class TimelineGeometry {
 
   double topOfTrack(int index) =>
       rulerHeight + index * (trackHeight + trackGap);
+
+  /// The rounded block a clip is drawn and grabbed as, on lane [laneIndex].
+  ///
+  /// Half a pixel of inset on each side, so two clips butted flush on a
+  /// magnetic track still read as two clips rather than one long one. Here
+  /// rather than in the painter because the pointer has to hit exactly what
+  /// the eye sees, and two copies of that rectangle is one copy too many.
+  Rect clipBody(Tick start, Tick end, int laneIndex) {
+    final top = topOfTrack(laneIndex);
+    return Rect.fromLTRB(xOfTick(start) + 0.5, top + 3, xOfTick(end) - 0.5,
+        top + trackHeight - 3);
+  }
+
+  /// The strip inside a clip's body where its sound is drawn: the waveform,
+  /// and the volume line over it.
+  ///
+  /// An audio lane gives the whole clip to it. A picture lane gives a strip
+  /// along the bottom, because what identifies a video clip is its name and
+  /// its sound is the thing you look for underneath.
+  static Rect audioBand(Rect body, {required bool wholeClip}) => wholeClip
+      ? body.deflate(5)
+      : Rect.fromLTRB(
+          body.left, body.bottom - body.height * 0.40, body.right,
+          body.bottom - 3);
+
+  /// Where a level sits inside [band]: 0 at the bottom, [maxValue] at the top,
+  /// so unity lands exactly halfway up.
+  ///
+  /// Linear in amplitude, on the same scale as the fader, for the reason the
+  /// fades are: the handle position means what it looks like it means. It does
+  /// spend half the travel above unity, where little of the work happens — a
+  /// scale that gave ducking more room would have to bend somewhere, and a
+  /// bent scale is one nobody can read a number off.
+  static double yOfLevel(Rect band, double value, double maxValue) =>
+      band.bottom - (value.clamp(0.0, maxValue) / maxValue) * band.height;
+
+  /// The inverse of [yOfLevel], clamped to the ends of the band.
+  static double levelAtY(Rect band, double y, double maxValue) {
+    if (band.height <= 0) return maxValue / 2;
+    final level = (band.bottom - y) / band.height * maxValue;
+    return level.clamp(0.0, maxValue);
+  }
 
   /// The lane at [y], or null for the ruler, the gaps between lanes, and the
   /// empty space below the last one.

@@ -13,6 +13,7 @@ export 'src/engine.dart'
         EngineStats,
         EngineTimeline,
         EngineTransform,
+        EngineVolumePoint,
         FitMode,
         PlaybackState,
         PreviewEngine;

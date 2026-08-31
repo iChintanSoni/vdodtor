@@ -143,6 +143,45 @@ final class ClipTransform {
           'rot $rotationDegrees opacity $opacity)';
 }
 
+/// One point on a clip's volume line.
+///
+/// [sourceTime] is in the *source's* own time — the coordinate [Clip.sourceIn]
+/// is measured in — and not an offset from the head of the clip. That is what
+/// keeps a duck on the word it was drawn for: trimming the head, splitting the
+/// clip or copying it elsewhere all move the window over the file, and
+/// automation anchored to the window would slide off the sound underneath it.
+///
+/// It also means a point can sit outside the clip that carries it. That is not
+/// junk to be swept up: trimming in and back out has to bring the automation
+/// back, or a trim would be a destructive edit to something the user never
+/// touched.
+@immutable
+final class VolumePoint {
+  const VolumePoint(this.sourceTime, this.value);
+
+  final Tick sourceTime;
+
+  /// Linear gain, on the same scale and with the same cap as
+  /// [ClipAudio.volume]. A multiplier on it rather than a replacement for it,
+  /// so the fader stays a trim over the whole curve.
+  final double value;
+
+  VolumePoint copyWith({Tick? sourceTime, double? value}) =>
+      VolumePoint(sourceTime ?? this.sourceTime, value ?? this.value);
+
+  @override
+  bool operator ==(Object other) =>
+      other is VolumePoint &&
+      other.sourceTime == sourceTime &&
+      other.value == value;
+
+  @override
+  int get hashCode => Object.hash(sourceTime.raw, value);
+
+  @override
+  String toString() => 'VolumePoint(${sourceTime.raw}, $value)';
+}
+
 /// How loud a clip is, and how it gets there.
 ///
 /// The video half of a clip is [ClipTransform]; this is the other half. Both
@@ -163,6 +202,7 @@ final class ClipAudio {
     this.fadeIn = Tick.zero,
     this.fadeOut = Tick.zero,
     this.muted = false,
+    this.points = const [],
   });
 
   /// A clip nobody has touched: full volume, no fades, audible. The default
@@ -184,6 +224,18 @@ final class ClipAudio {
   /// back, so mute cannot be spelled `volume = 0`.
   final bool muted;
 
+  /// The volume line: a curve of gain over the source, sorted by
+  /// [VolumePoint.sourceTime] and empty for almost every clip.
+  ///
+  /// This is where ducking lives. [volume] sets the level of the whole clip
+  /// and these bend it over time; the two multiply, so pulling the fader after
+  /// drawing a duck moves the whole curve rather than flattening it.
+  ///
+  /// Sortedness is an invariant every mutator here maintains and the decoder
+  /// restores. Nothing enforces it on a hand-built literal, which is what the
+  /// assert in [automationAt] is for.
+  final List<VolumePoint> points;
+
   /// +6 dB. Enough to rescue a quiet recording, short of enough to destroy
   /// one by accident.
   static const double maxVolume = 2;
@@ -192,22 +244,133 @@ final class ClipAudio {
 
   bool get hasFade => fadeIn.raw > 0 || fadeOut.raw > 0;
 
+  bool get hasAutomation => points.isNotEmpty;
+
   /// What [volume] actually amounts to once mute is taken into account.
   double get effectiveVolume => muted ? 0 : volume.clamp(0.0, maxVolume);
 
-  /// The multiplier at [offset] ticks into a clip [duration] long, fades and
-  /// volume and mute all together.
+  /// The multiplier at [offset] ticks into a clip [duration] long: volume,
+  /// mute, the fades and the volume line, all together.
   ///
-  /// The engine computes the same envelope in C — `vd_audio_fade_gain` in
-  /// `engine/src/vd_audio_renderer.c` — and the two are tested against the
-  /// same table. Change one and you must change the other.
+  /// [sourceIn] is the clip's own, because [points] are measured in the
+  /// source's time and this is given an offset into the clip. A caller that
+  /// leaves it out gets the fades and the fader and no automation, which is
+  /// the right answer for a clip that has none.
+  ///
+  /// The engine computes the same two envelopes in C — `vd_audio_fade_gain`
+  /// and `vd_audio_automation_gain` in `engine/src/vd_audio_renderer.c` — and
+  /// each pair is tested against the same table. Change one and you must
+  /// change the other.
   ///
   /// The ramps are linear in amplitude. Linear is not the most flattering
   /// curve for a long fade, but it is the one where the handle position means
   /// what it looks like it means, and a shaped curve is an option to add later
   /// rather than a default to guess at now.
-  double gainAt(Tick offset, Tick duration) =>
-      effectiveVolume * fadeShapeAt(offset, duration, fadeIn, fadeOut);
+  double gainAt(Tick offset, Tick duration, {Tick sourceIn = Tick.zero}) {
+    final shape = fadeShapeAt(offset, duration, fadeIn, fadeOut);
+    if (shape == 0 || points.isEmpty) return effectiveVolume * shape;
+    return effectiveVolume *
+        shape *
+        automationAt(points, Tick(sourceIn.raw + offset.raw));
+  }
+
+  /// The volume line alone, at a time in the *source*. 1 where there is no
+  /// line at all.
+  ///
+  /// Held flat outside the points rather than ramped to unity: a curve that
+  /// slid back to full volume before the first point would move audio the user
+  /// never touched, and the first thing anyone does is drop one point and
+  /// expect everything before it to stay put.
+  ///
+  /// Static, because the engine needs exactly this function and nothing
+  /// around it.
+  static double automationAt(List<VolumePoint> points, Tick sourceTime) {
+    assert(_isSorted(points), 'volume points are out of order: $points');
+    if (points.isEmpty) return 1;
+    if (sourceTime <= points.first.sourceTime) return points.first.value;
+    final last = points.last;
+    if (sourceTime >= last.sourceTime) return last.value;
+
+    for (var i = points.length - 1; i >= 0; i--) {
+      final a = points[i];
+      if (a.sourceTime > sourceTime) continue;
+      final b = points[i + 1];
+      final span = b.sourceTime.raw - a.sourceTime.raw;
+      // Two points at the same tick are a step, not a division by zero: the
+      // later one wins, so a level can change instantly where that is what
+      // was drawn.
+      if (span <= 0) return b.value;
+      final t = (sourceTime.raw - a.sourceTime.raw) / span;
+      return a.value + (b.value - a.value) * t;
+    }
+    return points.first.value;
+  }
+
+  static bool _isSorted(List<VolumePoint> points) {
+    for (var i = 1; i < points.length; i++) {
+      if (points[i].sourceTime < points[i - 1].sourceTime) return false;
+    }
+    return true;
+  }
+
+  /// The line with a point set at [sourceTime]. Replaces the point already
+  /// there, so ⌥-clicking the same spot twice does not stack two.
+  ClipAudio withPoint(Tick sourceTime, double value) {
+    final clamped = value.clamp(0.0, maxVolume);
+    final next = <VolumePoint>[];
+    var placed = false;
+    for (final p in points) {
+      if (!placed && p.sourceTime == sourceTime) {
+        next.add(VolumePoint(sourceTime, clamped));
+        placed = true;
+        continue;
+      }
+      if (!placed && p.sourceTime > sourceTime) {
+        next.add(VolumePoint(sourceTime, clamped));
+        placed = true;
+      }
+      next.add(p);
+    }
+    if (!placed) next.add(VolumePoint(sourceTime, clamped));
+    return copyWith(points: next);
+  }
+
+  /// The line without the point at [index]. Out of range is a no-op rather
+  /// than a throw: an index is a fact about a document that undo can change
+  /// underneath the pointer holding it.
+  ClipAudio withoutPoint(int index) {
+    if (index < 0 || index >= points.length) return this;
+    return copyWith(points: [
+      for (var i = 0; i < points.length; i++)
+        if (i != index) points[i],
+    ]);
+  }
+
+  /// Moves the point at [index], clamped between its neighbours so a drag
+  /// cannot reorder the list under itself. Landing exactly on a neighbour is
+  /// allowed, because that is how a step gets drawn.
+  ClipAudio movePoint(int index, {Tick? sourceTime, double? value}) {
+    if (index < 0 || index >= points.length) return this;
+    final current = points[index];
+    var time = sourceTime ?? current.sourceTime;
+    if (index > 0 && time < points[index - 1].sourceTime) {
+      time = points[index - 1].sourceTime;
+    }
+    if (index + 1 < points.length && time > points[index + 1].sourceTime) {
+      time = points[index + 1].sourceTime;
+    }
+    final next = VolumePoint(
+        time, (value ?? current.value).clamp(0.0, maxVolume));
+    if (next == current) return this;
+    return copyWith(points: [
+      for (var i = 0; i < points.length; i++)
+        if (i == index) next else points[i],
+    ]);
+  }
+
+  /// The same levels with the line taken away.
+  ClipAudio get withoutAutomation =>
+      points.isEmpty ? this : copyWith(points: const []);
 
   /// The fade envelope alone, without volume or mute. Static because the
   /// engine needs exactly this function and nothing around it.
@@ -261,12 +424,14 @@ final class ClipAudio {
     Tick? fadeIn,
     Tick? fadeOut,
     bool? muted,
+    List<VolumePoint>? points,
   }) =>
       ClipAudio(
         volume: volume ?? this.volume,
         fadeIn: fadeIn ?? this.fadeIn,
         fadeOut: fadeOut ?? this.fadeOut,
         muted: muted ?? this.muted,
+        points: points ?? this.points,
       );
 
   @override
@@ -275,16 +440,19 @@ final class ClipAudio {
       other.volume == volume &&
       other.fadeIn == fadeIn &&
       other.fadeOut == fadeOut &&
-      other.muted == muted;
+      other.muted == muted &&
+      listEquals(other.points, points);
 
   @override
-  int get hashCode => Object.hash(volume, fadeIn.raw, fadeOut.raw, muted);
+  int get hashCode => Object.hash(
+      volume, fadeIn.raw, fadeOut.raw, muted, Object.hashAll(points));
 
   @override
   String toString() => isUnity
       ? 'ClipAudio.unity'
       : 'ClipAudio(volume $volume${muted ? ' muted' : ''} '
-          'fade ${fadeIn.raw}/${fadeOut.raw})';
+          'fade ${fadeIn.raw}/${fadeOut.raw}'
+          '${points.isEmpty ? '' : ' ${points.length} points'})';
 }
 
 /// One piece of media placed on a track.
@@ -339,6 +507,12 @@ final class Clip {
   /// Maps a timeline instant to the corresponding instant in the source.
   /// Callers must have checked [span].contains first.
   Tick sourceTimeAt(Tick timelineTime) => sourceIn + (timelineTime - start);
+
+  /// How loud this clip is [offset] ticks in: the fader, mute, the fades and
+  /// the volume line together. The one place that knows the clip's own
+  /// [sourceIn], which the volume line is measured against.
+  double gainAt(Tick offset) =>
+      audio.gainAt(offset, duration, sourceIn: sourceIn);
 
   Clip copyWith({
     String? id,

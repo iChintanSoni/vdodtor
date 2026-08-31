@@ -6,7 +6,9 @@ import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../app/workspace.dart';
 import '../commands/document_store.dart';
+import '../commands/edits.dart';
 import '../engine/media_probe.dart';
+import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
 import '../media/peaks.dart';
@@ -16,6 +18,7 @@ import '../model/clip.dart';
 import '../model/media.dart';
 import '../model/project.dart';
 import '../model/time.dart';
+import '../model/track.dart';
 import '../ui/timeline/timeline_controller.dart';
 import '../ui/timeline/timeline_painter.dart';
 
@@ -301,6 +304,137 @@ Future<void> runWaveformSelfTest() async {
   await drawWaveformSelfTest(sample, peaks, directory);
 }
 
+/// The volume line, end to end: a duck put on a real clip with the real
+/// command, evaluated by the real model, and drawn by the real painter.
+///
+/// The mixer's side of this is measured in C, where the level of what comes
+/// out of it can actually be read — `engine/tests/vd_audio_test.c`. What only
+/// this can show is the rest of the chain: that a curve drawn on a document
+/// survives into the render list as points rather than as a resolved gain, and
+/// that the timeline draws the dip where the dip is.
+///
+/// The duck is left on the clip rather than undone, so the play pass that
+/// follows is playing a ducked timeline and anyone watching can hear it.
+Future<void> runVolumeLineSelfTest(DocumentStore store) async {
+  final target = _clipToDuck(store.project);
+  if (target == null) {
+    stdout.writeln('[selftest] volume line: nothing with sound to duck');
+    return;
+  }
+  final (:trackId, :clip) = target;
+  final asset = store.project.assetFor(clip)!;
+
+  // Full for the first third, a fifth through the middle, back up for the
+  // last: the shape of a duck under a voice-over, and the one a listener can
+  // recognise without a meter.
+  final third = Tick(clip.duration.raw ~/ 3);
+  final ramp = Tick(third.raw ~/ 4);
+  final points = [
+    VolumePoint(clip.sourceIn + third - ramp, 1),
+    VolumePoint(clip.sourceIn + third, 0.2),
+    VolumePoint(clip.sourceIn + third + third, 0.2),
+    VolumePoint(clip.sourceIn + third + third + ramp, 1),
+  ];
+
+  store.endGesture();
+  store.run(SetClipAudio(
+      clip.id, clip.audio.withoutAutomation.copyWith(points: points)));
+  store.endGesture();
+
+  final ducked = store.project.clipById(clip.id)!;
+  stdout.writeln('[selftest] volume line: ${asset.displayName} on $trackId, '
+      '${ducked.audio.points.length} points over '
+      '${(ducked.duration.raw / 120000).toStringAsFixed(2)}s');
+
+  // A tenth of a second a column, the way the waveform envelope is printed:
+  // a correct curve reads 1.00 down to 0.20 and back up, and a curve read
+  // against the clip instead of the source would start in the wrong place.
+  final tenth = 120000 ~/ 10;
+  final columns = ducked.duration.raw ~/ tenth;
+  final gains = [
+    for (var i = 0; i < columns; i++)
+      ducked.gainAt(Tick(i * tenth)).toStringAsFixed(2),
+  ];
+  stdout.writeln('[selftest] volume line: 0.1s per column — ${gains.join(" ")}');
+
+  // And what actually crosses to the engine. Points, not a number: the mixer
+  // has to evaluate this per audio frame.
+  final list = engineTimelineFor(store.project);
+  final sent = list.clips.where((c) => c.path == asset.path).toList();
+  if (sent.isEmpty) {
+    stdout.writeln('[selftest] volume line: FAILED — the clip did not reach '
+        'the render list at all');
+  } else {
+    final entry = sent.first;
+    stdout.writeln('[selftest] volume line: engine gets gain '
+        '${entry.gain.toStringAsFixed(2)} and '
+        '${entry.volumePoints.length} points '
+        '[${entry.volumePoints.map((p) => "${p.sourceTicks}:"
+            "${p.value.toStringAsFixed(2)}").join(" ")}]');
+  }
+
+  final cache =
+      Directory.systemTemp.createTempSync('vdodtor_volume_selftest_');
+  final out = '${Directory.systemTemp.path}/vdodtor_volume_line.png';
+  await _drawTimeline(store.project, cache, out,
+      const Size(900, 220), duration: store.project.duration);
+  stdout.writeln('[selftest] volume line: timeline drawn to $out');
+}
+
+/// The clip a duck goes on: the first one on an audio lane, and failing that
+/// the first one with any sound in it.
+({String trackId, Clip clip})? _clipToDuck(Project project) {
+  ({String trackId, Clip clip})? fallback;
+  for (final track in project.tracks) {
+    for (final clip in track.clips) {
+      final asset = project.assetFor(clip);
+      if (asset == null || !asset.probe.hasAudio) continue;
+      if (track.kind == TrackKind.audio) return (trackId: track.id, clip: clip);
+      fallback ??= (trackId: track.id, clip: clip);
+    }
+  }
+  return fallback;
+}
+
+/// Draws [project]'s timeline, waveforms and all, and writes it to [path].
+Future<void> _drawTimeline(Project project, Directory cache, String path,
+    Size size, {required Tick duration}) async {
+  final store = DocumentStore(project);
+  final controller = TimelineController(
+      store: store, transport: _StillTransport(duration.raw));
+  controller.zoomToFit(size.width);
+
+  final waveforms = WaveformCache(directory: cache);
+  for (final asset in project.media.values) {
+    waveforms.request(asset);
+  }
+  for (var i = 0; i < 8000; i++) {
+    if (project.media.values
+        .every((a) => waveforms.stateOf(a.id) != WaveformState.pending)) {
+      break;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 1));
+  }
+
+  final recorder = PictureRecorder();
+  TimelinePainter(controller, waveforms: waveforms)
+      .paint(Canvas(recorder), size);
+  final image = await recorder
+      .endRecording()
+      .toImage(size.width.round(), size.height.round());
+  final png = await image.toByteData(format: ImageByteFormat.png);
+  image.dispose();
+  waveforms.dispose();
+  controller.dispose();
+  store.dispose();
+
+  if (png == null) {
+    stdout.writeln('[selftest] could not encode the timeline');
+    return;
+  }
+  await File(path).writeAsBytes(png.buffer.asUint8List());
+}
+
 /// Draws the timeline with the analysed file on an audio lane and writes it
 /// out, so what a waveform built from real peaks looks like is something
 /// anyone can open rather than something to take on trust.
@@ -335,37 +469,9 @@ Future<void> drawWaveformSelfTest(
         ]),
       );
 
-  final store = DocumentStore(project);
-  final controller = TimelineController(
-      store: store, transport: _StillTransport(peaks.duration.raw));
-  controller.zoomToFit(size.width);
-
-  final waveforms = WaveformCache(directory: cache);
-  waveforms.request(asset);
-  for (var i = 0; i < 4000; i++) {
-    if (waveforms.stateOf(asset.id) != WaveformState.pending) break;
-    await Future<void>.delayed(const Duration(milliseconds: 1));
-  }
-
-  final recorder = PictureRecorder();
-  TimelinePainter(controller, waveforms: waveforms)
-      .paint(Canvas(recorder), size);
-  final image = await recorder
-      .endRecording()
-      .toImage(size.width.round(), size.height.round());
-  final png = await image.toByteData(format: ImageByteFormat.png);
-  image.dispose();
-  waveforms.dispose();
-  controller.dispose();
-  store.dispose();
-
-  if (png == null) {
-    stdout.writeln('[selftest] waveform: could not encode the timeline');
-    return;
-  }
-  final out = File('${Directory.systemTemp.path}/vdodtor_waveform.png');
-  await out.writeAsBytes(png.buffer.asUint8List());
-  stdout.writeln('[selftest] waveform: timeline drawn to ${out.path}');
+  final out = '${Directory.systemTemp.path}/vdodtor_waveform.png';
+  await _drawTimeline(project, cache, out, size, duration: peaks.duration);
+  stdout.writeln('[selftest] waveform: timeline drawn to $out');
 }
 
 /// A playhead that never moves. The timeline needs one to draw; nothing here

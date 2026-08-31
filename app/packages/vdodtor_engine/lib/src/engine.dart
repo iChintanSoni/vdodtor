@@ -59,6 +59,21 @@ class EngineTransform {
   final bool flipVertical;
 }
 
+/// One point on a clip's volume line.
+///
+/// [sourceTicks] is in the source's own time, the same coordinate as
+/// [EngineClip.sourceInTicks] — so trimming a clip slides its window over the
+/// curve rather than dragging the curve along with it.
+@immutable
+class EngineVolumePoint {
+  const EngineVolumePoint(this.sourceTicks, this.value);
+
+  final int sourceTicks;
+
+  /// Linear gain, multiplied with [EngineClip.gain].
+  final double value;
+}
+
 /// One clip on the render list the engine composites from.
 ///
 /// This is deliberately not the document model: the engine gets flat clips
@@ -79,6 +94,7 @@ class EngineClip {
     this.gain = 1.0,
     this.fadeInTicks = 0,
     this.fadeOutTicks = 0,
+    this.volumePoints = const [],
   });
 
   final String path;
@@ -103,6 +119,11 @@ class EngineClip {
 
   final int fadeInTicks;
   final int fadeOutTicks;
+
+  /// The volume line, sorted by [EngineVolumePoint.sourceTicks] and empty for
+  /// a clip nobody has automated. Copied into native memory on set_timeline,
+  /// like [path] is.
+  final List<EngineVolumePoint> volumePoints;
 }
 
 /// The render list plus the output format.
@@ -242,6 +263,21 @@ class PreviewEngine extends ChangeNotifier {
         entry.gain = clip.gain;
         entry.fade_in = clip.fadeInTicks;
         entry.fade_out = clip.fadeOutTicks;
+
+        // Allocated from the same arena as the paths and freed with them: the
+        // engine copies the array before set_timeline returns.
+        if (clip.volumePoints.isEmpty) {
+          entry.volume_points = nullptr;
+          entry.volume_point_count = 0;
+        } else {
+          final points = arena<VdVolumePoint>(clip.volumePoints.length);
+          for (var p = 0; p < clip.volumePoints.length; p++) {
+            points[p].source_time = clip.volumePoints[p].sourceTicks;
+            points[p].value = clip.volumePoints[p].value;
+          }
+          entry.volume_points = points;
+          entry.volume_point_count = clip.volumePoints.length;
+        }
 
         final transform = clip.transform;
         entry.transform.offset_x = transform.offsetX;

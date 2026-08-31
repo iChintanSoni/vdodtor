@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'dart:ui' show Offset;
+import 'dart:ui' show Offset, Rect;
 
 import 'package:flutter/foundation.dart';
 
@@ -59,6 +59,9 @@ enum TimelineDrag {
 
   /// Dragging a clip's trailing edge, which only changes the length.
   trimEnd,
+
+  /// Dragging a point on a clip's volume line, in both time and level.
+  volumePoint,
 }
 
 /// View state for the timeline: where it is looking, what is selected, and
@@ -93,6 +96,12 @@ class TimelineController extends ChangeNotifier {
   /// zoom in for.
   static const double minimumBodyPx = 26;
 
+  /// How close, in pixels, the pointer has to be to a point on the volume line
+  /// to grab it rather than the clip under it. Measured in both axes, so a
+  /// press at the same time but a different height still moves the clip — or
+  /// trims it, when the point happens to sit over a trim handle.
+  static const double volumePointGrabPx = 7;
+
   TimelineGeometry _geometry = const TimelineGeometry();
   final Set<String> _selectedClipIds = {};
   TimelineClipboard _clipboard = const TimelineClipboard([]);
@@ -105,6 +114,20 @@ class TimelineController extends ChangeNotifier {
   Tick _dragOriginEnd = Tick.zero;
   double _dragAnchorX = 0;
   Tick? _snapGuide;
+
+  /// The point being dragged, and the levels the clip had when the gesture
+  /// began. [SetClipAudio] carries a whole [ClipAudio] rather than a delta, so
+  /// a drag that re-applies to the gesture's opening document has to build its
+  /// value from that document's levels and not from the ones it has since
+  /// written.
+  int _dragPointIndex = -1;
+  ClipAudio? _dragOriginAudio;
+  double _dragAnchorY = 0;
+
+  /// The band the dragged point lives in, taken once at the start. Its height
+  /// comes from the lane, which a level drag cannot change, so recomputing it
+  /// from a document the drag is rewriting would only invite it to.
+  Rect? _dragBand;
 
   /// True while playback should keep the playhead on screen. Turned off by a
   /// deliberate pan — someone who scrolled somewhere meant to look at it —
@@ -331,7 +354,11 @@ class TimelineController extends ChangeNotifier {
   /// [additive] is ⌘ or ⇧ held: the press adds to or removes from the
   /// selection rather than replacing it, and starts no drag — a modified
   /// click is about *what* is chosen, never about moving it.
-  void pointerDown(Offset position, {bool additive = false}) {
+  ///
+  /// [alt] is ⌥ held, which is the volume line's modifier: it puts a point on
+  /// the line under the pointer, or takes away the one already there.
+  void pointerDown(Offset position,
+      {bool additive = false, bool alt = false}) {
     if (position.dx < TimelineGeometry.headerWidth) return;
 
     // The ruler is the scrub strip; the lanes below it are about clips.
@@ -357,6 +384,8 @@ class TimelineController extends ChangeNotifier {
 
     // A locked lane is a lane the user asked not to touch.
     if (hit.track.locked) return;
+
+    if (_beginVolumeEdit(hit.clip, hit.track, position, alt: alt)) return;
 
     // Every edit in a gesture is measured from where the clip was when the
     // gesture began, never from where it is now: a magnetic lane repacks
@@ -414,6 +443,9 @@ class TimelineController extends ChangeNotifier {
         final wanted = _snapEdge(Tick(_dragOriginEnd.raw + delta), clipId);
         store.run(TrimClip(clipId, end: wanted), fromGestureStart: true);
 
+      case TimelineDrag.volumePoint:
+        _moveVolumePoint(clipId, position);
+
       case TimelineDrag.none:
       case TimelineDrag.scrub:
         break;
@@ -446,10 +478,213 @@ class TimelineController extends ChangeNotifier {
     _drag = TimelineDrag.none;
     _dragClipId = null;
     _dragOriginTrackId = null;
+    _dragPointIndex = -1;
+    _dragOriginAudio = null;
+    _dragBand = null;
     _snapGuide = null;
     // Closes the undo entry, so the next edit does not fold into this drag.
     store.endGesture();
     notifyListeners();
+  }
+
+  // --- the volume line -------------------------------------------------------
+
+  /// Whether [clip] gets a volume line drawn on it: it makes a sound, and it
+  /// either already carries a curve or is the one clip the pointer is about.
+  ///
+  /// Hidden until then on purpose. A line across every clip in the project
+  /// would be a lot of ink for a control almost nobody is using at that
+  /// moment, and the line is only editable on the lone selection anyway.
+  bool showsVolumeLine(Clip clip, Track track) {
+    if (!clip.enabled) return false;
+    final asset = project.assetFor(clip);
+    if (asset == null || !asset.probe.hasAudio) return false;
+    if (unreachableMediaIds.contains(asset.id)) return false;
+    return clip.audio.hasAutomation || clip.id == selectedClipId;
+  }
+
+  /// The strip of [clip]'s body its sound is drawn in, or null when the lane
+  /// is unknown or the strip is too thin to put a handle in.
+  Rect? audioBandOf(Clip clip, Track track) {
+    final index = _laneIndexOf(track.id);
+    if (index == null) return null;
+    final body = _geometry.clipBody(clip.start, clip.end, index);
+    if (body.width <= 0) return null;
+    final band = TimelineGeometry.audioBand(body,
+        wholeClip: track.kind == TrackKind.audio);
+    return band.height < 6 ? null : band;
+  }
+
+  /// The volume line as it is drawn: an anchor at each end of the clip's
+  /// window and every point that falls inside it, left to right.
+  ///
+  /// [index] names the point in [ClipAudio.points], and is null for the two
+  /// anchors, which are where the held-flat ends of the curve meet the clip
+  /// rather than points anyone placed. One list for the painter and the
+  /// pointer both, because a handle you can see and cannot hit is worse than
+  /// no handle.
+  List<({Offset at, int? index})> volumeLine(Clip clip, Track track) {
+    final band = audioBandOf(clip, track);
+    if (band == null) return const [];
+
+    final points = clip.audio.points;
+    final head = clip.sourceIn;
+    final tail = clip.sourceOut;
+
+    Offset at(Tick sourceTime, double value) => Offset(
+          _geometry.xOfTick(clip.start + (sourceTime - head)),
+          TimelineGeometry.yOfLevel(band, value, ClipAudio.maxVolume),
+        );
+
+    final out = <({Offset at, int? index})>[];
+    if (!points.any((p) => p.sourceTime == head)) {
+      out.add((at: at(head, ClipAudio.automationAt(points, head)), index: null));
+    }
+    for (var i = 0; i < points.length; i++) {
+      final p = points[i];
+      if (p.sourceTime < head || p.sourceTime > tail) continue;
+      out.add((at: at(p.sourceTime, p.value), index: i));
+    }
+    if (!points.any((p) => p.sourceTime == tail)) {
+      out.add((at: at(tail, ClipAudio.automationAt(points, tail)), index: null));
+    }
+    return out;
+  }
+
+  /// The point of [clip]'s volume line under [position], or null.
+  int? volumePointAt(Clip clip, Track track, Offset position) {
+    for (final handle in volumeLine(clip, track)) {
+      final index = handle.index;
+      if (index == null) continue;
+      if ((position.dx - handle.at.dx).abs() <= volumePointGrabPx &&
+          (position.dy - handle.at.dy).abs() <= volumePointGrabPx) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  int? _laneIndexOf(String trackId) {
+    final all = lanes;
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id == trackId) return i;
+    }
+    return null;
+  }
+
+  /// Where [x] falls in the clip's source, clamped to its own window so a
+  /// point cannot be dragged off the clip that carries it.
+  Tick _sourceTimeAtX(Clip clip, double x) {
+    final onTimeline = _geometry.tickAtX(x);
+    final raw = clip.sourceIn.raw + (onTimeline.raw - clip.start.raw);
+    return Tick(raw.clamp(clip.sourceIn.raw, clip.sourceOut.raw));
+  }
+
+  /// Takes the press if it was about the volume line. Returns false when it
+  /// was about the clip, and the caller carries on with move or trim.
+  ///
+  /// Checked before the trim handles rather than after: a point can sit
+  /// anywhere along a clip, the ends included, and the two are told apart by
+  /// height — a press at the same time but a different height still trims.
+  bool _beginVolumeEdit(Clip clip, Track track, Offset position,
+      {required bool alt}) {
+    if (!showsVolumeLine(clip, track)) return false;
+    final band = audioBandOf(clip, track);
+    if (band == null) return false;
+    final index = volumePointAt(clip, track, position);
+
+    if (!alt) {
+      // No modifier: an existing point is a handle, and everywhere else on the
+      // clip is still the clip.
+      if (index == null) return false;
+      store.endGesture();
+      _startPointDrag(clip, track, index, clip.audio, position);
+      return true;
+    }
+
+    store.endGesture();
+    if (index != null) {
+      // ⌥ on a point takes it away. Adding with ⌥ and removing with ⌥ is one
+      // key for one idea: this line is what I am editing.
+      store.run(SetClipAudio(clip.id, clip.audio.withoutPoint(index)));
+      store.endGesture();
+      notifyListeners();
+      return true;
+    }
+
+    final sourceTime = _sourceTimeAtX(clip, position.dx);
+    final audio = clip.audio.withPoint(sourceTime,
+        TimelineGeometry.levelAtY(band, position.dy, ClipAudio.maxVolume));
+    final added = audio.points.indexWhere((p) => p.sourceTime == sourceTime);
+    if (added < 0) return false;
+    // No endGesture afterwards: the drag that follows folds into this, so
+    // placing a point and pulling it down is one press of ⌘Z.
+    store.run(SetClipAudio(clip.id, audio));
+    _startPointDrag(clip, track, added, audio, position);
+    return true;
+  }
+
+  void _startPointDrag(Clip clip, Track track, int index, ClipAudio origin,
+      Offset position) {
+    _drag = TimelineDrag.volumePoint;
+    _dragClipId = clip.id;
+    _dragOriginTrackId = track.id;
+    _dragAnchorX = position.dx;
+    _dragAnchorY = position.dy;
+    _dragPointIndex = index;
+    _dragOriginAudio = origin;
+    _dragBand = audioBandOf(clip, track);
+    notifyListeners();
+  }
+
+  void _moveVolumePoint(String clipId, Offset position) {
+    final origin = _dragOriginAudio;
+    final band = _dragBand;
+    final clip = project.clipById(clipId);
+    if (origin == null || band == null || clip == null) return;
+    if (_dragPointIndex < 0 || _dragPointIndex >= origin.points.length) return;
+
+    // Measured from where the point was when the gesture began, like every
+    // other drag here — so a grab a few pixels off the handle does not snap it
+    // under the pointer before it has moved.
+    final was = origin.points[_dragPointIndex];
+    final wanted = was.sourceTime.raw +
+        ((position.dx - _dragAnchorX) / _geometry.pxPerTick).round();
+    final wasY =
+        TimelineGeometry.yOfLevel(band, was.value, ClipAudio.maxVolume);
+
+    store.run(
+      SetClipAudio(
+        clipId,
+        origin.movePoint(
+          _dragPointIndex,
+          sourceTime: Tick(
+              wanted.clamp(clip.sourceIn.raw, clip.sourceOut.raw)),
+          value: TimelineGeometry.levelAtY(
+              band, wasY + (position.dy - _dragAnchorY), ClipAudio.maxVolume),
+        ),
+      ),
+      fromGestureStart: true,
+    );
+  }
+
+  /// Puts a point on [clipId]'s volume line at [sourceTime], at whatever level
+  /// the line is already at there. What the inspector's button does: a point
+  /// that changes nothing until it is dragged is the one you can safely add
+  /// without looking.
+  bool addVolumePoint(String clipId, Tick sourceTime) {
+    final clip = project.clipById(clipId);
+    if (clip == null) return false;
+    if (project.trackOfClip(clipId)?.locked ?? true) return false;
+    if (sourceTime < clip.sourceIn || sourceTime > clip.sourceOut) return false;
+
+    final audio = clip.audio;
+    store.endGesture();
+    store.run(SetClipAudio(clipId,
+        audio.withPoint(sourceTime, ClipAudio.automationAt(audio.points, sourceTime))));
+    store.endGesture();
+    notifyListeners();
+    return true;
   }
 
   // --- snapping ------------------------------------------------------------

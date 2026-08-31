@@ -542,8 +542,9 @@ class VdEngineBindings {
         int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Uint8>, int)
       >();
 
-  /// A clip with nothing said about it: fully opaque, full volume, contained, and
-  /// carrying a picture.
+  /// A clip with nothing said about it: fully opaque, full volume, contained,
+  /// carrying a picture, and with no volume line — for which a zeroed pointer and
+  /// count happen to be exactly right.
   ///
   /// Worth the four lines it costs. Unlike VdTransform, this struct cannot make a
   /// zeroed value mean "no opinion" — gain 0 is silence and opacity 0 is
@@ -1121,6 +1122,36 @@ class VdEngineBindings {
       >('vd_audio_fade_gain');
   late final _vd_audio_fade_gain = _vd_audio_fade_gainPtr
       .asFunction<double Function(int, int, int, int)>();
+
+  /// The multiplier a clip's sound gets at `source_time`, given its volume line.
+  /// 1 when there is no line; held flat at the first point's value before it and
+  /// at the last point's after it; linear in amplitude in between.
+  ///
+  /// Held flat rather than ramped back to unity outside the points, because a
+  /// curve that slid back to full volume before the first point would move audio
+  /// the user never touched.
+  ///
+  /// The same function as `ClipAudio.automationAt` in `app/lib/model/clip.dart`,
+  /// tested against the same table, for the same reason `vd_audio_fade_gain` is.
+  ///
+  /// `points` must be sorted by `source_time`. Two points at the same tick are a
+  /// step, and the later one wins.
+  double vd_audio_automation_gain(
+    ffi.Pointer<VdVolumePoint> points,
+    int count,
+    int source_time,
+  ) {
+    return _vd_audio_automation_gain(points, count, source_time);
+  }
+
+  late final _vd_audio_automation_gainPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Float Function(ffi.Pointer<VdVolumePoint>, ffi.Int32, VdTick)
+        >
+      >('vd_audio_automation_gain');
+  late final _vd_audio_automation_gain = _vd_audio_automation_gainPtr
+      .asFunction<double Function(ffi.Pointer<VdVolumePoint>, int, int)>();
 
   ffi.Pointer<VdAudioRenderer> vd_audio_renderer_create(
     ffi.Pointer<ffi.Int32> out_result,
@@ -1759,6 +1790,20 @@ enum VdPlaybackState {
   };
 }
 
+/// One point on a clip's volume line.
+///
+/// `source_time` is in the source's own time — the same coordinate as
+/// `source_in` — rather than an offset into the clip, so that trimming a clip
+/// slides the window over the automation instead of dragging the automation
+/// along with it. A duck stays on the word it was drawn for.
+final class VdVolumePoint extends ffi.Struct {
+  @VdTick()
+  external int source_time;
+
+  @ffi.Float()
+  external double value;
+}
+
 final class VdTimelineClip extends ffi.Struct {
   /// Absolute path to the source file. Copied on set_timeline; the caller keeps
   /// ownership of its own string.
@@ -1816,6 +1861,18 @@ final class VdTimelineClip extends ffi.Struct {
 
   @VdTick()
   external int fade_out;
+
+  /// The volume line: gain over the source, sorted by `source_time`, and a
+  /// multiplier on `gain` rather than a replacement for it. NULL and 0 mean a
+  /// clip nobody has automated, which is almost all of them.
+  ///
+  /// The only thing on this struct that is not a scalar, because it is the only
+  /// thing whose length the document decides. Copied on set_timeline, like
+  /// `path`; the caller keeps ownership of its own array.
+  external ffi.Pointer<VdVolumePoint> volume_points;
+
+  @ffi.Int32()
+  external int volume_point_count;
 }
 
 final class VdTimeline extends ffi.Struct {

@@ -295,4 +295,91 @@ void main() {
       expect(find.text('silent'), findsOneWidget);
     });
   });
+
+  group('the volume line', () {
+    /// Scrolled to the button rather than to the section label: the button is
+    /// the last thing in the panel, so bringing it into view brings the whole
+    /// section with it — where stopping at the label leaves the button below
+    /// the fold and untappable.
+    Future<void> scrollToLine(WidgetTester tester) async {
+      await tester.scrollUntilVisible(
+        find.text('Point at playhead'),
+        120,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('says how to make one when there is none', (tester) async {
+      // ⌥-click on a waveform is not a gesture anyone guesses, so the panel
+      // is where it gets said.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToLine(tester);
+
+      expect(find.textContaining('⌥-click a clip to duck it'), findsOneWidget);
+      expect(find.text('Clear'), findsNothing);
+    });
+
+    testWidgets('counts the points, so a curve off screen is not invisible',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToLine(tester);
+
+      store.run(SetClipAudio(
+          'b',
+          ClipAudio(points: [
+            VolumePoint(Tick.zero, 1),
+            VolumePoint(secs(1), 0.2),
+          ])));
+      await tester.pump();
+      expect(find.textContaining('2 points'), findsOneWidget);
+    });
+
+    testWidgets('the button adds a point where the playhead is',
+        (tester) async {
+      // 'b' runs 2s–5s on the main track.
+      controller.select('b');
+      controller.seekTo(secs(3));
+      await pumpInspector(tester);
+      await scrollToLine(tester);
+
+      await tester.tap(find.text('Point at playhead'));
+      await tester.pump();
+
+      final points = store.project.clipById('b')!.audio.points;
+      expect(points, hasLength(1));
+      expect(points.single.sourceTime, secs(1),
+          reason: 'the source time, not the timeline time');
+    });
+
+    testWidgets('and does nothing when the playhead is somewhere else',
+        (tester) async {
+      controller.select('b');
+      controller.seekTo(secs(5) + Tick(1));
+      await pumpInspector(tester);
+      await scrollToLine(tester);
+
+      final button = tester.widget<TextButton>(
+          find.widgetWithText(TextButton, 'Point at playhead'));
+      expect(button.onPressed, isNull);
+    });
+
+    testWidgets('Clear takes the whole line away in one press', (tester) async {
+      controller.select('b');
+      store.run(SetClipAudio('b',
+          ClipAudio(volume: 0.5, points: [VolumePoint(Tick.zero, 0.2)])));
+      store.endGesture();
+      await pumpInspector(tester);
+      await scrollToLine(tester);
+
+      await tester.tap(find.text('Clear'));
+      await tester.pump();
+
+      final audio = store.project.clipById('b')!.audio;
+      expect(audio.points, isEmpty);
+      expect(audio.volume, 0.5, reason: 'the fader is not part of the line');
+    });
+  });
 }

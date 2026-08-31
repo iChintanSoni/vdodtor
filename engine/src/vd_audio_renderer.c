@@ -29,6 +29,12 @@ typedef struct {
   VdTick fade_in;
   VdTick fade_out;
 
+  // Owned. Copied out of the render list, because the caller's array is gone
+  // the moment set_timeline returns and the decode thread reads this for as
+  // long as the clip is on the timeline.
+  VdVolumePoint* points;
+  int32_t point_count;
+
   VdAudioSource* source;
   bool open_failed;
   // Where the source will read from next, so a sequential decode does not
@@ -75,6 +81,7 @@ static void free_clips(VdAudioRenderer* r) {
   for (int32_t i = 0; i < r->clip_count; i++) {
     if (r->clips[i].source) vd_audio_source_close(r->clips[i].source);
     free(r->clips[i].path);
+    free(r->clips[i].points);
   }
   free(r->clips);
   r->clips = NULL;
@@ -118,6 +125,40 @@ float vd_audio_fade_gain(VdTick offset, VdTick duration, VdTick fade_in,
   return gain;
 }
 
+// --- the volume line -------------------------------------------------------
+
+// The value at `t` given that `index` is the last point at or before it, or -1
+// when `t` is before them all.
+//
+// Split out from the search because the mixer walks forward through a chunk
+// and finds its segment with a cursor rather than a scan, and the *maths* is
+// the part that must not exist twice.
+static float automation_between(const VdVolumePoint* points, int32_t count,
+                                int32_t index, VdTick t) {
+  if (count <= 0) return 1.0f;
+  if (index < 0) return points[0].value;
+  if (index >= count - 1) return points[count - 1].value;
+
+  const VdVolumePoint a = points[index];
+  const VdVolumePoint b = points[index + 1];
+  const VdTick span = b.source_time - a.source_time;
+  // Two points at the same tick are a step, not a division by zero.
+  if (span <= 0) return b.value;
+  const double f = (double)(t - a.source_time) / (double)span;
+  return (float)(a.value + (b.value - a.value) * f);
+}
+
+float vd_audio_automation_gain(const VdVolumePoint* points, int32_t count,
+                               VdTick source_time) {
+  if (!points || count <= 0) return 1.0f;
+  int32_t index = -1;
+  for (int32_t i = 0; i < count; i++) {
+    if (points[i].source_time > source_time) break;
+    index = i;
+  }
+  return automation_between(points, count, index, source_time);
+}
+
 // --- decoding --------------------------------------------------------------
 
 // Fills `out` with `frames` of mixed audio for timeline position `position`.
@@ -155,21 +196,42 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
     clip->expected_position = vd_audio_source_position(source);
 
     const bool fading = clip->fade_in > 0 || clip->fade_out > 0;
+    const bool automated = clip->points && clip->point_count > 0;
     const VdTick offset = position - clip->start;
+
+    // A cursor rather than a search per frame: source time only goes forward
+    // inside a chunk, so the segment is found once and then stepped past.
+    int32_t segment = -1;
+    if (automated) {
+      while (segment + 1 < clip->point_count &&
+             clip->points[segment + 1].source_time <= source_time) {
+        segment++;
+      }
+    }
 
     // Sum. M1 only ever had one source here, but summing is the same loop that
     // ten of them need, and mixing is not where cleverness pays.
     for (int32_t frame = 0; frame < got; frame++) {
       float gain = clip->gain;
-      if (fading) {
-        // Per frame, not per chunk. A chunk is 1024 frames — 21 ms — and a
-        // fade that stepped once a chunk would be a staircase of about fifty
-        // steps, which is not a fade but a series of small clicks.
-        const VdTick at =
-            offset + (VdTick)(((int64_t)frame * VD_TICKS_PER_SECOND) /
-                              VD_AUDIO_SAMPLE_RATE);
-        gain *= vd_audio_fade_gain(at, clip->duration, clip->fade_in,
-                                   clip->fade_out);
+      if (fading || automated) {
+        // Per frame, not per chunk. A chunk is 1024 frames — 21 ms — and an
+        // envelope that stepped once a chunk would be a staircase of about
+        // fifty steps, which is not a fade but a series of small clicks.
+        const VdTick into = (VdTick)(((int64_t)frame * VD_TICKS_PER_SECOND) /
+                                     VD_AUDIO_SAMPLE_RATE);
+        if (fading) {
+          gain *= vd_audio_fade_gain(offset + into, clip->duration,
+                                     clip->fade_in, clip->fade_out);
+        }
+        if (automated) {
+          const VdTick at = source_time + into;
+          while (segment + 1 < clip->point_count &&
+                 clip->points[segment + 1].source_time <= at) {
+            segment++;
+          }
+          gain *= automation_between(clip->points, clip->point_count, segment,
+                                     at);
+        }
       }
       for (int32_t ch = 0; ch < VD_AUDIO_CHANNELS; ch++) {
         const int32_t i = frame * VD_AUDIO_CHANNELS + ch;
@@ -301,6 +363,19 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
     next[i].fade_in = clips[i].fade_in;
     next[i].fade_out = clips[i].fade_out;
 
+    if (clips[i].volume_points && clips[i].volume_point_count > 0) {
+      const size_t bytes =
+          (size_t)clips[i].volume_point_count * sizeof(VdVolumePoint);
+      next[i].points = malloc(bytes);
+      if (next[i].points) {
+        memcpy(next[i].points, clips[i].volume_points, bytes);
+        next[i].point_count = clips[i].volume_point_count;
+      }
+      // A failed allocation loses the curve and keeps the sound. Refusing the
+      // whole timeline because a duck would not fit in memory is the worse of
+      // the two answers.
+    }
+
     // Carry over an already-open source for the same file, so an edit does
     // not reopen and re-seek everything.
     for (int32_t j = 0; j < previous_count; j++) {
@@ -318,6 +393,7 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
   for (int32_t j = 0; j < previous_count; j++) {
     if (previous[j].source) vd_audio_source_close(previous[j].source);
     free(previous[j].path);
+    free(previous[j].points);
   }
   free(previous);
 
