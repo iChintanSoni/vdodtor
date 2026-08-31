@@ -7,6 +7,7 @@ import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/time.dart';
 import 'package:vdodtor/model/track.dart';
 import 'package:vdodtor/ui/timeline/timeline_controller.dart';
+import 'package:vdodtor/ui/timeline/timeline_geometry.dart';
 
 import '../../fixtures.dart';
 import 'timeline_controller_test.dart' show FakeTransport;
@@ -133,6 +134,187 @@ void main() {
 
       final moved = controller.project.trackById(audioTrackId)!.clips.single;
       expect(moved.audio.volume, 0.25);
+    });
+  });
+
+  /// Ducking, as the pointer does it. Everything here goes through the
+  /// controller's own geometry, so a press at a place the eye would call "on
+  /// the point" is a press the code calls that too.
+  group('the volume line', () {
+    /// A four-second music bed() on the audio lane(), selected.
+    void withBed({ClipAudio audio = ClipAudio.unity}) {
+      var p = emptyProject().addMedia(audioAsset('song'));
+      p = p.updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4))
+              .copyWith(audio: audio),
+        ]),
+      );
+      build(p);
+      controller.select('bed');
+    }
+
+    Clip bed() => controller.project.clipById('bed')!;
+    Track lane() => controller.project.trackById(audioTrackId)!;
+
+    /// Where the handle for point [index] is on screen.
+    Offset handleOf(int index) => controller
+        .volumeLine(bed(), lane())
+        .firstWhere((h) => h.index == index)
+        .at;
+
+    /// A point somewhere along the clip, at a given level.
+    Offset spotAt(Tick sourceTime, double level) {
+      final band = controller.audioBandOf(bed(), lane())!;
+      return Offset(
+        controller.geometry.xOfTick(bed().start + (sourceTime - bed().sourceIn)),
+        TimelineGeometry.yOfLevel(band, level, ClipAudio.maxVolume),
+      );
+    }
+
+    test('a clip nobody has ducked shows no line until it is selected', () {
+      withBed();
+      controller.clearSelection();
+      expect(controller.showsVolumeLine(bed(), lane()), isFalse);
+      controller.select('bed');
+      expect(controller.showsVolumeLine(bed(), lane()), isTrue);
+    });
+
+    test('a clip that carries a curve shows it whether selected or not', () {
+      withBed(audio: const ClipAudio(points: [VolumePoint(Tick(0), 0.5)]));
+      controller.clearSelection();
+      expect(controller.showsVolumeLine(bed(), lane()), isTrue);
+    });
+
+    test('the line of an untouched clip is two anchors at unity', () {
+      withBed();
+      final line = controller.volumeLine(bed(), lane());
+      expect(line, hasLength(2));
+      expect(line.every((h) => h.index == null), isTrue,
+          reason: 'the ends are where the curve meets the clip, not points');
+      expect(line.first.at.dy, closeTo(line.last.at.dy, 0.001));
+    });
+
+    test('⌥-click puts a point where it was clicked', () {
+      withBed();
+      controller.pointerDown(spotAt(secs(2), 0.5), alt: true);
+      controller.pointerUp();
+
+      expect(bed().audio.points, hasLength(1));
+      final point = bed().audio.points.single;
+      expect(point.sourceTime.raw, closeTo(secs(2).raw, secs(0.05).raw));
+      expect(point.value, closeTo(0.5, 0.05));
+      expect(store.undoLabels, ['Adjust audio']);
+    });
+
+    test('⌥-click on a point takes it away again', () {
+      withBed(audio: const ClipAudio(points: [VolumePoint(Tick(0), 0.5)]));
+      controller.pointerDown(handleOf(0), alt: true);
+      controller.pointerUp();
+      expect(bed().audio.points, isEmpty);
+    });
+
+    test('placing a point and pulling it down is one undo entry', () {
+      // One decision to the person making it: the point exists to be dragged.
+      withBed();
+      final start = spotAt(secs(2), 1);
+      controller.pointerDown(start, alt: true);
+      controller.pointerMove(start + const Offset(0, 8));
+      controller.pointerMove(start + const Offset(0, 14));
+      controller.pointerUp();
+
+      expect(bed().audio.points.single.value, lessThan(1));
+      expect(store.undoLabels, ['Adjust audio']);
+      store.undo();
+      expect(bed().audio.points, isEmpty);
+    });
+
+    test('a plain drag on a point moves it and does not move the clip', () {
+      withBed(audio: ClipAudio(points: [VolumePoint(secs(2), 1)]));
+      final at = handleOf(0);
+      controller.pointerDown(at);
+      expect(controller.drag, TimelineDrag.volumePoint);
+      controller.pointerMove(at + const Offset(20, 10));
+      controller.pointerUp();
+
+      expect(bed().start, Tick.zero, reason: 'the clip stayed put');
+      expect(bed().duration, secs(4));
+      final point = bed().audio.points.single;
+      expect(point.sourceTime.raw, greaterThan(secs(2).raw));
+      expect(point.value, lessThan(1));
+    });
+
+    test('a plain drag away from any point still moves the clip', () {
+      withBed(audio: ClipAudio(points: [VolumePoint(secs(2), 0.25)]));
+      // The same time as the point, but at the top of the band rather than a
+      // quarter of the way up it.
+      controller.pointerDown(spotAt(secs(2), ClipAudio.maxVolume));
+      expect(controller.drag, TimelineDrag.move);
+      controller.pointerUp();
+    });
+
+    test('a point cannot be dragged off the clip that carries it', () {
+      withBed(audio: ClipAudio(points: [VolumePoint(secs(2), 1)]));
+      final at = handleOf(0);
+      controller.pointerDown(at);
+      controller.pointerMove(at + const Offset(-5000, 0));
+      controller.pointerUp();
+      expect(bed().audio.points.single.sourceTime, bed().sourceIn);
+
+      controller.pointerDown(handleOf(0));
+      controller.pointerMove(handleOf(0) + const Offset(5000, 0));
+      controller.pointerUp();
+      expect(bed().audio.points.single.sourceTime, bed().sourceOut);
+    });
+
+    test('a drag measures from where the gesture began, not from itself', () {
+      // The same rule the clip drags follow: each move re-applies to the
+      // document as it stood when the pointer went down, so dragging back the
+      // way you came puts the point back where it started.
+      withBed(audio: ClipAudio(points: [VolumePoint(secs(2), 1)]));
+      final at = handleOf(0);
+      controller.pointerDown(at);
+      for (final dx in [10.0, 25.0, 40.0, 0.0]) {
+        controller.pointerMove(at + Offset(dx, 0));
+      }
+      controller.pointerUp();
+      expect(bed().audio.points.single.sourceTime, secs(2));
+    });
+
+    test('the inspector\'s button adds a point that changes nothing yet', () {
+      withBed(audio: ClipAudio(
+          points: [VolumePoint(Tick.zero, 1), VolumePoint(secs(4), 0)]));
+      final before = bed().gainAt(secs(1));
+      expect(controller.addVolumePoint('bed', secs(1)), isTrue);
+      expect(bed().audio.points, hasLength(3));
+      expect(bed().gainAt(secs(1)), closeTo(before, 1e-9));
+    });
+
+    test('a locked lane() takes no points', () {
+      withBed();
+      store.run(SetTrackProperties(audioTrackId, locked: true));
+      expect(controller.addVolumePoint('bed', secs(1)), isFalse);
+      controller.pointerDown(spotAt(secs(2), 0.5), alt: true);
+      controller.pointerUp();
+      expect(bed().audio.points, isEmpty);
+    });
+
+    test('a clip whose file is silent gets no line at all', () {
+      var p = emptyProject().addMedia(videoAsset('silent', audio: false));
+      p = p.updateTrack(
+        mainTrackId,
+        (t) => t.withClips(
+            [clipOf('q', 'silent', start: Tick.zero, duration: secs(2))]),
+      );
+      build(p);
+      controller.select('q');
+      final clip = controller.project.clipById('q')!;
+      final track = controller.project.mainTrack;
+      expect(controller.showsVolumeLine(clip, track), isFalse);
+      controller.pointerDown(const Offset(200, 40), alt: true);
+      controller.pointerUp();
+      expect(controller.project.clipById('q')!.audio.hasAutomation, isFalse);
     });
   });
 }

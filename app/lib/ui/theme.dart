@@ -28,6 +28,12 @@ abstract final class VdColors {
   /// either.
   static const waveform = Color(0xFFA6E9D0);
 
+  /// The volume line drawn over a waveform. Warm, so it separates from the
+  /// cool mint of the waveform underneath it at a glance, and light enough to
+  /// read on every clip colour. Not [warn], which already means something is
+  /// wrong and is a thing an editor should only say once.
+  static const automation = Color(0xFFF6D365);
+
   /// The playhead. The one thing on screen allowed to be loud.
   static const playhead = Color(0xFFFF5C5C);
 }

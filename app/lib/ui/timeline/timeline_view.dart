@@ -108,6 +108,7 @@ class _TimelineViewState extends State<TimelineView>
                   e.localPosition,
                   additive: HardwareKeyboard.instance.isMetaPressed ||
                       HardwareKeyboard.instance.isShiftPressed,
+                  alt: HardwareKeyboard.instance.isAltPressed,
                 ),
             onPointerMove: (e) => widget.controller.pointerMove(e.localPosition),
             onPointerUp: (_) => widget.controller.pointerUp(),

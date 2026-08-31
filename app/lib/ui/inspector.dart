@@ -102,8 +102,15 @@ class Inspector extends StatelessWidget {
           if (hasSound)
             _AudioControls(
               clip: clip,
+              // Where a point would go if one were added now: null when the
+              // playhead is not over this clip, which is when the button has
+              // nothing to point at.
+              atPlayhead: clip.span.contains(timeline.playhead)
+                  ? clip.sourceTimeAt(timeline.playhead)
+                  : null,
               onChanged: (a) => _setAudio(clip, a),
               onCommit: _commit,
+              onAddPoint: (t) => timeline.addVolumePoint(clip.id, t),
             ),
         ],
       ),
@@ -288,13 +295,21 @@ class _TransformControls extends StatelessWidget {
 class _AudioControls extends StatelessWidget {
   const _AudioControls({
     required this.clip,
+    required this.atPlayhead,
     required this.onChanged,
     required this.onCommit,
+    required this.onAddPoint,
   });
 
   final Clip clip;
+
+  /// The source time under the playhead, or null when the playhead is not
+  /// over this clip.
+  final Tick? atPlayhead;
+
   final ValueChanged<ClipAudio> onChanged;
   final VoidCallback onCommit;
+  final ValueChanged<Tick> onAddPoint;
 
   /// The longest a fade may be: half the clip, so a fade in and a fade out can
   /// both be at maximum without meeting in the middle.
@@ -368,6 +383,82 @@ class _AudioControls extends StatelessWidget {
             onCommit: onCommit,
           ),
         ],
+        _VolumeLineControls(
+          points: a.points.length,
+          atPlayhead: atPlayhead,
+          onAdd: onAddPoint,
+          onClear: () {
+            onCommit();
+            onChanged(a.withoutAutomation);
+            onCommit();
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// The volume line, from the inspector's side.
+///
+/// The line itself is drawn on and edited in the timeline, where the sound it
+/// is shaping is. What is here is the way in — ⌥-click on a waveform is not a
+/// gesture anyone guesses — and a count, so a curve dragged off the visible
+/// part of a clip is not invisible as well as inaudible.
+class _VolumeLineControls extends StatelessWidget {
+  const _VolumeLineControls({
+    required this.points,
+    required this.atPlayhead,
+    required this.onAdd,
+    required this.onClear,
+  });
+
+  final int points;
+  final Tick? atPlayhead;
+  final ValueChanged<Tick> onAdd;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final at = atPlayhead;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const _SectionLabel('VOLUME LINE'),
+            const Spacer(),
+            if (points > 0)
+              TextButton(
+                onPressed: onClear,
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Clear', style: TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        Text(
+          points == 0
+              ? 'None. ⌥-click a clip to duck it.'
+              : '$points point${points == 1 ? '' : 's'} · '
+                  '⌥-click one to remove it',
+          style: const TextStyle(fontSize: 10.5, color: VdColors.dim,
+              height: 1.35),
+        ),
+        const SizedBox(height: 4),
+        TextButton.icon(
+          onPressed: at == null ? null : () => onAdd(at),
+          icon: const Icon(Icons.add, size: 15),
+          label: const Text('Point at playhead',
+              style: TextStyle(fontSize: 11)),
+          style: TextButton.styleFrom(
+            foregroundColor: VdColors.dim,
+            visualDensity: VisualDensity.compact,
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+        ),
       ],
     );
   }

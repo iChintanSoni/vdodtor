@@ -118,6 +118,12 @@ Map<String, Object?> _audioToJson(ClipAudio a) => {
       if (a.fadeIn.raw != 0) 'fadeIn': a.fadeIn.raw,
       if (a.fadeOut.raw != 0) 'fadeOut': a.fadeOut.raw,
       if (a.muted) 'muted': true,
+      // Objects rather than pairs: the encoder indents either way, so the
+      // compact form buys nothing and costs the reader the labels.
+      if (a.points.isNotEmpty)
+        'volumePoints': [
+          for (final p in a.points) {'t': p.sourceTime.raw, 'v': p.value},
+        ],
     };
 
 ClipAudio _audioFromJson(Map<String, Object?> json, String where) => ClipAudio(
@@ -125,7 +131,33 @@ ClipAudio _audioFromJson(Map<String, Object?> json, String where) => ClipAudio(
       fadeIn: Tick(_intOr(json, 'fadeIn', '$where.fadeIn', 0)),
       fadeOut: Tick(_intOr(json, 'fadeOut', '$where.fadeOut', 0)),
       muted: _bool(json, 'muted', false),
+      points: _volumePointsFromJson(json, '$where.volumePoints'),
     );
+
+/// The volume line, sorted on the way in.
+///
+/// Sorted here rather than trusted, because sortedness is the one thing every
+/// reader of [ClipAudio.points] assumes and a hand-edited file is exactly
+/// where it stops being true.
+List<VolumePoint> _volumePointsFromJson(Map<String, Object?> json, String at) {
+  final raw = json['volumePoints'];
+  if (raw == null) return const [];
+  if (raw is! List) throw ProjectDecodeException('expected a list', path: at);
+
+  final points = <VolumePoint>[];
+  for (var i = 0; i < raw.length; i++) {
+    final p = _asMap(raw[i], '$at[$i]');
+    points.add(VolumePoint(
+      Tick(_int(p, 't', '$at[$i].t')),
+      // Neither is optional. A point whose level went missing is not a point
+      // at unity — it is a file that has lost something, and quietly inventing
+      // a level would put the duck somewhere nobody drew it.
+      _requiredDouble(p, 'v', '$at[$i].v').clamp(0.0, ClipAudio.maxVolume),
+    ));
+  }
+  points.sort((a, b) => a.sourceTime.compareTo(b.sourceTime));
+  return points;
+}
 
 ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
     ClipTransform(
@@ -150,6 +182,14 @@ ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
 double _double(Map<String, Object?> json, String key, double fallback) {
   final value = json[key];
   return value is num ? value.toDouble() : fallback;
+}
+
+/// A number that has to be there. Unlike [_double], absent is an error.
+double _requiredDouble(Map<String, Object?> json, String key, String at) {
+  final value = json[key];
+  if (value is num) return value.toDouble();
+  throw ProjectDecodeException('expected a number, got ${value.runtimeType}',
+      path: at);
 }
 
 /// An integer that may be absent. Absent means [fallback]; present and not an

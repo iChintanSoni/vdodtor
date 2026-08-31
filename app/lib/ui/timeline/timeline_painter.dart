@@ -167,12 +167,12 @@ class TimelinePainter extends CustomPainter {
       final x1 = geometry.xOfTick(clip.end);
       // Culled here, which is what keeps the cost flat in clip count.
       if (x1 < TimelineGeometry.headerWidth || x0 > size.width) continue;
-      _paintClip(canvas, clip, track, x0, x1, top, size.width);
+      _paintClip(canvas, clip, track, index, x0, x1, top, size.width);
     }
   }
 
-  void _paintClip(Canvas canvas, Clip clip, Track track, double x0, double x1,
-      double top, double viewWidth) {
+  void _paintClip(Canvas canvas, Clip clip, Track track, int laneIndex,
+      double x0, double x1, double top, double viewWidth) {
     final asset = controller.project.assetFor(clip);
     final missing = asset == null ||
         controller.unreachableMediaIds.contains(asset.id);
@@ -180,10 +180,9 @@ class TimelinePainter extends CustomPainter {
     // Handles mean "you can trim this", and trimming is a single-clip idea.
     final lone = clip.id == controller.selectedClipId;
 
-    // Half a pixel of inset on each side, so two clips butted flush on a
-    // magnetic track still read as two clips rather than one long one.
-    final body = Rect.fromLTRB(x0 + 0.5, top + 3, x1 - 0.5,
-        top + TimelineGeometry.trackHeight - 3);
+    // The same rectangle the pointer hits, from the same place, so what the
+    // eye grabs and what the controller grabs cannot drift apart.
+    final body = controller.geometry.clipBody(clip.start, clip.end, laneIndex);
     final rect = RRect.fromRectAndRadius(body, const Radius.circular(3));
 
     final base = _colorOf(track.kind);
@@ -208,6 +207,7 @@ class TimelinePainter extends CustomPainter {
 
     if (!missing) {
       _paintWaveform(canvas, clip, track, asset, rect, x0, x1, viewWidth);
+      _paintVolumeLine(canvas, clip, track, rect);
     }
 
     if (selected) {
@@ -277,14 +277,8 @@ class TimelinePainter extends CustomPainter {
     final columns = (right - left).floor();
     if (columns < 2) return;
 
-    // An audio lane gives its whole clip to the waveform. A picture lane gives
-    // it a strip along the bottom: what identifies a video clip is its name,
-    // and its sound is the thing you look for underneath.
-    final body = clipRect.outerRect;
-    final band = track.kind == TrackKind.audio
-        ? body.deflate(5)
-        : Rect.fromLTRB(body.left, body.bottom - body.height * 0.40,
-            body.right, body.bottom - 3);
+    final band = TimelineGeometry.audioBand(clipRect.outerRect,
+        wholeClip: track.kind == TrackKind.audio);
     if (band.height < 4) return;
 
     final ticksPerPixel = 1 / controller.geometry.pxPerTick;
@@ -305,8 +299,7 @@ class TimelinePainter extends CustomPainter {
 
     for (var i = 0; i < columns; i++) {
       final offset = (into + i * ticksPerPixel).round();
-      final gain =
-          clip.audio.gainAt(Tick(offset > last ? last : offset), clip.duration);
+      final gain = clip.gainAt(Tick(offset > last ? last : offset));
       // Clamped after the gain rather than before it: a clip boosted past full
       // scale draws as a block against the rails, which is what it will sound
       // like.
@@ -341,6 +334,49 @@ class TimelinePainter extends CustomPainter {
         ..color = VdColors.waveform.withValues(alpha: 0.55)
         ..strokeWidth = 1,
     );
+    canvas.restore();
+  }
+
+  /// The clip's volume line, over its waveform.
+  ///
+  /// Piecewise linear, so it is drawn as the segments it actually is rather
+  /// than sampled per column: the curve has a handful of points and a polyline
+  /// through them is exact, where a per-pixel evaluation would be an
+  /// approximation that costs more.
+  ///
+  /// The two ends are anchors rather than points — the curve is held flat
+  /// outside the outermost point — and they get no handle, because there is
+  /// nothing there to grab.
+  void _paintVolumeLine(Canvas canvas, Clip clip, Track track, RRect clipRect) {
+    if (!controller.showsVolumeLine(clip, track)) return;
+    final line = controller.volumeLine(clip, track);
+    if (line.length < 2) return;
+
+    final path = Path()..moveTo(line.first.at.dx, line.first.at.dy);
+    for (var i = 1; i < line.length; i++) {
+      path.lineTo(line[i].at.dx, line[i].at.dy);
+    }
+
+    canvas.save();
+    canvas.clipRRect(clipRect);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = VdColors.automation.withValues(alpha: 0.95),
+    );
+
+    final fill = Paint()..color = VdColors.automation;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = VdColors.rail;
+    for (final handle in line) {
+      if (handle.index == null) continue;
+      canvas.drawCircle(handle.at, 3.5, fill);
+      canvas.drawCircle(handle.at, 3.5, ring);
+    }
     canvas.restore();
   }
 

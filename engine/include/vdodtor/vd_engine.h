@@ -33,6 +33,17 @@ typedef enum {
   VD_STATE_ENDED = 3,
 } VdPlaybackState;
 
+// One point on a clip's volume line.
+//
+// `source_time` is in the source's own time — the same coordinate as
+// `source_in` — rather than an offset into the clip, so that trimming a clip
+// slides the window over the automation instead of dragging the automation
+// along with it. A duck stays on the word it was drawn for.
+typedef struct {
+  VdTick source_time;
+  float value;
+} VdVolumePoint;
+
 typedef struct {
   // Absolute path to the source file. Copied on set_timeline; the caller keeps
   // ownership of its own string.
@@ -71,10 +82,21 @@ typedef struct {
   // `fade_out` at the tail. Ticks, like every other length that crosses here.
   VdTick fade_in;
   VdTick fade_out;
+
+  // The volume line: gain over the source, sorted by `source_time`, and a
+  // multiplier on `gain` rather than a replacement for it. NULL and 0 mean a
+  // clip nobody has automated, which is almost all of them.
+  //
+  // The only thing on this struct that is not a scalar, because it is the only
+  // thing whose length the document decides. Copied on set_timeline, like
+  // `path`; the caller keeps ownership of its own array.
+  const VdVolumePoint* volume_points;
+  int32_t volume_point_count;
 } VdTimelineClip;
 
-// A clip with nothing said about it: fully opaque, full volume, contained, and
-// carrying a picture.
+// A clip with nothing said about it: fully opaque, full volume, contained,
+// carrying a picture, and with no volume line — for which a zeroed pointer and
+// count happen to be exactly right.
 //
 // Worth the four lines it costs. Unlike VdTransform, this struct cannot make a
 // zeroed value mean "no opinion" — gain 0 is silence and opacity 0 is

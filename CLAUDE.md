@@ -73,10 +73,15 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   change?" test. Edits go through `EditCommand` + `DocumentStore`, never in place.
 - **The vendored FFmpeg must stay LGPL.** `tools/build_ffmpeg.sh` fails the build rather
   than emit one with `CONFIG_GPL`, `CONFIG_NONFREE` or `CONFIG_VERSION3` set.
-- **The fade envelope is written twice and tested once.** `vd_audio_fade_gain` in
-  `engine/src/vd_audio_renderer.c` and `ClipAudio.fadeShapeAt` in `app/lib/model/clip.dart`
-  are the same function, and the same ten-row table is asserted in both test suites — like
-  `vd_time` and `time.dart`. Change one and you must change the other.
+- **The audio envelopes are written twice and tested once.** `vd_audio_fade_gain` /
+  `ClipAudio.fadeShapeAt` and `vd_audio_automation_gain` / `ClipAudio.automationAt` are
+  each one function in two languages, and each has one table asserted in both test suites
+  — like `vd_time` and `time.dart`. Change one and you must change the other.
+- **A volume point is measured in the source, not in the clip.** `VolumePoint.sourceTime`
+  is the coordinate `Clip.sourceIn` is in, so a trim slides the clip's window over the
+  curve instead of dragging the curve with it, a split needs no dividing, and points
+  outside a clip's window are kept rather than swept up. Anything that changes a clip's
+  length or window must leave `ClipAudio.points` alone.
 - **The lane decides which half of a file a clip contributes.** A clip on an audio lane is
   sound even when its source has a picture — that is what a detached clip is — so
   `timeline_sync` sets `hasVideo` from the track kind, not from the probe alone.

@@ -52,9 +52,16 @@ EngineTimeline engineTimelineFor(Project project) {
         gain: gain,
         // The fades go across as lengths rather than as a computed gain,
         // because the engine has to evaluate them per audio frame — a fade
-        // resolved here, once per edit, would arrive as a staircase.
+        // resolved here, once per edit, would arrive as a staircase. The
+        // volume line crosses for the same reason and in the same shape: the
+        // points themselves, in the source's own time, for the mixer to
+        // interpolate between.
         fadeInTicks: clip.audio.fadeIn.raw,
         fadeOutTicks: clip.audio.fadeOut.raw,
+        volumePoints: [
+          for (final p in clip.audio.points)
+            EngineVolumePoint(p.sourceTime.raw, p.value),
+        ],
         opacity: transform.opacity,
         fit: switch (transform.fit) {
           ClipFit.blurFill => FitMode.blurFill,

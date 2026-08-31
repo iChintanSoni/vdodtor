@@ -102,6 +102,24 @@ VD_EXPORT void vd_audio_ring_clear(VdAudioRing* ring);
 VD_EXPORT float vd_audio_fade_gain(VdTick offset, VdTick duration,
                                    VdTick fade_in, VdTick fade_out);
 
+// --- the volume line -------------------------------------------------------
+
+// The multiplier a clip's sound gets at `source_time`, given its volume line.
+// 1 when there is no line; held flat at the first point's value before it and
+// at the last point's after it; linear in amplitude in between.
+//
+// Held flat rather than ramped back to unity outside the points, because a
+// curve that slid back to full volume before the first point would move audio
+// the user never touched.
+//
+// The same function as `ClipAudio.automationAt` in `app/lib/model/clip.dart`,
+// tested against the same table, for the same reason `vd_audio_fade_gain` is.
+//
+// `points` must be sorted by `source_time`. Two points at the same tick are a
+// step, and the later one wins.
+VD_EXPORT float vd_audio_automation_gain(const VdVolumePoint* points,
+                                         int32_t count, VdTick source_time);
+
 // --- the renderer ----------------------------------------------------------
 
 typedef struct VdAudioRenderer VdAudioRenderer;

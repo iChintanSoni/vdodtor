@@ -124,6 +124,10 @@ class _EditorScreenState extends State<EditorScreen> {
         // Not inside the import check: a waveform is worth measuring on every
         // run, and the import only happens on the first.
         await runWaveformSelfTest();
+        // Before the play pass rather than after it, so what plays is a
+        // ducked timeline and the duck is something to listen to as well as
+        // something to read off a page.
+        await runVolumeLineSelfTest(_store);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
