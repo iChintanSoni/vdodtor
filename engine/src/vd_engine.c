@@ -9,6 +9,7 @@
 
 #include "vdodtor/vd_audio.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_sticker.h"
 
 // How many decoders stay open at once. The M0 spike measured four concurrent
 // 4K60 decoders at ~34% CPU, so this is comfortably inside what the machine
@@ -16,6 +17,16 @@
 // one — an open costs milliseconds, and a hitch at every cut is exactly what
 // makes an editor feel cheap.
 #define VD_MAX_OPEN_DECODERS 8
+
+// How much decoded sticker the engine holds at once. Bytes rather than a
+// count, because a sticker's cost is memory and not a file handle: a dozen
+// small GIFs are cheaper than one big one, and a cap on the number would let
+// the big one through while turning the dozen away.
+//
+// Three times what one sticker may spend on itself, so the layers that can be
+// on screen together mostly are — and an eviction only costs a re-decode,
+// which for a file this size is milliseconds.
+#define VD_MAX_STICKER_BYTES (192 * 1024 * 1024)
 
 // Compositing is bounded by the product's track count: one main, three
 // overlays and eight text lanes. It moves when Project.maxTracksOfKind in
@@ -39,6 +50,12 @@ typedef struct {
   VdDecoder* decoder;  // opened lazily
   int64_t last_used;
   bool decoder_failed;  // do not retry every frame
+
+  // An animated overlay rather than video. `is_sticker` comes from the
+  // timeline; `sticker` is opened lazily beside the decoder and never with it
+  // — a clip is one or the other. See vd_sticker.h.
+  bool is_sticker;
+  VdSticker* sticker;
 
   // A generated clip instead of a decoded one. `text` and `shape` are owned
   // and at most one of them is set; `raster` is the CVPixelBufferRef whichever
@@ -175,6 +192,66 @@ static void close_least_recently_used(VdEngine* e) {
   }
 }
 
+// Caller holds the lock. Frees stickers, least recently drawn first, until
+// what is left plus `wanted` is inside the budget.
+//
+// A loop rather than the decoders' one-victim rule because the sizes vary by
+// two orders of magnitude: evicting one small GIF to make room for a big one
+// would leave the budget just as blown as it started.
+static void trim_stickers(VdEngine* e, int64_t wanted) {
+  for (;;) {
+    int64_t held = 0;
+    VdClipEntry* victim = NULL;
+    for (int32_t i = 0; i < e->clip_count; i++) {
+      if (!e->clips[i].sticker) continue;
+      held += vd_sticker_bytes(e->clips[i].sticker);
+      if (!victim || e->clips[i].last_used < victim->last_used) {
+        victim = &e->clips[i];
+      }
+    }
+    if (held + wanted <= VD_MAX_STICKER_BYTES || !victim) return;
+    vd_sticker_close(victim->sticker);
+    victim->sticker = NULL;
+  }
+}
+
+// Caller holds render_lock and not `lock`. The sticker equivalent of
+// decoder_for, and deliberately its twin: opened lazily, kept on an LRU stamp,
+// and never retried after a failure.
+static VdSticker* sticker_for(VdEngine* e, VdClipEntry* clip) {
+  pthread_mutex_lock(&e->lock);
+  if (clip->sticker) {
+    clip->last_used = ++e->clock;
+    VdSticker* existing = clip->sticker;
+    pthread_mutex_unlock(&e->lock);
+    return existing;
+  }
+  if (clip->decoder_failed || !clip->path) {
+    pthread_mutex_unlock(&e->lock);
+    return NULL;
+  }
+
+  VdStickerOptions options = vd_sticker_default_options();
+  // A sticker with more pixels than the frame it is drawn into is paying for
+  // detail the compositor is about to throw away.
+  options.max_side = e->width > e->height ? e->width : e->height;
+  trim_stickers(e, options.max_bytes);
+
+  clip->sticker = vd_sticker_open(clip->path, options, NULL);
+  if (!clip->sticker) {
+    // Same bargain a decoder gets: a file that will not open renders as a gap
+    // rather than being retried sixty times a second.
+    clip->decoder_failed = true;
+    pthread_mutex_unlock(&e->lock);
+    return NULL;
+  }
+  e->stats.sticker_opens++;
+  clip->last_used = ++e->clock;
+  VdSticker* opened = clip->sticker;
+  pthread_mutex_unlock(&e->lock);
+  return opened;
+}
+
 // Caller holds render_lock and not `lock`. Takes `lock` around the pointer
 // mutations so vd_engine_stats never reads a decoder mid-swap.
 static VdDecoder* decoder_for(VdEngine* e, VdClipEntry* clip) {
@@ -247,6 +324,7 @@ static void* raster_for(VdEngine* e, VdClipEntry* clip, int32_t reveal) {
 
 static void free_clip_contents(VdClipEntry* clip) {
   if (clip->decoder) vd_decoder_close(clip->decoder);
+  if (clip->sticker) vd_sticker_close(clip->sticker);
   if (clip->raster) CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
   vd_text_spec_free(clip->text);
   vd_shape_spec_free(clip->shape);
@@ -355,6 +433,38 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->transform = clip->transform;
       apply_anim(layer, &anim);
       // The raster belongs to the clip, not to this frame, so the release
+      // loop below has to find nothing here.
+      memset(&frames[layer_count], 0, sizeof(frames[0]));
+      layer_count++;
+      continue;
+    }
+
+    // An animated overlay is a file, so it has a path — but it is decoded
+    // whole and looped rather than seeked in, and it arrives as premultiplied
+    // BGRA like a caption rather than as YCbCr like video. It is fitted like a
+    // decoded frame, though, because unlike a caption it has a size of its own
+    // that is not the output's.
+    if (clip->is_sticker) {
+      VdSticker* sticker = sticker_for(e, clip);
+      if (!sticker) continue;
+      bool changed = false;
+      void* buffer = vd_sticker_frame_at(
+          sticker, clip->source_in + (position - clip->start), &changed);
+      if (!buffer) continue;
+      if (changed) {
+        pthread_mutex_lock(&e->lock);
+        e->stats.sticker_frames++;
+        pthread_mutex_unlock(&e->lock);
+      }
+      VdLayer* layer = &layers[layer_count];
+      memset(layer, 0, sizeof(*layer));
+      layer->pixel_buffer = buffer;
+      layer->format = VD_PIXEL_BGRA;
+      layer->fit = clip->fit;
+      layer->opacity = clip->opacity;
+      layer->transform = clip->transform;
+      apply_anim(layer, &anim);
+      // The buffer belongs to the sticker, not to this frame, so the release
       // loop below has to find nothing here.
       memset(&frames[layer_count], 0, sizeof(frames[0]));
       layer_count++;
@@ -653,6 +763,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->fit = src->fit;
     dst->transform = src->transform;
     dst->has_video = src->has_video;
+    dst->is_sticker = src->sticker;
     dst->anim = src->anim;
     dst->text = vd_text_spec_copy(src->text);
     dst->shape = vd_shape_spec_copy(src->shape);
@@ -668,6 +779,16 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
         dst->decoder = old->decoder;
         dst->last_used = old->last_used;
         old->decoder = NULL;
+        break;
+      }
+      // A sticker survives an edit on the same terms and for a stronger
+      // reason: reopening one means decoding the whole animation again, where
+      // reopening a decoder costs one seek.
+      if (old->sticker && old->path && dst->path && dst->is_sticker &&
+          strcmp(old->path, dst->path) == 0) {
+        dst->sticker = old->sticker;
+        dst->last_used = old->last_used;
+        old->sticker = NULL;
         break;
       }
       // The same bargain for a drawn clip: a raster survives any edit that did
@@ -884,10 +1005,16 @@ void vd_engine_stats(VdEngine* e, VdEngineStats* out) {
   out->duration = e->duration;
   out->state = (int32_t)e->state;
   int32_t open = 0;
+  int64_t sticker_bytes = 0;
   for (int32_t i = 0; i < e->clip_count; i++) {
     if (e->clips[i].decoder) open++;
+    sticker_bytes += vd_sticker_bytes(e->clips[i].sticker);
   }
   out->open_decoders = open;
+  // Counted here rather than accumulated, like open_decoders and for the same
+  // reason: a clip leaving the timeline takes its sticker with it, and a
+  // running total would have to be decremented on every path that frees one.
+  out->sticker_bytes = sticker_bytes;
 
   if (e->audio) {
     VdAudioStats audio;

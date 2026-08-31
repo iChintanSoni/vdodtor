@@ -34,6 +34,23 @@ MediaAsset videoAsset(String id, {double seconds = 10, bool audio = true}) =>
       ),
     );
 
+/// An animated overlay: a picture, no sound, and a length that is one loop
+/// rather than a limit.
+MediaAsset stickerAsset(String id, {double seconds = 1}) => MediaAsset(
+      id: id,
+      path: '/media/$id.gif',
+      displayName: '$id.gif',
+      probe: MediaProbe(
+        kind: MediaKind.sticker,
+        duration: secs(seconds),
+        width: 480,
+        height: 480,
+        frameRate: FrameRates.fps30,
+        hasVideo: true,
+        videoCodec: 'gif',
+      ),
+    );
+
 /// A file with sound and no picture — a music bed. The case that made audio
 /// lanes worth having, and the one nothing reached the engine for until the
 /// levels work.

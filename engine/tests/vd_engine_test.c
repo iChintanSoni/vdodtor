@@ -730,6 +730,227 @@ static void test_a_shape_is_drawn_once(void) {
   vd_engine_destroy(e);
 }
 
+// An animated overlay is the third kind of layer: a file, like video, but
+// decoded whole and composited as premultiplied BGRA, like a caption. These
+// check the wiring — that it reaches the screen, that it keeps its alpha, that
+// it is retimed rather than resampled, and that it survives an edit.
+//
+// sticker_4up.gif is four solid quarter-second frames: red, green, blue,
+// yellow. Which frame is on screen is therefore a pixel.
+static const int STICKER_RED[3] = {192, 0, 0};
+static const int STICKER_BLUE[3] = {0, 0, 192};
+
+static VdTimeline sticker_timeline(VdTimelineClip* clips, const char* file,
+                                   VdTick duration) {
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");
+  clips[0].duration = duration;
+  clips[1] = vd_timeline_clip_default();
+  clips[1].path = fixture(file);
+  clips[1].sticker = true;
+  clips[1].duration = duration;
+  clips[1].track = 1;
+  clips[1].gain = 0.0f;
+  // Stretched, so the 16x16 fixture covers the frame and a middle pixel is
+  // the sticker rather than the clip under it.
+  clips[1].fit = VD_FIT_STRETCH;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+  return timeline;
+}
+
+static void test_a_sticker_composites_over_the_picture(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 2 * SECOND);
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_RED, "the first frame of the sticker");
+
+  // Half a second in is the third frame. Nothing seeked to get there — the
+  // whole animation was decoded at open, and this is a lookup.
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_BLUE, "the third frame of the sticker");
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.active_layers, 2);
+  // One decoder for the video and none for the sticker: an animated overlay
+  // is not opened as video, which matters because the video decoder cannot
+  // export a BGRA frame at all and would render it as a gap.
+  VD_CHECK_EQ(stats.open_decoders, 1);
+  VD_CHECK_EQ(stats.sticker_opens, 1);
+  VD_CHECK(stats.sticker_bytes > 0);
+  // And it is not a caption or a shape, so neither of those counters moved.
+  VD_CHECK_EQ(stats.text_rasters, 0);
+  VD_CHECK_EQ(stats.shape_rasters, 0);
+
+  vd_engine_destroy(e);
+}
+
+// The one that says a sticker is a sticker and not a still: past the end of
+// the animation it starts again, which is what lets a one-second GIF sit on a
+// clip of any length at all.
+static void test_a_sticker_loops_under_the_playhead(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 4 * SECOND);
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // The animation is one second long and the clip is four. Every second lands
+  // on the same frame.
+  for (int i = 0; i < 4; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+    check_frame_is(e, STICKER_RED, "the start of a loop");
+
+    vd_engine_seek(e, (VdTick)i * SECOND + SECOND / 2);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+    check_frame_is(e, STICKER_BLUE, "the middle of a loop");
+  }
+
+  vd_engine_destroy(e);
+}
+
+// Retimed rather than resampled: the frame on screen is the one whose interval
+// contains the instant, so a sticker that changes four times a second changes
+// four times a second whatever the project's rate is.
+//
+// The counter is the assertion. Sixty renders across one second of a four
+// frame animation have to put four frames on screen — sixty would mean every
+// project frame was copying a picture that had not changed.
+static void test_a_sticker_is_retimed_and_not_resampled(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 2 * SECOND);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  VdEngineStats before;
+  vd_engine_stats(e, &before);
+  for (int i = 0; i < 60; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND / 60);
+    vd_engine_render_now(e);
+  }
+  VdEngineStats after;
+  vd_engine_stats(e, &after);
+  VD_CHECK_EQ(after.sticker_frames - before.sticker_frames, 4);
+  // And the file was opened once for all sixty.
+  VD_CHECK_EQ(after.sticker_opens, 1);
+
+  vd_engine_destroy(e);
+}
+
+// The same bargain a decoder gets from an unchanged path, and a better reason
+// for it: reopening a decoder costs a seek, and reopening a sticker means
+// decoding the whole animation again.
+static void test_a_sticker_survives_an_edit(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 2 * SECOND);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  // Seeked inside the clip every time, and deliberately: an assertion that the
+  // sticker was not reopened means nothing if the playhead is somewhere the
+  // clip is not, because then nothing asked for it at all.
+  vd_engine_seek(e, SECOND);
+  vd_engine_render_now(e);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.sticker_opens, 1);
+
+  // Nudge it along its lane. The path did not change, so the pixels do not
+  // have to be found again.
+  clips[1].start = SECOND / 4;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.sticker_opens, 1);
+  VD_CHECK_EQ(stats.active_layers, 2);
+
+  // Pointing it at a different file does reopen it — that is what the cache
+  // is keyed on.
+  clips[1].path = fixture("sticker_alpha.apng");
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.sticker_opens, 2);
+
+  vd_engine_destroy(e);
+}
+
+// The alpha is the point of a sticker. Without it an overlay is a rectangle
+// with a picture painted on it, and the clip below never shows through.
+static void test_a_sticker_keeps_its_alpha_over_the_picture(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  // The APNG fixture is an opaque square inside a transparent border, drawn
+  // at its own size in the middle of the frame — so the corners of the output
+  // are the video underneath it.
+  VdTimelineClip clips[2];
+  VdTimeline timeline =
+      sticker_timeline(clips, "sticker_alpha.apng", 2 * SECOND);
+  clips[1].fit = VD_FIT_CONTAIN;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  check_frame_is(e, STICKER_RED, "the sticker itself");
+  check_frame_pixel_is(e, 0.02, 0.02, GREEN, "the picture around the sticker");
+
+  vd_engine_destroy(e);
+}
+
+// A sticker is a clip like any other, so the transform and the in/out presets
+// reach it — the same claim a caption and a shape each make, and the reason
+// all three go through one VdLayer.
+static void test_a_sticker_takes_a_transform_and_an_animation(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 2 * SECOND);
+  clips[1].transform = vd_transform_identity();
+  clips[1].transform.offset_y = 0.9f;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the sticker moved out of the middle");
+
+  // And an entrance fades it, leaving the picture underneath.
+  clips[1].transform = vd_transform_identity();
+  clips[1].anim.in_preset = VD_ANIM_FADE;
+  clips[1].anim.in_duration = SECOND;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "a sticker that has not arrived yet");
+
+  vd_engine_destroy(e);
+}
+
 
 // --- animation -------------------------------------------------------------
 
@@ -1333,6 +1554,12 @@ int main(void) {
   test_a_caption_alone_is_a_timeline();
   test_a_shape_composites_over_the_picture();
   test_a_shape_is_drawn_once();
+  test_a_sticker_composites_over_the_picture();
+  test_a_sticker_loops_under_the_playhead();
+  test_a_sticker_is_retimed_and_not_resampled();
+  test_a_sticker_survives_an_edit();
+  test_a_sticker_keeps_its_alpha_over_the_picture();
+  test_a_sticker_takes_a_transform_and_an_animation();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

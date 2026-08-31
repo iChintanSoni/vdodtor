@@ -1357,9 +1357,10 @@ final class Clip {
 
 /// The longest a clip may be trimmed given the source it points at.
 ///
-/// Zero means unbounded, which covers an image — no intrinsic length — and a
-/// caption or a shape, which have no source to run out of at all.
+/// Zero means unbounded, which covers an image — no intrinsic length — a
+/// sticker, which loops rather than running out, and a caption or a shape,
+/// which have no source at all.
 Tick maxDurationFor(Clip clip, MediaAsset? asset) {
-  if (asset == null || asset.probe.kind == MediaKind.image) return Tick.zero;
+  if (asset == null || asset.probe.kind.isEndless) return Tick.zero;
   return asset.probe.duration - clip.sourceIn;
 }

@@ -729,6 +729,184 @@ class VdEngineBindings {
         )
       >();
 
+  VdStickerOptions vd_sticker_default_options() {
+    return _vd_sticker_default_options();
+  }
+
+  late final _vd_sticker_default_optionsPtr =
+      _lookup<ffi.NativeFunction<VdStickerOptions Function()>>(
+        'vd_sticker_default_options',
+      );
+  late final _vd_sticker_default_options = _vd_sticker_default_optionsPtr
+      .asFunction<VdStickerOptions Function()>();
+
+  /// Decodes every frame of `path` into memory. Returns NULL on failure, with
+  /// `out_result` — which may be NULL — set to a negative VdResult.
+  ///
+  /// This is the expensive call, and it is the only expensive call: it demuxes
+  /// the file twice, once to count frames so the budget can be spent before a
+  /// pixel is written, and once to decode them.
+  ffi.Pointer<VdSticker> vd_sticker_open(
+    ffi.Pointer<ffi.Char> path,
+    VdStickerOptions options,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_sticker_open(path, options, out_result);
+  }
+
+  late final _vd_sticker_openPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdSticker> Function(
+            ffi.Pointer<ffi.Char>,
+            VdStickerOptions,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_sticker_open');
+  late final _vd_sticker_open = _vd_sticker_openPtr
+      .asFunction<
+        ffi.Pointer<VdSticker> Function(
+          ffi.Pointer<ffi.Char>,
+          VdStickerOptions,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  void vd_sticker_close(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_close(sticker);
+  }
+
+  late final _vd_sticker_closePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_close',
+      );
+  late final _vd_sticker_close = _vd_sticker_closePtr
+      .asFunction<void Function(ffi.Pointer<VdSticker>)>();
+
+  /// One loop, in project ticks. Always > 0 for an open sticker — a single-frame
+  /// file is a still that loops, and a still with no length would divide by zero.
+  int vd_sticker_duration(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_duration(sticker);
+  }
+
+  late final _vd_sticker_durationPtr =
+      _lookup<ffi.NativeFunction<VdTick Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_duration',
+      );
+  late final _vd_sticker_duration = _vd_sticker_durationPtr
+      .asFunction<int Function(ffi.Pointer<VdSticker>)>();
+
+  int vd_sticker_frame_count(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_frame_count(sticker);
+  }
+
+  late final _vd_sticker_frame_countPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_frame_count',
+      );
+  late final _vd_sticker_frame_count = _vd_sticker_frame_countPtr
+      .asFunction<int Function(ffi.Pointer<VdSticker>)>();
+
+  /// The size frames actually came out at, which is the file's size unless the
+  /// budget or `max_side` shrank it.
+  int vd_sticker_width(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_width(sticker);
+  }
+
+  late final _vd_sticker_widthPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_width',
+      );
+  late final _vd_sticker_width = _vd_sticker_widthPtr
+      .asFunction<int Function(ffi.Pointer<VdSticker>)>();
+
+  int vd_sticker_height(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_height(sticker);
+  }
+
+  late final _vd_sticker_heightPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_height',
+      );
+  late final _vd_sticker_height = _vd_sticker_heightPtr
+      .asFunction<int Function(ffi.Pointer<VdSticker>)>();
+
+  /// What it is holding. For the engine's cache, which evicts on bytes rather
+  /// than on count: a sticker's cost is memory, not a file handle.
+  int vd_sticker_bytes(ffi.Pointer<VdSticker> sticker) {
+    return _vd_sticker_bytes(sticker);
+  }
+
+  late final _vd_sticker_bytesPtr =
+      _lookup<ffi.NativeFunction<ffi.Int64 Function(ffi.Pointer<VdSticker>)>>(
+        'vd_sticker_bytes',
+      );
+  late final _vd_sticker_bytes = _vd_sticker_bytesPtr
+      .asFunction<int Function(ffi.Pointer<VdSticker>)>();
+
+  /// The frame on screen at `t` ticks into the animation, looping: `t` is taken
+  /// modulo `vd_sticker_duration`, and a negative `t` counts back from the end of
+  /// a loop rather than clamping, so a clip trimmed to start before its source
+  /// still shows the animation running.
+  ///
+  /// Returns a CVPixelBufferRef in 32BGRA, **premultiplied**, IOSurface-backed
+  /// and Metal-compatible — the same thing a caption or a shape hands over. It
+  /// belongs to the sticker and is valid until the next call or until close:
+  /// **do not retain it and do not release it.** One buffer is reused for every
+  /// frame because the alternative is an IOSurface per frame of every animation
+  /// on the timeline, and a hundred-frame GIF would spend a hundred of them to
+  /// show one.
+  ///
+  /// `out_changed`, which may be NULL, reports whether this call put a different
+  /// frame in the buffer. That is the number worth watching: it should tick at
+  /// the *sticker's* rate and not the project's, and a stream of them at sixty a
+  /// second means the retiming above is not happening.
+  ffi.Pointer<ffi.Void> vd_sticker_frame_at(
+    ffi.Pointer<VdSticker> sticker,
+    int t,
+    ffi.Pointer<ffi.Bool> out_changed,
+  ) {
+    return _vd_sticker_frame_at(sticker, t, out_changed);
+  }
+
+  late final _vd_sticker_frame_atPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<ffi.Void> Function(
+            ffi.Pointer<VdSticker>,
+            VdTick,
+            ffi.Pointer<ffi.Bool>,
+          )
+        >
+      >('vd_sticker_frame_at');
+  late final _vd_sticker_frame_at = _vd_sticker_frame_atPtr
+      .asFunction<
+        ffi.Pointer<ffi.Void> Function(
+          ffi.Pointer<VdSticker>,
+          int,
+          ffi.Pointer<ffi.Bool>,
+        )
+      >();
+
+  /// Whether `codec` — a name as vd_probe reports it — is one of the animated
+  /// overlay formats.
+  ///
+  /// The *codec* rather than the extension, because a `.webp` can be either and
+  /// the container is the thing that knows. The app asks this to decide what kind
+  /// of media it imported, so that the answer is written down once and the engine
+  /// is never left probing a path it was handed to find out how to open it.
+  bool vd_sticker_is_sticker_codec(ffi.Pointer<ffi.Char> codec) {
+    return _vd_sticker_is_sticker_codec(codec);
+  }
+
+  late final _vd_sticker_is_sticker_codecPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<ffi.Char>)>>(
+        'vd_sticker_is_sticker_codec',
+      );
+  late final _vd_sticker_is_sticker_codec = _vd_sticker_is_sticker_codecPtr
+      .asFunction<bool Function(ffi.Pointer<ffi.Char>)>();
+
   /// A caption with nothing said about it: white, unstroked, unboxed, centred,
   /// at a readable size. Not a zeroed struct — a zeroed one is transparent type
   /// with no size, which is not a default anybody wants.
@@ -2361,6 +2539,25 @@ final class VdShapeSpec extends ffi.Struct {
   external double head_size;
 }
 
+final class VdSticker extends ffi.Opaque {}
+
+final class VdStickerOptions extends ffi.Struct {
+  /// How much decoded RGBA one sticker may hold. 0 picks the default.
+  ///
+  /// A budget rather than a frame limit, and it *scales* rather than truncates:
+  /// an animation too big to hold is decoded smaller, never shorter. Losing
+  /// resolution on an overlay is a compromise somebody might not notice; losing
+  /// the second half of the animation is a bug they certainly would.
+  @ffi.Int64()
+  external int max_bytes;
+
+  /// Longest side, in pixels, or 0 for no limit. The engine passes the
+  /// output's, because a sticker with more pixels than the frame it is drawn
+  /// into is paying for detail the compositor is about to throw away.
+  @ffi.Int32()
+  external int max_side;
+}
+
 /// Where each line sits inside the text block. The block itself is centred in
 /// the frame and moved by the clip's transform; this only decides what happens
 /// to a short line next to a long one.
@@ -2519,6 +2716,17 @@ final class VdTimelineClip extends ffi.Struct {
   /// cached on exactly the terms `text` is: a shape whose spec did not change
   /// keeps the pixels it already had. See vd_shape.h.
   external ffi.Pointer<VdShapeSpec> shape;
+
+  /// True when `path` is an animated overlay — a GIF, an animated WebP, an
+  /// APNG — rather than video. It is decoded whole and looped instead of being
+  /// seeked in, which is a different enough thing to be a different module: see
+  /// vd_sticker.h.
+  ///
+  /// The caller is told to say rather than the engine probing to find out, for
+  /// the same reason `has_video` is: the document already knows, and a sticker
+  /// should not cost a file open on every edit to establish what it is.
+  @ffi.Bool()
+  external bool sticker;
 
   /// position on the timeline
   @VdTick()
@@ -2705,6 +2913,23 @@ final class VdEngineStats extends ffi.Struct {
   /// would blunt exactly the measurement text_rasters exists to make.
   @ffi.Int64()
   external int shape_rasters;
+
+  /// Times a sticker put a *different* frame on screen. This is what says the
+  /// retiming is happening: a 4 fps sticker on a 60 fps timeline should tick
+  /// this four times a second, not sixty. A stream of them at the project's
+  /// rate means every frame is being copied again to show the same picture.
+  @ffi.Int64()
+  external int sticker_frames;
+
+  /// Stickers decoded whole since the engine started, and what they are
+  /// holding. An open is expensive and a byte is scarce, so both are worth
+  /// watching: a count that climbs during playback means the cache is thrashing
+  /// its budget, and the bytes are the budget it is thrashing.
+  @ffi.Int64()
+  external int sticker_opens;
+
+  @ffi.Int64()
+  external int sticker_bytes;
 }
 
 final class VdThumbnail extends ffi.Struct {

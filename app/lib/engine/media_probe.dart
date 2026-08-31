@@ -35,9 +35,13 @@ class MediaProbeService {
 
   /// Maps an engine probe onto the document model's [MediaProbe].
   MediaProbe toProbe(NativeProbe native) {
-    final kind = native.hasVideo
-        ? (native.durationTicks == 0 ? MediaKind.image : MediaKind.video)
-        : MediaKind.audio;
+    // The rule lives on MediaProbe so the project decoder can apply the same
+    // one with no engine alive — see MediaProbe.kindFor.
+    final kind = MediaProbe.kindFor(
+      hasVideo: native.hasVideo,
+      duration: Tick(native.durationTicks),
+      videoCodec: native.videoCodec.isEmpty ? null : native.videoCodec,
+    );
 
     // A rate of 0/1 means the container did not say; leave it at 1 fps rather
     // than inventing a plausible number, and let VFR normalisation sort it out

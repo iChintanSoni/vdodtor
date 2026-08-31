@@ -256,6 +256,7 @@ class EngineClip {
     this.path,
     this.text,
     this.shape,
+    this.sticker = false,
     required this.startTicks,
     required this.durationTicks,
     this.sourceInTicks = 0,
@@ -286,6 +287,16 @@ class EngineClip {
   /// A shape instead of a file. Null for every clip that has a [path] or a
   /// [text] — the three are exclusive.
   final EngineShape? shape;
+
+  /// True when [path] is an animated overlay — a GIF, an animated WebP, an
+  /// APNG — rather than video. The engine decodes it whole and loops it
+  /// instead of seeking in it.
+  ///
+  /// A flag beside the path rather than a fourth exclusive field, because a
+  /// sticker *is* a file: it has a path, it can be missing, and everything
+  /// about how it is addressed on the timeline is a video clip's. What differs
+  /// is how the engine opens it.
+  final bool sticker;
 
   final int startTicks;
   final int durationTicks;
@@ -357,6 +368,9 @@ class EngineStats {
     required this.clockRegressions,
     required this.textRasters,
     required this.shapeRasters,
+    required this.stickerFrames,
+    required this.stickerOpens,
+    required this.stickerBytes,
   });
 
   final int framesPresented;
@@ -399,6 +413,16 @@ class EngineStats {
   /// out text is the expensive one, and folding a rectangle into that number
   /// would blunt the measurement.
   final int shapeRasters;
+
+  /// Times a sticker put a *different* frame on screen. It should tick at the
+  /// sticker's own rate rather than the project's — that is what says an
+  /// animated overlay is being retimed instead of resampled.
+  final int stickerFrames;
+
+  /// Animated overlays decoded whole since the engine started, and how much
+  /// decoded RGBA they are holding.
+  final int stickerOpens;
+  final int stickerBytes;
 }
 
 /// Drives the native preview engine and owns its Flutter texture.
@@ -514,6 +538,7 @@ class PreviewEngine extends ChangeNotifier {
         entry.shape = clip.shape == null
             ? nullptr
             : _shapeSpec(arena, clip.shape!);
+        entry.sticker = clip.sticker;
         entry.start = clip.startTicks;
         entry.duration = clip.durationTicks;
         entry.source_in = clip.sourceInTicks;
@@ -633,6 +658,9 @@ class PreviewEngine extends ChangeNotifier {
         clockRegressions: 0,
         textRasters: 0,
         shapeRasters: 0,
+        stickerFrames: 0,
+        stickerOpens: 0,
+        stickerBytes: 0,
       );
     }
     final out = calloc<VdEngineStats>();
@@ -659,6 +687,9 @@ class PreviewEngine extends ChangeNotifier {
         clockRegressions: s.clock_regressions,
         textRasters: s.text_rasters,
         shapeRasters: s.shape_rasters,
+        stickerFrames: s.sticker_frames,
+        stickerOpens: s.sticker_opens,
+        stickerBytes: s.sticker_bytes,
       );
     } finally {
       calloc.free(out);

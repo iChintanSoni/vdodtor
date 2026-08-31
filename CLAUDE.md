@@ -37,9 +37,10 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets), vd_probe,
-           vd_decoder, vd_compositor (Metal), vd_raster (the frame a drawn source
-           draws into), vd_text (Core Text captions), vd_shape (rect/ellipse/line/
-           arrow), vd_audio_*, vd_engine (transport), vd_thumbnail, vd_peaks
+           vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
+           vd_raster (the frame a drawn source draws into), vd_text (Core Text
+           captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
+           vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 
@@ -113,6 +114,40 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A sticker is a file the decoder cannot open.** A GIF, an animated WebP or an
+  APNG goes through `vd_sticker`, not `vd_decoder`, and not as a preference:
+  `vd_decoder` exports VideoToolbox or YUV420P and refuses everything else, so a
+  sticker through it produces no frame at all. It also has no keyframes to seek to
+  (every frame is a patch on the one before), and its alpha is the point of it. So
+  it is decoded **whole** at open into one flat allocation of premultiplied BGRA
+  and costs nothing per frame afterwards.
+- **A sticker is retimed by being asked the time, not by resampling.** Each frame
+  carries the interval it is on screen for in ticks, and a lookup finds the interval
+  containing the instant — so nothing in `vd_sticker` knows the project's frame rate,
+  and a 4 fps sticker is right at 24, 30 and 60. `VdEngineStats::sticker_frames` is
+  how that is asserted: it ticks at the *sticker's* rate, so thirty renders across a
+  four-frame loop cost four. `engine/tests/media/sticker_uneven.gif` exists to pin it
+  — read at its nominal rate 0.4 s is the second frame, and read by time it is still
+  the first.
+- **A sticker loops, so nothing bounds how long it may be.** `MediaKind.isEndless`
+  covers it and stills together: its own length is the length of one loop, not a
+  limit, so it lands at the still-image length and `maxDurationFor` returns zero.
+  One frame is held in one IOSurface and rewritten when it changes — a hundred-frame
+  GIF must not spend a hundred of them to show one — and the memory budget **scales
+  rather than truncates**: too big means decoded smaller, never shorter.
+- **What makes a file a sticker is its codec, and that list is written twice.**
+  `vd_sticker_is_sticker_codec` and `MediaProbe.stickerCodecs`, with one table
+  asserted in `vd_sticker_test.c` and `app/test/model/media_sticker_test.dart` — the
+  `vd_time.c`/`time.dart` arrangement, and necessary for the same reason in both
+  directions: the engine classifies with no Dart, and the app classifies a project
+  read back from disk with no engine. `MediaProbe.kindFor` is the one rule, applied
+  by the probe *and* by the project decoder, so a GIF written down as video by an
+  older version opens as a sticker with no migration step.
+- **A sticker lands on an overlay lane, contained.** The main lane is magnetic, so a
+  sticker there would repack the footage and then composite underneath it; and the
+  default fit every other clip gets is blur-fill, which paints a blurred copy of the
+  overlay across the whole shot and hides the picture it is an overlay on. Both are
+  set in `MediaImporter.place`, not in the engine.
 - **A shape is a caption with different ink.** `vd_shape_render` draws a rectangle,
   an ellipse, a line or an arrow into the same output-sized premultiplied BGRA buffer
   `vd_text_render` produces, and the engine hands it to the compositor as the same

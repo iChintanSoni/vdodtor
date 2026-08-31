@@ -250,7 +250,12 @@ class _AssetRowState extends State<_AssetRow> {
 
 /// "0:12 · 1920×1080" — the two things that decide where a clip can go.
 String _subtitle(MediaProbe probe) {
-  final parts = <String>[shortDuration(probe.duration)];
+  final parts = <String>[
+    // A sticker's length is one loop rather than a limit, so printing it would
+    // say "0:01" about a clip somebody can drag out as far as they like — and
+    // an APNG, whose container reports no length at all, would say "0:00".
+    probe.kind == MediaKind.sticker ? 'loops' : shortDuration(probe.duration),
+  ];
   if (probe.hasVideo) {
     parts.add('${probe.displayWidth}×${probe.displayHeight}');
   } else {
