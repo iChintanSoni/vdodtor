@@ -585,6 +585,151 @@ static void test_a_caption_alone_is_a_timeline(void) {
   vd_engine_destroy(e);
 }
 
+// A shape is the second thing the engine draws rather than decodes, and the
+// point of these two is that it goes through the *same* path a caption does:
+// the same render list, the same z-order, the same transform, and the same
+// bargain about keeping its pixels across an edit that did not touch it.
+//
+// Blue rather than the caption's red, so a test that mixes the two can say
+// which is on top.
+static const int SHAPE_BLUE[3] = {40, 80, 220};
+
+static VdShapeSpec blue_block(void) {
+  VdShapeSpec spec = vd_shape_spec_default();
+  spec.width = 0.6f;
+  spec.height = 0.6f;
+  spec.fill_color = 0xFF2850DCu;  // SHAPE_BLUE, opaque
+  return spec;
+}
+
+static void test_a_shape_composites_over_the_picture(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdShapeSpec spec = blue_block();
+  VdTimelineClip clips[2];
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_601.mp4");
+  clips[0].duration = SECOND;
+  clips[1] = vd_timeline_clip_default();
+  clips[1].shape = &spec;  // and no path and no text
+  clips[1].duration = SECOND;
+  clips[1].track = 1;
+  clips[1].gain = 0.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  check_frame_is(e, SHAPE_BLUE, "the shape is on top of the picture");
+  // The box is 0.6 of the frame's height, centred, so the corners are still
+  // the clip underneath — a shape is not a colour wash.
+  check_frame_pixel_is(e, 0.02, 0.02, GREEN, "the picture around the shape");
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  // No file to open, so no decoder and no way for a rectangle to fail.
+  VD_CHECK_EQ(stats.open_decoders, 1);
+  VD_CHECK_EQ(stats.active_layers, 2);
+  VD_CHECK_EQ(stats.shape_rasters, 1);
+  // A shape is not a caption, and the counter that measures Core Text has to
+  // stay a measurement of Core Text.
+  VD_CHECK_EQ(stats.text_rasters, 0);
+
+  // The transform reaches it like any other layer.
+  clips[1].transform = vd_transform_identity();
+  clips[1].transform.offset_y = 0.9f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the shape moved out of the middle");
+
+  vd_engine_destroy(e);
+}
+
+static void test_a_shape_is_drawn_once(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdShapeSpec spec = blue_block();
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.shape = &spec;
+  clip.duration = 2 * SECOND;
+  clip.gain = 0.0f;
+  // A slide, to make the point that moving a shape about the frame is the
+  // compositor's work and not the rasteriser's: forty frames of travel cost
+  // one drawing.
+  clip.anim.in_preset = VD_ANIM_SLIDE_UP;
+  clip.anim.in_duration = SECOND;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = &clip;
+  timeline.clip_count = 1;
+
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_seek(e, 0);
+  vd_engine_render_now(e);
+
+  VdEngineStats stats;
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 1);
+
+  for (int i = 1; i <= 40; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND / 20);
+    vd_engine_render_now(e);
+  }
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 1);
+
+  // An edit that leaves the shape alone leaves its pixels alone too.
+  clip.duration = 3 * SECOND;
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 1);
+
+  // Changing it does redraw it — that is what the cache is keyed on.
+  spec.corner = 1.0f;
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 2);
+
+  // And so does a change of output size, because the raster is made at it.
+  timeline.width = 640;
+  timeline.height = 480;
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_render_now(e);
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 3);
+
+  // A typewriter has nothing to reveal on a shape. It must not blank it and
+  // it must not redraw it once a frame looking for characters that are not
+  // there — which is what "a preset that quietly does nothing" has to mean.
+  clip.anim.in_preset = VD_ANIM_TYPEWRITER;
+  vd_engine_set_timeline(e, &timeline);
+  for (int i = 0; i <= 20; i++) {
+    vd_engine_seek(e, (VdTick)i * SECOND / 20);
+    vd_engine_render_now(e);
+  }
+  vd_engine_stats(e, &stats);
+  VD_CHECK_EQ(stats.shape_rasters, 3);
+  check_frame_is(e, SHAPE_BLUE, "a shape a typewriter could not erase");
+
+  vd_engine_destroy(e);
+}
+
 
 // --- animation -------------------------------------------------------------
 
@@ -1186,6 +1331,8 @@ int main(void) {
   test_a_caption_composites_over_the_picture();
   test_a_caption_is_laid_out_once();
   test_a_caption_alone_is_a_timeline();
+  test_a_shape_composites_over_the_picture();
+  test_a_shape_is_drawn_once();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

@@ -622,6 +622,113 @@ class VdEngineBindings {
         int Function(ffi.Pointer<VdCompositor>, ffi.Pointer<ffi.Uint8>, int)
       >();
 
+  /// A shape with nothing said about it: an opaque white rectangle, unstroked,
+  /// unshadowed, square-cornered, big enough to see. Not a zeroed struct — a
+  /// zeroed one is a transparent shape with no size, which is not a default
+  /// anybody wants.
+  VdShapeSpec vd_shape_spec_default() {
+    return _vd_shape_spec_default();
+  }
+
+  late final _vd_shape_spec_defaultPtr =
+      _lookup<ffi.NativeFunction<VdShapeSpec Function()>>(
+        'vd_shape_spec_default',
+      );
+  late final _vd_shape_spec_default = _vd_shape_spec_defaultPtr
+      .asFunction<VdShapeSpec Function()>();
+
+  /// True when two specs would rasterise to the same pixels. Field by field
+  /// rather than a memcmp: a struct with a mix of enums and floats has padding
+  /// in it, and padding is whatever was on the stack.
+  ///
+  /// The fields a kind ignores are compared anyway. A rectangle's `head_size`
+  /// cannot change its pixels, so calling two rectangles different over it costs
+  /// one redraw of one shape on the edit that changed it — where getting the
+  /// exception wrong the other way round would leave a stale raster on screen.
+  bool vd_shape_spec_equal(
+    ffi.Pointer<VdShapeSpec> a,
+    ffi.Pointer<VdShapeSpec> b,
+  ) {
+    return _vd_shape_spec_equal(a, b);
+  }
+
+  late final _vd_shape_spec_equalPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Bool Function(ffi.Pointer<VdShapeSpec>, ffi.Pointer<VdShapeSpec>)
+        >
+      >('vd_shape_spec_equal');
+  late final _vd_shape_spec_equal = _vd_shape_spec_equalPtr
+      .asFunction<
+        bool Function(ffi.Pointer<VdShapeSpec>, ffi.Pointer<VdShapeSpec>)
+      >();
+
+  /// A heap copy, and the matching free. The engine holds a spec for as long as
+  /// a clip is on the timeline; the caller that handed it over keeps its own.
+  /// Both accept NULL, which is a clip that is not a shape.
+  ffi.Pointer<VdShapeSpec> vd_shape_spec_copy(ffi.Pointer<VdShapeSpec> spec) {
+    return _vd_shape_spec_copy(spec);
+  }
+
+  late final _vd_shape_spec_copyPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdShapeSpec> Function(ffi.Pointer<VdShapeSpec>)
+        >
+      >('vd_shape_spec_copy');
+  late final _vd_shape_spec_copy = _vd_shape_spec_copyPtr
+      .asFunction<
+        ffi.Pointer<VdShapeSpec> Function(ffi.Pointer<VdShapeSpec>)
+      >();
+
+  void vd_shape_spec_free(ffi.Pointer<VdShapeSpec> spec) {
+    return _vd_shape_spec_free(spec);
+  }
+
+  late final _vd_shape_spec_freePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdShapeSpec>)>>(
+        'vd_shape_spec_free',
+      );
+  late final _vd_shape_spec_free = _vd_shape_spec_freePtr
+      .asFunction<void Function(ffi.Pointer<VdShapeSpec>)>();
+
+  /// Rasterises `spec` into a new `width` x `height` CVPixelBufferRef: 32BGRA,
+  /// **premultiplied**, transparent everywhere the shape is not. IOSurface-backed
+  /// and Metal-compatible, so the compositor wraps it without a copy.
+  ///
+  /// The box is centred in the frame; moving it is the clip transform's job, not
+  /// this function's. Caller releases with CVPixelBufferRelease. NULL on failure,
+  /// with `out_result` — which may be NULL — set to a negative VdResult.
+  ffi.Pointer<ffi.Void> vd_shape_render(
+    ffi.Pointer<VdShapeSpec> spec,
+    int width,
+    int height,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_shape_render(spec, width, height, out_result);
+  }
+
+  late final _vd_shape_renderPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<ffi.Void> Function(
+            ffi.Pointer<VdShapeSpec>,
+            ffi.Int32,
+            ffi.Int32,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_shape_render');
+  late final _vd_shape_render = _vd_shape_renderPtr
+      .asFunction<
+        ffi.Pointer<ffi.Void> Function(
+          ffi.Pointer<VdShapeSpec>,
+          int,
+          int,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
   /// A caption with nothing said about it: white, unstroked, unboxed, centred,
   /// at a readable size. Not a zeroed struct — a zeroed one is transparent type
   /// with no size, which is not a default anybody wants.
@@ -2148,6 +2255,112 @@ final class VdLayer extends ffi.Struct {
   external VdTransform transform;
 }
 
+/// What gets drawn inside the box.
+///
+/// **One box, four shapes.** Every kind is drawn inside the same rectangle —
+/// `width` by `height`, centred in the frame — which is what makes the two size
+/// numbers mean the same thing in all of them. A rectangle fills the box, an
+/// ellipse is inscribed in it, and a line runs across it from the middle of the
+/// left edge to the middle of the right.
+///
+/// A rounded rectangle is `VD_SHAPE_RECT` with a `corner`, and a circle is
+/// `VD_SHAPE_ELLIPSE` with equal sides, rather than kinds of their own: both
+/// are one slider away from the shape beside them, and a picker with six
+/// entries where four would do makes the reader look for a difference that is
+/// not there.
+///
+/// Values cross the FFI boundary as integers, so these may be appended to and
+/// never reordered.
+enum VdShapeKind {
+  VD_SHAPE_RECT(0),
+  VD_SHAPE_ELLIPSE(1),
+
+  /// The stroke *is* the shape: a line has no interior, so `fill_color` says
+  /// nothing about it and a line with no stroke width draws nothing — the same
+  /// rule a rectangle with no fill already follows.
+  VD_SHAPE_LINE(2),
+
+  /// A line with a head on its right end. Right, because that is the direction
+  /// the clip's own rotation turns towards, so "which way does it point" has
+  /// one answer and it is the transform's.
+  VD_SHAPE_ARROW(3);
+
+  final int value;
+  const VdShapeKind(this.value);
+
+  static VdShapeKind fromValue(int value) => switch (value) {
+    0 => VD_SHAPE_RECT,
+    1 => VD_SHAPE_ELLIPSE,
+    2 => VD_SHAPE_LINE,
+    3 => VD_SHAPE_ARROW,
+    _ => throw ArgumentError('Unknown value for VdShapeKind: $value'),
+  };
+}
+
+/// Everything about how one shape looks.
+///
+/// All scalars, unlike VdTextSpec — there is no string in a rectangle — which
+/// is why the copy below is a memcpy and the comparison is worth reading.
+///
+/// Colours are 0xAARRGGBB, straight (not premultiplied). Alpha 0 means *off*:
+/// a fill with no alpha draws no fill, a stroke with none draws no outline, a
+/// shadow colour with none casts no shadow. One rule rather than three booleans
+/// nobody would keep in step with the colours beside them.
+final class VdShapeSpec extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int kindAsInt;
+
+  VdShapeKind get kind => VdShapeKind.fromValue(kindAsInt);
+
+  /// The box, as fractions of the output height. Equal values are a square —
+  /// and so a circle, for an ellipse — in a 16:9 project and in a 9:16 one.
+  @ffi.Float()
+  external double width;
+
+  @ffi.Float()
+  external double height;
+
+  /// How round the corners of a rectangle are: 0 is square, 1 is as round as
+  /// the box allows, which is a pill on an oblong and a circle on a square. A
+  /// proportion rather than a length, so a rectangle keeps its corners when it
+  /// is resized. Ignored by every kind but VD_SHAPE_RECT.
+  @ffi.Float()
+  external double corner;
+
+  /// Ignored by VD_SHAPE_LINE and VD_SHAPE_ARROW, which have no interior.
+  @ffi.Uint32()
+  external int fill_color;
+
+  /// Drawn over the fill, straddling the edge, which is what every drawing
+  /// program does and what keeps a filled shape the size it says it is.
+  @ffi.Uint32()
+  external int stroke_color;
+
+  @ffi.Float()
+  external double stroke_width;
+
+  /// Cast by the whole shape — fill and stroke together, as one silhouette —
+  /// onto whatever is behind it. +y is down, the direction a light above the
+  /// frame throws it.
+  @ffi.Uint32()
+  external int shadow_color;
+
+  @ffi.Float()
+  external double shadow_dx;
+
+  @ffi.Float()
+  external double shadow_dy;
+
+  @ffi.Float()
+  external double shadow_blur;
+
+  /// How much of an arrow is head, as a fraction of its length. A proportion
+  /// for the same reason `corner` is one: an arrow that is lengthened should
+  /// still look like an arrow. Ignored by every kind but VD_SHAPE_ARROW.
+  @ffi.Float()
+  external double head_size;
+}
+
 /// Where each line sits inside the text block. The block itself is centred in
 /// the frame and moved by the clip's transform; this only decides what happens
 /// to a short line next to a long one.
@@ -2288,19 +2501,24 @@ final class VdVolumePoint extends ffi.Struct {
 
 final class VdTimelineClip extends ffi.Struct {
   /// Absolute path to the source file, or NULL for a clip that generates its
-  /// own picture — see `text`. Copied on set_timeline; the caller keeps
-  /// ownership of its own string.
+  /// own picture — see `text` and `shape`. Copied on set_timeline; the caller
+  /// keeps ownership of its own string.
   external ffi.Pointer<ffi.Char> path;
 
   /// A caption instead of a file. NULL for every clip that has a `path`, and
-  /// the two are exclusive: a clip is a window onto a source or it is something
-  /// the engine draws, never both.
+  /// the three are exclusive: a clip is a window onto a source, or it is one of
+  /// the two things the engine draws, and never two of them at once.
   ///
   /// The spec is copied on set_timeline, strings and all, and the raster it
   /// produces is kept for as long as the clip's spec is unchanged — the same
   /// bargain `path` gets with its decoder, and for the same reason: nudging a
   /// clip must not cost a re-layout of every caption on the timeline.
   external ffi.Pointer<VdTextSpec> text;
+
+  /// A rectangle, an ellipse, a line or an arrow instead of a file. Copied and
+  /// cached on exactly the terms `text` is: a shape whose spec did not change
+  /// keeps the pixels it already had. See vd_shape.h.
+  external ffi.Pointer<VdShapeSpec> shape;
 
   /// position on the timeline
   @VdTick()
@@ -2479,6 +2697,14 @@ final class VdEngineStats extends ffi.Struct {
   /// cache exists to prevent.
   @ffi.Int64()
   external int text_rasters;
+
+  /// Shapes drawn, on the same terms and read the same way. A counter of its
+  /// own rather than a shared "generated rasters", because the two answer
+  /// different questions: a caption's raster is the expensive one and the one
+  /// an animation can invalidate per character, and folding a shape's into it
+  /// would blunt exactly the measurement text_rasters exists to make.
+  @ffi.Int64()
+  external int shape_rasters;
 }
 
 final class VdThumbnail extends ffi.Struct {

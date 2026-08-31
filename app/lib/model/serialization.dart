@@ -100,6 +100,7 @@ Map<String, Object?> _trackToJson(Track t) => {
             if (c.animation.isAnimated)
               'animation': _animationToJson(c.animation),
             if (c.text != null) 'text': _textToJson(c.text!),
+            if (c.shape != null) 'shape': _shapeToJson(c.shape!),
           },
       ],
     };
@@ -188,6 +189,43 @@ Map<String, Object?> _textToJson(ClipText t) => {
       'maxWidth': t.maxWidth,
       'align': t.alignment.name,
     };
+
+/// A shape, in full — written whole for the same reason a caption is: this
+/// *is* the clip, and a file where a rectangle's colour is missing because it
+/// happened to be white reads like a file that lost it.
+Map<String, Object?> _shapeToJson(ClipShape s) => {
+      'kind': s.kind.name,
+      'width': s.width,
+      'height': s.height,
+      'corner': s.corner,
+      'fillColor': _colorToJson(s.fillColor),
+      'strokeColor': _colorToJson(s.strokeColor),
+      'strokeWidth': s.strokeWidth,
+      'shadowColor': _colorToJson(s.shadowColor),
+      'shadowX': s.shadowOffsetX,
+      'shadowY': s.shadowOffsetY,
+      'shadowBlur': s.shadowBlur,
+      'headSize': s.headSize,
+    };
+
+ClipShape _shapeFromJson(Map<String, Object?> json, String where) => ClipShape(
+      // A kind this version has never heard of would be a clip drawing
+      // something nobody can name, so unlike an animation preset it is an
+      // error rather than a fallback: a rectangle standing in for a shape from
+      // a later version is a silent rewrite of the picture.
+      kind: _enum(ShapeKind.values, json, 'kind', '$where.kind'),
+      width: _double(json, 'width', 0.5),
+      height: _double(json, 'height', 0.28),
+      corner: _double(json, 'corner', 0),
+      fillColor: _colorFromJson(json, 'fillColor', '$where.fillColor'),
+      strokeColor: _colorFromJson(json, 'strokeColor', '$where.strokeColor'),
+      strokeWidth: _double(json, 'strokeWidth', 0),
+      shadowColor: _colorFromJson(json, 'shadowColor', '$where.shadowColor'),
+      shadowOffsetX: _double(json, 'shadowX', 0),
+      shadowOffsetY: _double(json, 'shadowY', 0),
+      shadowBlur: _double(json, 'shadowBlur', 0),
+      headSize: _double(json, 'headSize', 0.25),
+    );
 
 String _colorToJson(int argb) =>
     '#${(argb & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0').toUpperCase()}';
@@ -428,6 +466,10 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
       text: c['text'] == null
           ? null
           : _textFromJson(_asMap(c['text'], '$where.text'), '$where.text')
+              .clamped(),
+      shape: c['shape'] == null
+          ? null
+          : _shapeFromJson(_asMap(c['shape'], '$where.shape'), '$where.shape')
               .clamped(),
     ));
   }

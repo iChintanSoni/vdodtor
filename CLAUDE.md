@@ -37,8 +37,9 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets), vd_probe,
-           vd_decoder, vd_compositor (Metal), vd_text (Core Text captions), vd_audio_*,
-           vd_engine (transport), vd_thumbnail, vd_peaks
+           vd_decoder, vd_compositor (Metal), vd_raster (the frame a drawn source
+           draws into), vd_text (Core Text captions), vd_shape (rect/ellipse/line/
+           arrow), vd_audio_*, vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 
@@ -112,6 +113,33 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A shape is a caption with different ink.** `vd_shape_render` draws a rectangle,
+  an ellipse, a line or an arrow into the same output-sized premultiplied BGRA buffer
+  `vd_text_render` produces, and the engine hands it to the compositor as the same
+  ordinary `VdLayer` — same transform, same opacity, same z-order, same in/out
+  animation, same "keep the raster until the spec changes" cache. Adding it cost one
+  field on `VdTimelineClip`, which is the return on the decision the entry below
+  describes. `vd_raster` is the pixel buffer, the context and the colour both of them
+  need, written once; `engine/tests/vd_ink.h` is how both test files read one back.
+- **A shape's every length is a fraction of the output *height*.** Both of them —
+  measured half against the width and half against the height, a shape changes shape
+  when the project's aspect does, and a circle is only round at 16:9. This is one rule
+  where `VdTextSpec` has two (a size against the output, the rest against the font
+  size), because a caption has one size to hang things off and a shape has two.
+  One box holds all four kinds: a rectangle fills it, an ellipse is inscribed in it, a
+  line runs across its middle — so a line's box height changes nothing, and the
+  inspector says so by not offering it.
+- **A line has no interior, so the stroke *is* the shape.** `ClipShape.withKind`, not
+  `copyWith(kind:)`: a filled rectangle turned into a line has its colour in the wrong
+  field and no width, so it would vanish. Changing the kind carries the colour across
+  and gives the stroke a width when there is none. A shape's shadow is cast from inside
+  a transparency layer for the matching reason — one silhouette, one shadow, where a
+  fill and a stroke shadowed separately show through each other.
+- **A text lane holds anything the app draws.** `MoveClip.accepts` is written against
+  `Clip.isGenerated`, not `isText`, so captions and shapes share the eight lanes and
+  `VD_MAX_LAYERS` keeps one number to stay in step with. `ShapeKind` is a fourth enum
+  crossing the boundary as an index, checked against `VdShapeKind` in
+  `app/test/model/clip_shape_test.dart` the way `AnimationPreset` is. Append only.
 - **A caption is a source, not a compositing mode.** `vd_text_render` lays a
   `VdTextSpec` out with Core Text into an output-sized premultiplied BGRA buffer, and
   the engine hands that to the compositor as an ordinary `VdLayer` — same transform,

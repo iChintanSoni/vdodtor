@@ -189,6 +189,62 @@ class EngineText {
   final EngineTextAlign alignment;
 }
 
+/// What a shape is. Order matches `VdShapeKind` in vd_shape.h — the index
+/// crosses the FFI boundary as an integer.
+enum EngineShapeKind { rectangle, ellipse, line, arrow }
+
+/// A shape, described to the engine.
+///
+/// **Every length here is a fraction of the output height** — not of the
+/// width, and not one of each, so a square stays square and a circle stays
+/// round whatever shape the project's frame is. That differs from
+/// [EngineText], where everything hangs off the font size, because a caption
+/// has one size to hang things off and a shape has two.
+///
+/// Colours are 0xAARRGGBB and alpha 0 means off, exactly as for a caption: no
+/// fill, no outline, no shadow.
+@immutable
+class EngineShape {
+  const EngineShape({
+    this.kind = EngineShapeKind.rectangle,
+    this.width = 0.5,
+    this.height = 0.28,
+    this.corner = 0,
+    this.fillColor = 0xFFFFFFFF,
+    this.strokeColor = 0xFF000000,
+    this.strokeWidth = 0,
+    this.shadowColor = 0,
+    this.shadowDx = 0,
+    this.shadowDy = 0,
+    this.shadowBlur = 0,
+    this.headSize = 0.25,
+  });
+
+  final EngineShapeKind kind;
+
+  /// The box the shape is drawn in, as fractions of the output height.
+  final double width;
+  final double height;
+
+  /// 0 square, 1 as round as the box allows. Rectangles only.
+  final double corner;
+
+  /// Ignored by [EngineShapeKind.line] and [EngineShapeKind.arrow], which have
+  /// no interior — for those the stroke *is* the shape.
+  final int fillColor;
+
+  final int strokeColor;
+  final double strokeWidth;
+
+  final int shadowColor;
+  final double shadowDx;
+  final double shadowDy;
+  final double shadowBlur;
+
+  /// How much of an arrow is head, as a fraction of its length.
+  final double headSize;
+}
+
 /// One clip on the render list the engine composites from.
 ///
 /// This is deliberately not the document model: the engine gets flat clips
@@ -199,6 +255,7 @@ class EngineClip {
   const EngineClip({
     this.path,
     this.text,
+    this.shape,
     required this.startTicks,
     required this.durationTicks,
     this.sourceInTicks = 0,
@@ -212,15 +269,23 @@ class EngineClip {
     this.fadeInTicks = 0,
     this.fadeOutTicks = 0,
     this.volumePoints = const [],
-  }) : assert((path == null) != (text == null),
-            'a clip is a window onto a file or something the engine draws, '
-            'never both and never neither');
+  }) : assert(
+            (path == null ? 0 : 1) +
+                    (text == null ? 0 : 1) +
+                    (shape == null ? 0 : 1) ==
+                1,
+            'a clip is a window onto a file or one of the things the engine '
+            'draws, never two of them and never none');
 
   /// The source file, or null for a clip the engine generates.
   final String? path;
 
   /// A caption instead of a file. Null for every clip that has a [path].
   final EngineText? text;
+
+  /// A shape instead of a file. Null for every clip that has a [path] or a
+  /// [text] — the three are exclusive.
+  final EngineShape? shape;
 
   final int startTicks;
   final int durationTicks;
@@ -291,6 +356,7 @@ class EngineStats {
     required this.forcedRenders,
     required this.clockRegressions,
     required this.textRasters,
+    required this.shapeRasters,
   });
 
   final int framesPresented;
@@ -328,6 +394,11 @@ class EngineStats {
   /// Captions laid out since the engine started. It should tick once per
   /// caption per edit that changed one, and never during playback.
   final int textRasters;
+
+  /// Shapes drawn, read the same way and counted apart from captions: laying
+  /// out text is the expensive one, and folding a rectangle into that number
+  /// would blunt the measurement.
+  final int shapeRasters;
 }
 
 /// Drives the native preview engine and owns its Flutter texture.
@@ -402,6 +473,26 @@ class PreviewEngine extends ChangeNotifier {
     return spec;
   }
 
+  /// One shape in native memory, on the same terms and with the same warning:
+  /// a field left out here reads back whatever the arena happened to hold.
+  static Pointer<VdShapeSpec> _shapeSpec(Arena arena, EngineShape shape) {
+    final spec = arena<VdShapeSpec>();
+    spec.ref
+      ..kindAsInt = shape.kind.index
+      ..width = shape.width
+      ..height = shape.height
+      ..corner = shape.corner
+      ..fill_color = shape.fillColor
+      ..stroke_color = shape.strokeColor
+      ..stroke_width = shape.strokeWidth
+      ..shadow_color = shape.shadowColor
+      ..shadow_dx = shape.shadowDx
+      ..shadow_dy = shape.shadowDy
+      ..shadow_blur = shape.shadowBlur
+      ..head_size = shape.headSize;
+    return spec;
+  }
+
   /// Replaces the render list. Safe while playing; the playhead is kept.
   void setTimeline(EngineTimeline timeline) {
     _checkAlive();
@@ -420,6 +511,9 @@ class PreviewEngine extends ChangeNotifier {
         entry.text = clip.text == null
             ? nullptr
             : _textSpec(arena, clip.text!);
+        entry.shape = clip.shape == null
+            ? nullptr
+            : _shapeSpec(arena, clip.shape!);
         entry.start = clip.startTicks;
         entry.duration = clip.durationTicks;
         entry.source_in = clip.sourceInTicks;
@@ -538,6 +632,7 @@ class PreviewEngine extends ChangeNotifier {
         forcedRenders: 0,
         clockRegressions: 0,
         textRasters: 0,
+        shapeRasters: 0,
       );
     }
     final out = calloc<VdEngineStats>();
@@ -563,6 +658,7 @@ class PreviewEngine extends ChangeNotifier {
         forcedRenders: s.forced_renders,
         clockRegressions: s.clock_regressions,
         textRasters: s.text_rasters,
+        shapeRasters: s.shape_rasters,
       );
     } finally {
       calloc.free(out);

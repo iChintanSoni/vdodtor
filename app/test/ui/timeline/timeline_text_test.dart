@@ -197,6 +197,101 @@ void main() {
     });
   });
 
+  group('adding a shape', () {
+    test('makes the lane it needs and puts one on it at the playhead', () {
+      // The same lanes a caption uses. A shape is the other thing the app
+      // draws, and a second family of lanes would be a second cap to keep in
+      // step with VD_MAX_LAYERS for no difference anybody could see.
+      expect(textLanes(), isEmpty);
+      transport.positionTicks = secs(2).raw;
+
+      expect(controller.addShapeClip(), isTrue);
+
+      expect(textLanes(), hasLength(1));
+      final clip = textLanes().single.clips.single;
+      expect(clip.isShape, isTrue);
+      expect(clip.start, secs(2));
+      expect(clip.duration, TimelineController.defaultCaptionDuration);
+      expect(clip.shape!.kind, ShapeKind.rectangle);
+    });
+
+    test('any of the four kinds, and each one visible', () {
+      for (final kind in ShapeKind.values) {
+        transport.positionTicks = secs(10 * (kind.index + 1)).raw;
+        expect(controller.addShapeClip(kind: kind), isTrue);
+        final clip = controller.project.clipById(controller.selectedClipId!)!;
+        expect(clip.shape!.kind, kind);
+        expect(clip.shape!.isBlank, isFalse, reason: '$kind draws nothing');
+      }
+    });
+
+    test('and selects it, so the inspector is already on it', () {
+      controller.addShapeClip();
+      expect(controller.selectedClipId, textLanes().single.clips.single.id);
+    });
+
+    test('lane and shape are one undo entry', () {
+      controller.addShapeClip();
+      store.undo();
+      expect(textLanes(), isEmpty);
+      expect(store.project.tracks.map((t) => t.id),
+          projectWithThreeClips().tracks.map((t) => t.id));
+    });
+
+    test('a shape and a caption share a lane when there is room', () {
+      controller.addTextClip();
+      transport.positionTicks = secs(20).raw;
+      controller.addShapeClip();
+
+      expect(textLanes(), hasLength(1));
+      expect(textLanes().single.clips, hasLength(2));
+    });
+
+    test('a shape under a caption at the same moment gets its own lane', () {
+      // Which is what stacking them means: the shape on the lower lane
+      // composites first, so the caption lands on top of it.
+      transport.positionTicks = secs(1).raw;
+      controller.addShapeClip();
+      controller.addTextClip();
+
+      expect(textLanes(), hasLength(2));
+      expect(textLanes().first.clips.single.isShape, isTrue);
+      expect(textLanes().last.clips.single.isText, isTrue);
+    });
+
+    test('it stops at the same lane limit a caption does', () {
+      transport.positionTicks = 0;
+      for (var i = 0; i < Project.maxTracksOfKind(TrackKind.text); i++) {
+        expect(controller.addShapeClip(), isTrue, reason: 'shape $i');
+      }
+      expect(controller.canAddShapeClip, isFalse);
+      expect(controller.addShapeClip(), isFalse);
+      expect(controller.canAddTextClip, isFalse,
+          reason: 'one pool of lanes, one answer');
+    });
+
+    test('a shape survives being split and copied', () {
+      controller.addShapeClip(kind: ShapeKind.ellipse);
+      final id = controller.selectedClipId!;
+      transport.positionTicks =
+          TimelineController.defaultCaptionDuration.raw ~/ 2;
+      controller.splitAtPlayhead();
+
+      final lane = textLanes().single;
+      expect(lane.clips, hasLength(2));
+      for (final clip in lane.clips) {
+        expect(clip.shape!.kind, ShapeKind.ellipse);
+      }
+      expect(lane.clips.first.id, id);
+
+      controller.copySelection();
+      transport.positionTicks = secs(30).raw;
+      expect(controller.paste(), isTrue);
+      expect(controller.project.clipById(controller.selectedClipId!)!.isShape,
+          isTrue);
+    });
+  });
+
   group('a caption stays on a text lane', () {
     test('it cannot be dragged onto a video or audio lane', () {
       controller.addTextClip();
@@ -205,7 +300,7 @@ void main() {
       for (final track in controller.project.tracks) {
         if (track.kind == TrackKind.text) continue;
         expect(
-          MoveClip.accepts(track, null, from: TrackKind.text, isText: true),
+          MoveClip.accepts(track, null, from: TrackKind.text, isGenerated: true),
           isFalse,
           reason: 'a caption on ${track.kind.name} would repack the lane and '
               'then composite underneath it',
@@ -221,8 +316,23 @@ void main() {
       expect(MoveClip.accepts(lane, asset), isFalse);
       expect(MoveClip.accepts(lane, null), isFalse);
       // But a caption may move between text lanes like anything else.
-      expect(MoveClip.accepts(lane, null, from: TrackKind.text, isText: true),
+      expect(MoveClip.accepts(lane, null, from: TrackKind.text, isGenerated: true),
           isTrue);
+    });
+
+    test('a shape is bound by the same rule', () {
+      controller.addShapeClip();
+      final shape =
+          controller.project.clipById(controller.selectedClipId!)!;
+      expect(shape.isGenerated, isTrue);
+      for (final track in controller.project.tracks) {
+        expect(
+          MoveClip.accepts(track, null,
+              from: TrackKind.text, isGenerated: true),
+          track.kind == TrackKind.text,
+          reason: 'a shape belongs on a text lane and nowhere else',
+        );
+      }
     });
 
     test('a locked text lane takes nothing either', () {
@@ -231,7 +341,7 @@ void main() {
       store.run(SetTrackProperties(lane.id, locked: true));
       expect(
         MoveClip.accepts(controller.project.trackById(lane.id)!, null,
-            from: TrackKind.text, isText: true),
+            from: TrackKind.text, isGenerated: true),
         isFalse,
       );
     });

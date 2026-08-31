@@ -8,12 +8,14 @@
 // an OS upgrade while the renderer was still perfectly correct.
 //
 // So the assertions here are about *where the ink is*, not which pixels it
-// covers. Every one of them is a property that has to survive any amount of
+// covers — measured by vd_ink.h, which vd_shape_test.c reads a raster with
+// too. Every one of them is a property that has to survive any amount of
 // rasteriser drift and that breaks the moment the layout is wrong: alignment
 // moves the block, letter spacing widens it, line spacing heightens it, the
 // box sits behind it, the shadow falls below and to the right of it. That is
 // the whole of what this file can be wrong about.
 #include "vd_check.h"
+#include "vd_ink.h"
 #include "vdodtor/vd_probe.h"
 #include "vdodtor/vd_text.h"
 
@@ -24,75 +26,6 @@
 
 #define WIDTH 640
 #define HEIGHT 360
-
-// --- reading a raster ------------------------------------------------------
-
-// Where the ink is, in pixels, origin top left. Empty when nothing was drawn.
-typedef struct {
-  int32_t left, top, right, bottom;
-  int64_t coverage;  // sum of alpha over the frame
-  bool empty;
-} Ink;
-
-static int32_t ink_width(const Ink* ink) {
-  return ink->empty ? 0 : ink->right - ink->left + 1;
-}
-static int32_t ink_height(const Ink* ink) {
-  return ink->empty ? 0 : ink->bottom - ink->top + 1;
-}
-static int32_t ink_centre_x(const Ink* ink) {
-  return ink->empty ? 0 : (ink->left + ink->right) / 2;
-}
-static int32_t ink_centre_y(const Ink* ink) {
-  return ink->empty ? 0 : (ink->top + ink->bottom) / 2;
-}
-
-// Anything faint enough to be antialiasing rather than a mark someone would
-// see. Measuring the bounds against a threshold rather than against zero is
-// what makes the numbers below stable across rasterisers.
-#define INK_THRESHOLD 40
-
-static Ink measure(CVPixelBufferRef buffer) {
-  Ink ink = {0, 0, 0, 0, 0, true};
-  if (!buffer) return ink;
-
-  CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
-  const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(buffer);
-  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
-  const int32_t w = (int32_t)CVPixelBufferGetWidth(buffer);
-  const int32_t h = (int32_t)CVPixelBufferGetHeight(buffer);
-
-  for (int32_t y = 0; y < h; y++) {
-    const uint8_t* row = base + (size_t)y * stride;
-    for (int32_t x = 0; x < w; x++) {
-      const uint8_t alpha = row[(size_t)x * 4 + 3];
-      ink.coverage += alpha;
-      if (alpha < INK_THRESHOLD) continue;
-      if (ink.empty) {
-        ink.left = ink.right = x;
-        ink.top = ink.bottom = y;
-        ink.empty = false;
-        continue;
-      }
-      if (x < ink.left) ink.left = x;
-      if (x > ink.right) ink.right = x;
-      if (y < ink.top) ink.top = y;
-      if (y > ink.bottom) ink.bottom = y;
-    }
-  }
-  CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
-  return ink;
-}
-
-// BGRA, straight out of the buffer.
-static void pixel_at(CVPixelBufferRef buffer, int32_t x, int32_t y,
-                     uint8_t out[4]) {
-  CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
-  const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(buffer);
-  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
-  memcpy(out, base + (size_t)y * stride + (size_t)x * 4, 4);
-  CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
-}
 
 // Everything revealed, which is what every caption without a typewriter on it
 // asks for.

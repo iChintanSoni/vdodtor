@@ -18,13 +18,15 @@ EngineTimeline engineTimelineFor(Project project) {
     for (final clip in track.clips) {
       if (!clip.enabled) continue;
 
-      // A caption has no file to look up and nothing to decode, so it goes
-      // across on its own terms: the words and the styling, and silence.
-      final caption = clip.text;
-      if (caption != null) {
+      // A caption or a shape has no file to look up and nothing to decode, so
+      // it goes across on its own terms: what to draw, and silence. Both are
+      // rasters the size of the output, so both are stretched rather than
+      // fitted — there is nothing to fit.
+      if (clip.isGenerated) {
         if (track.hidden) continue;
         clips.add(EngineClip(
-          text: _engineTextFor(caption),
+          text: clip.text == null ? null : _engineTextFor(clip.text!),
+          shape: clip.shape == null ? null : _engineShapeFor(clip.shape!),
           startTicks: clip.start.raw,
           durationTicks: clip.duration.raw,
           track: index,
@@ -159,4 +161,26 @@ EngineText _engineTextFor(ClipText text) => EngineText(
         TextAlignment.center => EngineTextAlign.center,
         TextAlignment.right => EngineTextAlign.right,
       },
+    );
+
+/// A shape, field for field. Every number is already a fraction of the output
+/// height on both sides of the boundary, so there is nothing to convert.
+EngineShape _engineShapeFor(ClipShape shape) => EngineShape(
+      kind: switch (shape.kind) {
+        ShapeKind.rectangle => EngineShapeKind.rectangle,
+        ShapeKind.ellipse => EngineShapeKind.ellipse,
+        ShapeKind.line => EngineShapeKind.line,
+        ShapeKind.arrow => EngineShapeKind.arrow,
+      },
+      width: shape.width,
+      height: shape.height,
+      corner: shape.corner,
+      fillColor: shape.fillColor,
+      strokeColor: shape.strokeColor,
+      strokeWidth: shape.strokeWidth,
+      shadowColor: shape.shadowColor,
+      shadowDx: shape.shadowOffsetX,
+      shadowDy: shape.shadowOffsetY,
+      shadowBlur: shape.shadowBlur,
+      headSize: shape.headSize,
     );

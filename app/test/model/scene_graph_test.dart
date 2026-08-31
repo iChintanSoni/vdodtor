@@ -192,9 +192,14 @@ void main() {
     test('assetFor resolves a clip to its media', () {
       final p = projectWithThreeClips();
       expect(p.assetFor(p.clipById('c')!)?.id, 'm2');
+      // A caption has no media to resolve to, which is different from a clip
+      // whose media has gone missing: that one still has a mediaId.
       expect(
-          p.assetFor(const Clip(
-              id: 'x', mediaId: null, start: Tick.zero, duration: Tick(1))),
+          p.assetFor(Clip.caption(
+              id: 'x',
+              start: Tick.zero,
+              duration: Tick(1),
+              text: ClipText.plain)),
           isNull);
     });
 

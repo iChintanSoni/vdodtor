@@ -18,6 +18,7 @@
 
 #include "vdodtor/vd_anim.h"
 #include "vdodtor/vd_compositor.h"
+#include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_text.h"
 #include "vdodtor/vd_time.h"
 
@@ -48,19 +49,24 @@ typedef struct {
 
 typedef struct {
   // Absolute path to the source file, or NULL for a clip that generates its
-  // own picture — see `text`. Copied on set_timeline; the caller keeps
-  // ownership of its own string.
+  // own picture — see `text` and `shape`. Copied on set_timeline; the caller
+  // keeps ownership of its own string.
   const char* path;
 
   // A caption instead of a file. NULL for every clip that has a `path`, and
-  // the two are exclusive: a clip is a window onto a source or it is something
-  // the engine draws, never both.
+  // the three are exclusive: a clip is a window onto a source, or it is one of
+  // the two things the engine draws, and never two of them at once.
   //
   // The spec is copied on set_timeline, strings and all, and the raster it
   // produces is kept for as long as the clip's spec is unchanged — the same
   // bargain `path` gets with its decoder, and for the same reason: nudging a
   // clip must not cost a re-layout of every caption on the timeline.
   const VdTextSpec* text;
+
+  // A rectangle, an ellipse, a line or an arrow instead of a file. Copied and
+  // cached on exactly the terms `text` is: a shape whose spec did not change
+  // keeps the pixels it already had. See vd_shape.h.
+  const VdShapeSpec* shape;
 
   VdTick start;      // position on the timeline
   VdTick duration;   // length on the timeline
@@ -234,6 +240,13 @@ typedef struct {
   // means every frame is re-running Core Text, which is the whole thing the
   // cache exists to prevent.
   int64_t text_rasters;
+
+  // Shapes drawn, on the same terms and read the same way. A counter of its
+  // own rather than a shared "generated rasters", because the two answer
+  // different questions: a caption's raster is the expensive one and the one
+  // an animation can invalidate per character, and folding a shape's into it
+  // would blunt exactly the measurement text_rasters exists to make.
+  int64_t shape_rasters;
 } VdEngineStats;
 
 VD_EXPORT void vd_engine_stats(VdEngine* engine, VdEngineStats* out);

@@ -619,6 +619,96 @@ Future<Clip?> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
   return clip;
 }
 
+/// A shape on the timeline, drawn by the engine and dumped as a PNG.
+///
+/// [runCaptionSelfTest] for why a pass like this exists at all: the engine's
+/// own tests check the geometry in ink bounds, and what they cannot check is
+/// that a shape reaches the screen *through the app* — the document sync
+/// carrying a spec rather than a path, the compositor accepting a second
+/// premultiplied BGRA layer, the lane it shares with the captions ordering it
+/// underneath them. All of those fail silently and all of them are visible in
+/// one frame.
+///
+/// The four kinds go on one after another rather than side by side, because
+/// four shapes in one frame is a picture nobody can read — and each is dumped
+/// with the raster count beside it, which is the number that says the cache is
+/// keyed on what it claims to be keyed on.
+Future<void> runShapeSelfTest(PreviewEngine engine, DocumentStore store,
+    TimelineController timeline) async {
+  // Where the caption already is, a third of the way in, so a shape lands over
+  // a picture rather than on black — and, the caption's own lane being busy at
+  // that moment, on a lane above it. That is the frame worth dumping: two
+  // drawn layers and a decoded one, in an order somebody can check by eye.
+  final duration = store.project.duration;
+  timeline.seekTo(Tick(duration.raw ~/ 3));
+
+  final existing = store.project.tracks
+      .expand((t) => t.clips)
+      .where((c) => c.isShape)
+      .firstOrNull;
+  String? id = existing?.id;
+  if (id == null) {
+    // The sample project is the same one every run, so a pass that always
+    // added one would leave a lane behind every time until there were none
+    // left.
+    if (!timeline.addShapeClip()) {
+      stdout.writeln('[selftest] shape: nowhere to put one');
+      return;
+    }
+    id = timeline.selectedClipId;
+  }
+  if (id == null) return;
+
+  final track = store.project.trackOfClip(id)!;
+  stdout.writeln('[selftest] shape: on ${track.name} at '
+      '${store.project.clipById(id)!.start.raw} ticks');
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_shape_');
+  for (final shape in [
+    const ClipShape(
+      width: 1.2,
+      height: 0.22,
+      corner: 0.4,
+      fillColor: 0xCC101010,
+      strokeColor: 0xFFFFFFFF,
+      strokeWidth: 0.004,
+      shadowColor: 0xB3000000,
+      shadowOffsetY: 0.02,
+      shadowBlur: 0.02,
+    ),
+    ClipShape.of(ShapeKind.ellipse),
+    ClipShape.of(ShapeKind.line),
+    ClipShape.of(ShapeKind.arrow).copyWith(headSize: 0.35),
+  ]) {
+    store.endGesture();
+    store.run(SetClipShape(id, shape));
+    store.endGesture();
+
+    // Let the render list land, then look at the middle of the clip.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final clip = store.project.clipById(id)!;
+    engine.seek(clip.start.raw + clip.duration.raw ~/ 2);
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    final stats = engine.stats;
+    engine.dumpPng('${out.path}/${shape.kind.name}.png');
+    stdout.writeln('[selftest] shape: ${shape.kind.name} '
+        'layers=${stats.activeLayers} rasters=${stats.shapeRasters}');
+  }
+
+  // Scrubbing across it must not draw it again — the same bargain a caption
+  // gets, and the reason the raster is kept rather than made per frame.
+  final before = engine.stats;
+  final clip = store.project.clipById(id)!;
+  for (var i = 1; i <= 8; i++) {
+    engine.seek(clip.start.raw + clip.duration.raw * i ~/ 9);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+  }
+  stdout.writeln('[selftest] shape: after 8 seeks, '
+      '${engine.stats.shapeRasters - before.shapeRasters} further draws');
+  stdout.writeln('[selftest] shape: frames in ${out.path}');
+}
+
 /// An animation, watched frame by frame in the running app.
 ///
 /// The engine's own tests check the arithmetic and the wiring; what they

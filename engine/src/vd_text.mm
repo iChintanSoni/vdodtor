@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "vdodtor/vd_probe.h"
+#include "vdodtor/vd_raster.h"
 
 // Everything below draws in Core Graphics' own coordinates, origin bottom
 // left. A bitmap context stores its first row as the *top* of the image and
@@ -65,23 +66,10 @@ CGFontRef find_face(const char* family) {
   return font;
 }
 
-CGColorSpaceRef srgb() {
-  static CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-  return space;
-}
-
-// 0xAARRGGBB, straight alpha, in the context's own colour space.
-CGColorRef make_color(uint32_t argb) {
-  const CGFloat components[4] = {
-      (CGFloat)((argb >> 16) & 0xFFu) / 255.0,
-      (CGFloat)((argb >> 8) & 0xFFu) / 255.0,
-      (CGFloat)(argb & 0xFFu) / 255.0,
-      (CGFloat)((argb >> 24) & 0xFFu) / 255.0,
-  };
-  return CGColorCreate(srgb(), components);
-}
-
-bool visible(uint32_t argb) { return ((argb >> 24) & 0xFFu) != 0u; }
+// Under the names this file has always called them. They live in vd_raster.c
+// now that a shape needs them too — see vd_raster.h.
+CGColorRef make_color(uint32_t argb) { return vd_raster_color(argb); }
+bool visible(uint32_t argb) { return vd_raster_visible(argb); }
 
 // Text that touches the edge of the frame reads as a mistake, so a block that
 // says nothing about its width gets a margin.
@@ -514,51 +502,16 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
   }
 
   @autoreleasepool {
-    // IOSurface-backed and Metal-compatible on the same terms as the
-    // compositor's own output: the whole point of rasterising here is that the
-    // compositor can wrap the result without a copy.
-    CFDictionaryRef empty =
-        CFDictionaryCreate(kCFAllocatorDefault, nullptr, nullptr, 0,
-                           &kCFTypeDictionaryKeyCallBacks,
-                           &kCFTypeDictionaryValueCallBacks);
-    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
-        kCFAllocatorDefault, 2, &kCFTypeDictionaryKeyCallBacks,
-        &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, empty);
-    CFDictionarySetValue(attrs, kCVPixelBufferMetalCompatibilityKey,
-                         kCFBooleanTrue);
+    CVPixelBufferRef buffer =
+        (CVPixelBufferRef)vd_raster_create(width, height, out_result);
+    if (!buffer) return nullptr;
 
-    CVPixelBufferRef buffer = nullptr;
-    const CVReturn status =
-        CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                            kCVPixelFormatType_32BGRA, attrs, &buffer);
-    CFRelease(attrs);
-    CFRelease(empty);
-    if (status != kCVReturnSuccess || !buffer) {
-      if (out_result) *out_result = VD_ERR_OPEN;
-      return nullptr;
-    }
-
-    CVPixelBufferLockBaseAddress(buffer, 0);
-    CGContextRef ctx = CGBitmapContextCreate(
-        CVPixelBufferGetBaseAddress(buffer), (size_t)width, (size_t)height, 8,
-        CVPixelBufferGetBytesPerRow(buffer), srgb(),
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGContextRef ctx = vd_raster_begin(buffer);
     if (!ctx) {
-      CVPixelBufferUnlockBaseAddress(buffer, 0);
       CVPixelBufferRelease(buffer);
       if (out_result) *out_result = VD_ERR_UNSUPPORTED;
       return nullptr;
     }
-
-    // A fresh pixel buffer is not promised to be zeroed, and every pixel this
-    // does not draw has to be transparent rather than whatever was there.
-    CGContextClearRect(ctx, CGRectMake(0, 0, width, height));
-    // Subpixel smoothing puts colour fringes on the glyph edges, which is a
-    // trick for text on a known background and a defect on text with an alpha
-    // channel that will be composited over something else.
-    CGContextSetShouldSmoothFonts(ctx, false);
-    CGContextSetShouldAntialias(ctx, true);
 
     CFStringRef text =
         spec->text && *spec->text
@@ -662,9 +615,7 @@ void* vd_text_render(const VdTextSpec* spec, int32_t width, int32_t height,
       CFRelease(text);
     }
 
-    CGContextFlush(ctx);
-    CGContextRelease(ctx);
-    CVPixelBufferUnlockBaseAddress(buffer, 0);
+    vd_raster_finish(buffer, ctx);
     return buffer;
   }
 }
