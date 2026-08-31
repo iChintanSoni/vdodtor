@@ -7,6 +7,7 @@ import '../commands/edits.dart';
 import '../media/fonts.dart';
 import '../model/clip.dart';
 import '../model/time.dart';
+import '../model/track.dart';
 import 'theme.dart';
 import 'timeline/timeline_controller.dart';
 
@@ -42,6 +43,10 @@ class Inspector extends StatelessWidget {
 
   void _setAnimation(Clip clip, ClipAnimation animation) =>
       _store.run(SetClipAnimation(clip.id, animation), fromGestureStart: true);
+
+  void _setTransition(Clip clip, ClipTransition transition) =>
+      _store.run(SetClipTransition(clip.id, transition),
+          fromGestureStart: true);
 
   @override
   Widget build(BuildContext context) {
@@ -130,6 +135,16 @@ class Inspector extends StatelessWidget {
           // Where a clip sits, and then how it gets there. In that order
           // because the resting position is what an animation animates to,
           // and choosing it first is how anybody works.
+          // Before the animation, because a join is a property of the cut
+          // above the clip and an animation is a property of the clip itself
+          // — and the timeline reads downwards.
+          if (showsPicture)
+            _TransitionControls(
+              clip: clip,
+              previous: _clipBefore(track, clip),
+              onChanged: (t) => _setTransition(clip, t),
+              onCommit: _commit,
+            ),
           if (showsPicture)
             _AnimationControls(
               clip: clip,
@@ -155,6 +170,16 @@ class Inspector extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The clip this one meets on its lane, or null when it starts the lane or
+/// sits after a gap. A gap is not a cut, and a transition needs one.
+Clip? _clipBefore(Track? track, Clip clip) {
+  if (track == null) return null;
+  final index = track.indexOfClip(clip.id);
+  if (index <= 0) return null;
+  final previous = track.clips[index - 1];
+  return previous.end == clip.start ? previous : null;
 }
 
 class _NothingSelected extends StatelessWidget {
@@ -996,6 +1021,142 @@ const List<int> _boxPalette = [
 /// A fraction of the font size, which is what every caption measurement that
 /// is not the size itself is in.
 String _percentOfSize(double v) => '${(v * 100).round()}%';
+
+/// How a clip joins the one before it.
+///
+/// On the incoming clip, because that is where a transition is written down —
+/// a cut has two sides and a transition is one decision, so offering it from
+/// both would be two controls for one setting.
+///
+/// It appears whether or not the clip has a neighbour. A transition with no
+/// cut under it does nothing, and hiding the control when a clip is dragged
+/// away from its neighbour would mean re-picking one every time it came back.
+class _TransitionControls extends StatelessWidget {
+  const _TransitionControls({
+    required this.clip,
+    required this.previous,
+    required this.onChanged,
+    required this.onCommit,
+  });
+
+  final Clip clip;
+
+  /// The clip this one meets, or null when it starts a lane or sits after a
+  /// gap. Only used for the slider's end — the document clamps to the same
+  /// rule, and this is the control agreeing with it rather than a second
+  /// opinion.
+  final Clip? previous;
+
+  final ValueChanged<ClipTransition> onChanged;
+  final VoidCallback onCommit;
+
+  /// Half the window sits either side of the cut, so the longest it may be is
+  /// twice the shorter of the two clips.
+  double get _maxDuration {
+    final neighbour = previous?.duration ?? clip.duration;
+    final shorter = math.min(neighbour.raw, clip.duration.raw);
+    return math.min(
+        ClipTransition.maxDuration.raw.toDouble(), 2.0 * shorter);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = clip.transition;
+    final maxDuration = _maxDuration;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const _SectionLabel('JOIN'),
+            const Spacer(),
+            if (t.isActive)
+              TextButton(
+                onPressed: () {
+                  onCommit();
+                  onChanged(ClipTransition.none);
+                  onCommit();
+                },
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Cut', style: TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        if (previous == null)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 6),
+            child: Text(
+              'Nothing before it on this lane',
+              style: TextStyle(fontSize: 10, color: VdColors.dim),
+            ),
+          ),
+        _TransitionPicker(
+          preset: t.preset,
+          onChanged: (p) {
+            onCommit();
+            // Picking a preset has to give it a length, or the first thing
+            // anybody does after choosing one is discover it did nothing.
+            onChanged(p == TransitionPreset.none
+                ? ClipTransition.none
+                : ClipTransition(
+                    preset: p,
+                    duration: t.duration.raw > 0
+                        ? t.duration
+                        : ClipTransition.defaultDuration,
+                  ));
+            onCommit();
+          },
+        ),
+        if (t.isActive && maxDuration > 0)
+          _Slider(
+            label: 'Length',
+            value: t.duration.raw.toDouble().clamp(0, maxDuration),
+            min: 0,
+            max: maxDuration,
+            format: _seconds,
+            onChanged: (v) => onChanged(t.copyWith(duration: Tick(v.round()))),
+            onCommit: onCommit,
+          ),
+      ],
+    );
+  }
+}
+
+class _TransitionPicker extends StatelessWidget {
+  const _TransitionPicker({required this.preset, required this.onChanged});
+
+  final TransitionPreset preset;
+  final ValueChanged<TransitionPreset> onChanged;
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<TransitionPreset>(
+        initialValue: preset,
+        isDense: true,
+        isExpanded: true,
+        decoration: const InputDecoration(
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          border: OutlineInputBorder(),
+        ),
+        style: const TextStyle(fontSize: 12, color: VdColors.text),
+        items: [
+          for (final option in TransitionPreset.values)
+            DropdownMenuItem(
+              value: option,
+              child: Text(option.label,
+                  style: const TextStyle(fontSize: 12),
+                  overflow: TextOverflow.ellipsis),
+            ),
+        ],
+        onChanged: (value) {
+          if (value != null) onChanged(value);
+        },
+      );
+}
 
 /// How a clip arrives and how it leaves.
 ///

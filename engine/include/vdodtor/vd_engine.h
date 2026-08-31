@@ -21,6 +21,7 @@
 #include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_sticker.h"
 #include "vdodtor/vd_text.h"
+#include "vdodtor/vd_transition.h"
 #include "vdodtor/vd_time.h"
 
 #ifdef __cplusplus
@@ -92,6 +93,16 @@ typedef struct {
   // Where this clip sits inside the frame. A zeroed transform is the identity,
   // so a caller with nothing to say about it can leave the field alone.
   VdTransform transform;
+
+  // How this clip joins the one before it on the same track. A zeroed
+  // VdClipTransition is "a plain cut", so this is a field a caller can ignore.
+  //
+  // It belongs to the *incoming* clip and names only its own head, so there is
+  // one place a transition is written down and no way for the two sides of a
+  // cut to disagree about it. The engine finds the outgoing clip itself — the
+  // one on the same track whose end is exactly this clip's start — once per
+  // edit rather than once per frame. See vd_transition.h.
+  VdClipTransition transition;
 
   // How it arrives and how it leaves. A zeroed VdClipAnim is "no animation",
   // so this is another field a caller can ignore.

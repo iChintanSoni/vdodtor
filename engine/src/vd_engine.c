@@ -9,7 +9,9 @@
 
 #include "vdodtor/vd_audio.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_raster.h"
 #include "vdodtor/vd_sticker.h"
+#include "vdodtor/vd_transition.h"
 
 // How many decoders stay open at once. The M0 spike measured four concurrent
 // 4K60 decoders at ~34% CPU, so this is comfortably inside what the machine
@@ -33,7 +35,15 @@
 // app/lib/model/project.dart moves, and the two have to agree — a lane the
 // document allows and the compositor silently drops is a caption that is on
 // the timeline and not on the screen.
-#define VD_MAX_LAYERS 12
+#define VD_MAX_LANES 12
+
+// A lane in the middle of a transition draws three layers where it normally
+// draws one: the clip leaving, the clip arriving, and the colour dipped
+// between them. Every lane could be at such a cut at once, so the ceiling is
+// the product rather than the lane count — a layer dropped here is a frame
+// with half a dissolve in it.
+#define VD_LAYERS_PER_LANE 3
+#define VD_MAX_LAYERS (VD_MAX_LANES * VD_LAYERS_PER_LANE)
 
 typedef struct {
   char* path;
@@ -46,6 +56,29 @@ typedef struct {
   VdTransform transform;
   VdClipAnim anim;
   bool has_video;
+
+  // Where this clip is drawn, which is its own span widened by whatever
+  // transitions touch it: half a transition before its start if it is the
+  // incoming side of one, and half a transition past its end if it is the
+  // outgoing side. Resolved once per edit in set_timeline rather than searched
+  // for per frame — pairing a cut is a walk over the clip list, and doing that
+  // sixty times a second to draw the same two clips would be silly.
+  VdTick render_from;
+  VdTick render_to;
+
+  // The transition at this clip's head, and the one at its tail — which is the
+  // head transition of whichever clip follows it. Both are resolved windows
+  // rather than durations, so the render loop divides rather than searches.
+  VdTransitionPreset head_preset;
+  VdTick head_from;
+  VdTick head_to;
+  VdTransitionPreset tail_preset;
+  VdTick tail_from;
+  VdTick tail_to;
+
+  // What the document said about this clip's head, kept so the pairing above
+  // can be redone whenever the timeline changes.
+  VdClipTransition transition;
 
   VdDecoder* decoder;  // opened lazily
   int64_t last_used;
@@ -116,6 +149,13 @@ struct VdEngine {
   // a condition can wake early — so without this it would publish the same
   // frame twice and report a frame rate higher than the project's.
   int64_t last_frame;
+
+  // A solid colour to lay over a cut, and which colour is in it. One small
+  // buffer stretched over the frame rather than a shader of its own: the
+  // compositor already draws premultiplied BGRA, and two by two is the
+  // smallest thing that is unambiguously a picture.
+  void* flash_buffer;
+  uint32_t flash_color;
 
   VdAudioRenderer* audio;
   VdAudioDevice* audio_device;
@@ -340,12 +380,66 @@ static void free_clips(VdEngine* e) {
   e->clip_count = 0;
 }
 
+// Pairs every transition with the clip it joins, and widens both clips'
+// drawing windows to cover it.
+//
+// Done once per edit rather than once per frame: finding the outgoing clip is
+// a walk over the list, and repeating that sixty times a second to draw the
+// same two clips would be silly. It is also the only place that knows a
+// transition involves two clips at all — everywhere downstream reads windows.
+static void resolve_transitions(VdClipEntry* clips, int32_t count) {
+  for (int32_t i = 0; i < count; i++) {
+    clips[i].render_from = clips[i].start;
+    clips[i].render_to = clips[i].start + clips[i].duration;
+    clips[i].head_preset = VD_TRANSITION_NONE;
+    clips[i].tail_preset = VD_TRANSITION_NONE;
+  }
+
+  for (int32_t i = 0; i < count; i++) {
+    VdClipEntry* in = &clips[i];
+    if (!vd_transition_active(&in->transition) || !in->has_video) continue;
+
+    for (int32_t j = 0; j < count; j++) {
+      if (j == i) continue;
+      VdClipEntry* out = &clips[j];
+      // The clip before it on its own lane, meeting it exactly. A transition
+      // needs a cut, and a gap is not one: a dissolve into black over nothing
+      // is a fade, and the user asked for a fade if they wanted one.
+      if (out->track != in->track || !out->has_video) continue;
+      if (out->start + out->duration != in->start) continue;
+
+      VdTick from = 0;
+      VdTick to = 0;
+      if (!vd_transition_window(&in->transition, in->start, out->start,
+                                in->start + in->duration, &from, &to)) {
+        break;
+      }
+
+      in->head_preset = in->transition.preset;
+      in->head_from = from;
+      in->head_to = to;
+      out->tail_preset = in->transition.preset;
+      out->tail_from = from;
+      out->tail_to = to;
+
+      if (from < in->render_from) in->render_from = from;
+      if (to > out->render_to) out->render_to = to;
+      break;
+    }
+  }
+}
+
 // --- rendering -------------------------------------------------------------
 
 static int compare_track(const void* a, const void* b) {
   const VdClipEntry* const* x = (const VdClipEntry* const*)a;
   const VdClipEntry* const* y = (const VdClipEntry* const*)b;
   if ((*x)->track != (*y)->track) return (*x)->track - (*y)->track;
+  // Two clips on one lane only happens across a transition, and then the
+  // order is the whole point: the clip leaving has to be underneath the clip
+  // arriving, or a dissolve runs backwards.
+  if ((*x)->start < (*y)->start) return -1;
+  if ((*x)->start > (*y)->start) return 1;
   return 0;
 }
 
@@ -355,6 +449,104 @@ static int compare_track(const void* a, const void* b) {
 // Composed rather than assigned, in every field: offsets add, scale
 // multiplies, rotation adds, opacity multiplies. A clip that was placed
 // somewhere and then animated has to animate from where it was placed.
+// The transition value at `position`, or NULL when this clip is not in one.
+//
+// `incoming` says which side of the cut this clip is on, which is what decides
+// whether it reads the arriving half of the value or the leaving half. A clip
+// can be both at once — the incoming side of one cut and the outgoing side of
+// the next — when it is shorter than the two transitions touching it, so this
+// answers one question at a time.
+static bool transition_at(const VdClipEntry* clip, VdTick position,
+                          bool incoming, VdTransitionValue* out) {
+  const VdTransitionPreset preset =
+      incoming ? clip->head_preset : clip->tail_preset;
+  if (preset == VD_TRANSITION_NONE) return false;
+  const VdTick from = incoming ? clip->head_from : clip->tail_from;
+  const VdTick to = incoming ? clip->head_to : clip->tail_to;
+  if (to <= from || position < from || position >= to) return false;
+  *out = vd_transition_value(
+      preset, (float)(position - from) / (float)(to - from));
+  return true;
+}
+
+// Folds a transition into a layer that already carries the clip's own
+// transform and animation.
+//
+// Composed, like an animation and for the same reason: a clip somebody pushed
+// to one side has to push out from where they put it, not from the middle.
+static void apply_transition(VdLayer* layer, const VdTransitionValue* v,
+                             bool incoming) {
+  if (incoming) {
+    layer->transform.offset_x += v->in_offset_x;
+    layer->transform.offset_y += v->in_offset_y;
+    layer->opacity *= v->in_opacity;
+    layer->reveal.left += v->in_hide_left;
+    layer->reveal.top += v->in_hide_top;
+    layer->reveal.right += v->in_hide_right;
+    layer->reveal.bottom += v->in_hide_bottom;
+  } else {
+    layer->transform.offset_x += v->out_offset_x;
+    layer->transform.offset_y += v->out_offset_y;
+    layer->opacity *= v->out_opacity;
+  }
+}
+
+// The 2x2 solid buffer a fade dips through, in `colour`.
+//
+// Rewritten rather than reallocated when the colour changes, and there is only
+// ever one: two fades to different colours in one frame would fight over it,
+// which is a frame nobody can construct — a clip has one transition at its
+// head, and two lanes dipping to different colours at the same instant is not
+// an edit anyone makes. If it ever is, this becomes a small cache.
+static void* flash_buffer_for(VdEngine* e, uint32_t colour) {
+  if (!e->flash_buffer) {
+    e->flash_buffer = vd_raster_create(2, 2, NULL);
+    e->flash_color = 0;
+  }
+  if (!e->flash_buffer) return NULL;
+  if (e->flash_color == colour) return e->flash_buffer;
+
+  CVPixelBufferRef buffer = (CVPixelBufferRef)e->flash_buffer;
+  CVPixelBufferLockBaseAddress(buffer, 0);
+  uint8_t* base = (uint8_t*)CVPixelBufferGetBaseAddress(buffer);
+  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+  const uint32_t a = (colour >> 24) & 0xFFu;
+  // Premultiplied, like every other BGRA buffer this engine composites.
+  const uint8_t bgra[4] = {
+      (uint8_t)(((colour & 0xFFu) * a + 127) / 255),
+      (uint8_t)((((colour >> 8) & 0xFFu) * a + 127) / 255),
+      (uint8_t)((((colour >> 16) & 0xFFu) * a + 127) / 255),
+      (uint8_t)a,
+  };
+  for (int y = 0; y < 2; y++) {
+    for (int x = 0; x < 2; x++) {
+      memcpy(base + (size_t)y * stride + (size_t)x * 4, bgra, 4);
+    }
+  }
+  CVPixelBufferUnlockBaseAddress(buffer, 0);
+  e->flash_color = colour;
+  return e->flash_buffer;
+}
+
+// Adds the colour dipped over a cut: above the two clips it joins, and below
+// anything on a higher lane — so a caption over a fade to black stays legible.
+static void push_flash(VdEngine* e, VdLayer* layers, VdFrame* frames,
+                       int32_t* layer_count, const VdTransitionValue* v) {
+  if (v->flash <= 0.0f || *layer_count >= VD_MAX_LAYERS) return;
+  void* buffer = flash_buffer_for(e, v->flash_color);
+  if (!buffer) return;
+  VdLayer* layer = &layers[*layer_count];
+  memset(layer, 0, sizeof(*layer));
+  layer->pixel_buffer = buffer;
+  layer->format = VD_PIXEL_BGRA;
+  layer->fit = VD_FIT_STRETCH;
+  layer->opacity = v->flash;
+  // The buffer belongs to the engine, not to this frame, so the release loop
+  // has to find nothing here.
+  memset(&frames[*layer_count], 0, sizeof(frames[0]));
+  (*layer_count)++;
+}
+
 static void apply_anim(VdLayer* layer, const VdAnimValue* anim) {
   layer->transform.offset_x += anim->offset_x;
   layer->transform.offset_y += anim->offset_y;
@@ -380,12 +572,15 @@ static int32_t render_position(VdEngine* e, VdTick position) {
   int32_t active_count = 0;
 
   // Safe without `lock`: the clip array only changes under render_lock.
+  //
+  // The window is `render_from`/`render_to` rather than the clip's own span,
+  // and that is the whole of how a transition gets its overlap: the outgoing
+  // clip stays on for half a transition past its end and the incoming one
+  // starts half a transition early. Nothing in the document overlaps.
   for (int32_t i = 0; i < e->clip_count && active_count < VD_MAX_LAYERS; i++) {
     VdClipEntry* clip = &e->clips[i];
     if (!clip->has_video) continue;  // sound only; the mixer has it
-    if (position < clip->start || position >= clip->start + clip->duration) {
-      continue;
-    }
+    if (position < clip->render_from || position >= clip->render_to) continue;
     active[active_count++] = clip;
   }
   qsort(active, (size_t)active_count, sizeof(active[0]), compare_track);
@@ -403,6 +598,13 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     // would have.
     const VdAnimValue anim =
         vd_anim_at(&clip->anim, position - clip->start, clip->duration);
+
+    // Which side of a cut this clip is on, if it is at one. Both are possible
+    // at once for a clip shorter than the transitions touching either end.
+    VdTransitionValue head;
+    VdTransitionValue tail;
+    const bool has_head = transition_at(clip, position, true, &head);
+    const bool has_tail = transition_at(clip, position, false, &tail);
 
     // A generated clip draws itself. It goes through the same VdLayer as a
     // decoded one — same transform, same opacity, same z-order — because the
@@ -432,10 +634,13 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
       apply_anim(layer, &anim);
+      if (has_head) apply_transition(layer, &head, true);
+      if (has_tail) apply_transition(layer, &tail, false);
       // The raster belongs to the clip, not to this frame, so the release
       // loop below has to find nothing here.
       memset(&frames[layer_count], 0, sizeof(frames[0]));
       layer_count++;
+      if (has_head) push_flash(e, layers, frames, &layer_count, &head);
       continue;
     }
 
@@ -464,10 +669,13 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
       apply_anim(layer, &anim);
+      if (has_head) apply_transition(layer, &head, true);
+      if (has_tail) apply_transition(layer, &tail, false);
       // The buffer belongs to the sticker, not to this frame, so the release
       // loop below has to find nothing here.
       memset(&frames[layer_count], 0, sizeof(frames[0]));
       layer_count++;
+      if (has_head) push_flash(e, layers, frames, &layer_count, &head);
       continue;
     }
 
@@ -496,7 +704,10 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->opacity = clip->opacity;
     layer->transform = clip->transform;
     apply_anim(layer, &anim);
+    if (has_head) apply_transition(layer, &head, true);
+    if (has_tail) apply_transition(layer, &tail, false);
     layer_count++;
+    if (has_head) push_flash(e, layers, frames, &layer_count, &head);
   }
 
   const int32_t result = vd_compositor_render(e->compositor, layers, layer_count);
@@ -704,6 +915,7 @@ void vd_engine_destroy(VdEngine* e) {
   // ordering explicit rather than merely true.
   pthread_mutex_lock(&e->render_lock);
   free_clips(e);
+  if (e->flash_buffer) CVPixelBufferRelease((CVPixelBufferRef)e->flash_buffer);
   if (e->compositor) vd_compositor_destroy(e->compositor);
   pthread_mutex_unlock(&e->render_lock);
 
@@ -765,6 +977,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->has_video = src->has_video;
     dst->is_sticker = src->sticker;
     dst->anim = src->anim;
+    dst->transition = src->transition;
     dst->text = vd_text_spec_copy(src->text);
     dst->shape = vd_shape_spec_copy(src->shape);
     // Counted once, here, rather than per frame: a typewriter divides its time
@@ -817,6 +1030,8 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     }
   }
 
+  resolve_transitions(next, timeline->clip_count);
+
   for (int32_t j = 0; j < previous_count; j++) {
     free_clip_contents(&previous[j]);
   }
@@ -842,7 +1057,8 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
   int32_t result = VD_OK;
   if (!e->compositor || e->width != timeline->width ||
       e->height != timeline->height) {
-    if (e->compositor) vd_compositor_destroy(e->compositor);
+    if (e->flash_buffer) CVPixelBufferRelease((CVPixelBufferRef)e->flash_buffer);
+  if (e->compositor) vd_compositor_destroy(e->compositor);
     e->compositor =
         vd_compositor_create(timeline->width, timeline->height, &result);
     e->width = timeline->width;

@@ -99,6 +99,11 @@ Map<String, Object?> _trackToJson(Track t) => {
             // back as no animation, which is what it already was.
             if (c.animation.isAnimated)
               'animation': _animationToJson(c.animation),
+            // Same rule as an animation: a preset with no length does nothing,
+            // and a file records what happens rather than what was clicked on
+            // the way there.
+            if (c.transition.isActive)
+              'transition': _transitionToJson(c.transition),
             if (c.text != null) 'text': _textToJson(c.text!),
             if (c.shape != null) 'shape': _shapeToJson(c.shape!),
           },
@@ -160,6 +165,22 @@ ClipAnimation _animationFromJson(Map<String, Object?> json, String where) =>
       outPreset:
           _enumOr(AnimationPreset.values, json, 'out', AnimationPreset.none),
       outDuration: Tick(_intOr(json, 'outDuration', '$where.outDuration', 0)),
+    );
+
+Map<String, Object?> _transitionToJson(ClipTransition t) => {
+      'preset': t.preset.name,
+      'duration': t.duration.raw,
+    };
+
+ClipTransition _transitionFromJson(Map<String, Object?> json, String where) =>
+    ClipTransition(
+      // A preset this version has never heard of opens as a plain cut rather
+      // than refusing the file — the same bargain an animation gets, and for
+      // the same reason: the clips are still on screen for the same length of
+      // time, so there is nothing to guess wrongly.
+      preset: _enumOr(TransitionPreset.values, json, 'preset',
+          TransitionPreset.none),
+      duration: Tick(_intOr(json, 'duration', '$where.duration', 0)),
     );
 
 /// A caption, in full.
@@ -486,6 +507,12 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
                   _asMap(c['animation'], '$where.animation'),
                   '$where.animation')
               .clampedTo(duration),
+      transition: c['transition'] == null
+          ? ClipTransition.none
+          : _transitionFromJson(
+                  _asMap(c['transition'], '$where.transition'),
+                  '$where.transition')
+              .clamped(),
       text: c['text'] == null
           ? null
           : _textFromJson(_asMap(c['text'], '$where.text'), '$where.text')

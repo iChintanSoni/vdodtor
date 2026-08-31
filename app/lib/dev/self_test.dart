@@ -633,6 +633,77 @@ Future<Clip?> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
   return clip;
 }
 
+/// A transition at a real cut, dumped frame by frame.
+///
+/// The engine's own tests check that both clips reach the screen; what they
+/// cannot check is what a transition *looks like*, and a preset is a design
+/// decision before it is a function. So this puts one on the first cut in the
+/// project and dumps five frames across it — the only way to tell a dissolve
+/// from a cross-fade to black is to look at the middle one.
+///
+/// It also prints the layer count through the window, which is the number that
+/// says the overlap is happening at all: one clip either side of the
+/// transition and two — or three, with a colour dipped between them — inside.
+Future<void> runTransitionSelfTest(
+    PreviewEngine engine, DocumentStore store) async {
+  final main = store.project.mainTrack;
+  if (main.clips.length < 2) {
+    stdout.writeln('[selftest] transition: no cut to put one on');
+    return;
+  }
+
+  // The first pair that actually meet. A gap is not a cut, and a transition
+  // needs one.
+  Clip? incoming;
+  for (var i = 1; i < main.clips.length; i++) {
+    if (main.clips[i - 1].end == main.clips[i].start) {
+      incoming = main.clips[i];
+      break;
+    }
+  }
+  if (incoming == null) {
+    stdout.writeln('[selftest] transition: every clip has a gap before it');
+    return;
+  }
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_transition_');
+  for (final preset in [
+    TransitionPreset.dissolve,
+    TransitionPreset.fadeWhite,
+    TransitionPreset.wipe,
+    TransitionPreset.push,
+  ]) {
+    final transition = ClipTransition(
+        preset: preset, duration: Tick(Timebase.project.ticksPerSecond));
+    store.endGesture();
+    store.run(SetClipTransition(incoming.id, transition));
+    store.endGesture();
+
+    final applied = store.project.clipById(incoming.id)!;
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    final half = applied.transition.duration.raw ~/ 2;
+    final buffer = StringBuffer();
+    for (var i = 0; i <= 4; i++) {
+      // From the start of the window to its end, straddling the cut.
+      final at = applied.start.raw - half + (2 * half * i ~/ 4);
+      engine.seek(at);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      engine.dumpPng('${out.path}/${preset.name}_$i.png');
+      buffer.write('${engine.stats.activeLayers} ');
+    }
+    stdout.writeln('[selftest] transition: ${preset.name} across the cut at '
+        '${applied.start.raw} — layers $buffer');
+  }
+
+  // And back to a plain cut, so the passes after this one see the timeline
+  // they expect rather than one with a dissolve left on it.
+  store.endGesture();
+  store.run(SetClipTransition(incoming.id, ClipTransition.none));
+  store.endGesture();
+  stdout.writeln('[selftest] transition: frames in ${out.path}');
+}
+
 /// An animated overlay, imported the way a user would and then watched.
 ///
 /// The engine's own tests check which frame is on screen when; what they

@@ -196,6 +196,20 @@ void main() {
           scrollable: find.byType(Scrollable).first,
         );
 
+    /// Scrolls until [finder] itself is on screen, which is what a test that
+    /// *taps* something needs: the section heading being visible says nothing
+    /// about a control further down it, and a section added above pushes it
+    /// off the bottom.
+    Future<void> scrollToControl(WidgetTester tester, Finder finder) async {
+      await tester.scrollUntilVisible(finder, 60,
+          scrollable: find.byType(Scrollable).first);
+      // scrollUntilVisible stops as soon as the widget is *built*, and a
+      // ListView builds a little past the edge of what it shows — so the thing
+      // it just found can still be off screen and untappable.
+      await tester.ensureVisible(finder);
+      await tester.pumpAndSettle();
+    }
+
     testWidgets('a clip with sound gets a level and fades', (tester) async {
       controller.select('b');
       await pumpInspector(tester);
@@ -270,7 +284,7 @@ void main() {
         (tester) async {
       controller.select('b');
       await pumpInspector(tester);
-      await scrollToSound(tester);
+      await scrollToControl(tester, find.text('Mute'));
       await tester.tap(find.text('Mute'));
       await tester.pump();
 
@@ -625,6 +639,92 @@ void main() {
       await pumpInspector(tester);
       await scrollTo(tester, find.text('ANIMATE'));
       expect(find.text('ANIMATE'), findsOneWidget);
+    });
+  });
+
+  group('a join', () {
+    Future<void> scrollToJoin(WidgetTester tester) async {
+      await tester.scrollUntilVisible(find.text('JOIN'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('every clip with a picture gets the picker', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+      expect(find.text('JOIN'), findsOneWidget);
+      // No length to drag until there is something to give one to.
+      expect(find.text('Length'), findsNothing);
+    });
+
+    testWidgets('a clip with nothing before it says so', (tester) async {
+      // The control still appears — a transition with no cut under it does
+      // nothing, and hiding it would mean re-picking one every time a clip was
+      // dragged away from its neighbour and back.
+      controller.select('a');
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+      expect(find.text('Nothing before it on this lane'), findsOneWidget);
+    });
+
+    testWidgets('a clip that meets another does not', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+      expect(find.text('Nothing before it on this lane'), findsNothing);
+    });
+
+    testWidgets('picking a preset gives it a length', (tester) async {
+      // Otherwise the first thing anybody does after choosing one is discover
+      // that it did nothing.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<TransitionPreset>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Dissolve').last);
+      await tester.pumpAndSettle();
+
+      final transition = store.project.clipById('b')!.transition;
+      expect(transition.preset, TransitionPreset.dissolve);
+      expect(transition.duration, ClipTransition.defaultDuration);
+      expect(transition.isActive, isTrue);
+    });
+
+    testWidgets('the length only appears once there is a transition',
+        (tester) async {
+      final id = controller.project.mainTrack.clips[1].id;
+      controller.select(id);
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+      expect(find.text('Length'), findsNothing);
+
+      store.run(SetClipTransition(
+          id,
+          ClipTransition(
+              preset: TransitionPreset.wipe, duration: secs(1))));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToJoin(tester);
+      expect(find.text('Length'), findsOneWidget);
+    });
+
+    testWidgets('resetting it back to a plain cut', (tester) async {
+      final id = controller.project.mainTrack.clips[1].id;
+      controller.select(id);
+      store.run(SetClipTransition(
+          id,
+          ClipTransition(
+              preset: TransitionPreset.push, duration: secs(1))));
+      store.endGesture();
+      await pumpInspector(tester);
+      await scrollToJoin(tester);
+
+      await tester.tap(find.text('Cut'));
+      await tester.pumpAndSettle();
+      expect(store.project.clipById(id)!.transition, ClipTransition.none);
     });
   });
 

@@ -36,7 +36,13 @@ struct LayerUniforms {
   float kr;
   float kb;
   float blur_step[2];
+  float hide[4];
 };
+
+static float clamp01(float v) {
+  if (!(v > 0.0f)) return 0.0f;  // NaN lands here too
+  return v > 1.0f ? 1.0f : v;
+}
 
 // A transform with its "unset means identity" fields filled in.
 //
@@ -362,8 +368,10 @@ static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> commands,
 static void draw_full_frame(id<MTLRenderCommandEncoder> encoder,
                             id<MTLRenderPipelineState> pipeline,
                             id<MTLTexture> source, float opacity,
-                            float step_x, float step_y) {
+                            float step_x, float step_y,
+                            const float hide[4]) {
   LayerUniforms u = {};
+  if (hide) memcpy(u.hide, hide, sizeof(u.hide));
   u.rect[0] = 0.0f;
   u.rect[1] = 0.0f;
   u.rect[2] = 1.0f;
@@ -472,6 +480,13 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       uniforms.aspect = c->height > 0 ? (float)c->width / (float)c->height : 1.0f;
       uniforms.flip_h = transform.flip_h ? 1u : 0u;
       uniforms.flip_v = transform.flip_v ? 1u : 0u;
+      // Clamped rather than trusted: a pair of margins that overlap would
+      // discard every fragment, and a clip that vanished mid-wipe is a harder
+      // bug to see than one that stops wiping.
+      uniforms.hide[0] = clamp01(layer.reveal.left);
+      uniforms.hide[1] = clamp01(layer.reveal.top);
+      uniforms.hide[2] = clamp01(layer.reveal.right);
+      uniforms.hide[3] = clamp01(layer.reveal.bottom);
       uniforms.opacity = opacity;
       uniforms.quarter_turns = (uint32_t)turns;
       // The decoder read the range from the stream; the pixel buffer's own
@@ -530,6 +545,12 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         background.rotation[0] = 1.0f;  // the extra turn belongs to the clip
         background.rotation[1] = 0.0f;
         background.opacity = 1.0f;      // applied once, at the final draw
+        // The backdrop is rendered *whole* and cut at the final composite
+        // below, not here. Cutting it here would leave the hidden part of the
+        // offscreen texture as opaque black, and that black is then drawn
+        // full-frame over everything underneath — so a wipe on a blur-filled
+        // clip would erase the clip it is wiping away from.
+        memset(background.hide, 0, sizeof(background.hide));
 
         [encoder endEncoding];
 
@@ -552,18 +573,21 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         const float step_y = 1.0f / (float)c->blur_height;
         id<MTLRenderCommandEncoder> across =
             begin_pass(commands, c->blur_b, true);
-        draw_full_frame(across, c->pipeline_blur, c->blur_a, 1.0f, step_x, 0.0f);
+        draw_full_frame(across, c->pipeline_blur, c->blur_a, 1.0f, step_x, 0.0f,
+                        nullptr);
         [across endEncoding];
 
         id<MTLRenderCommandEncoder> down =
             begin_pass(commands, c->blur_a, true);
-        draw_full_frame(down, c->pipeline_blur, c->blur_b, 1.0f, 0.0f, step_y);
+        draw_full_frame(down, c->pipeline_blur, c->blur_b, 1.0f, 0.0f, step_y,
+                        nullptr);
         [down endEncoding];
 
         // Back to the output, keeping whatever earlier layers drew.
         encoder = begin_pass(commands, c->output_texture, false);
+        // Cut here, where discarding leaves what is underneath showing.
         draw_full_frame(encoder, c->pipeline_texture, c->blur_a, opacity, 0.0f,
-                        0.0f);
+                        0.0f, uniforms.hide);
       }
 
       [encoder setRenderPipelineState:pipeline];

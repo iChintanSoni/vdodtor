@@ -33,11 +33,20 @@ struct VdLayerUniforms {
   // a separable blur is two cheap passes where a square kernel is one dear
   // one, and at these radii the difference is the whole cost.
   float2 blur_step;
+  // How much of the layer's own quad to cut away, per side: left, top, right,
+  // bottom. Zeroed cuts nothing, so a layer that says nothing about it draws
+  // whole — which is every layer but the incoming half of a wipe.
+  float4 hide;
 };
 
 struct VertexOut {
   float4 position [[position]];
   float2 uv;
+  // Where this fragment falls inside the layer's own rectangle, 0..1. The uv
+  // above has been cropped, flipped and turned by the time it arrives, so it
+  // cannot answer "how far across the clip is this" — which is the only
+  // question a wipe asks.
+  float2 quad;
 };
 
 vertex VertexOut vd_vertex(uint vid [[vertex_id]],
@@ -74,7 +83,16 @@ vertex VertexOut vd_vertex(uint vid [[vertex_id]],
     default: break;
   }
   out.uv = uv;
+  out.quad = corner;
   return out;
+}
+
+// Cuts the fragment away if it falls outside what the layer reveals. A hard
+// edge on purpose: a wipe that faded at its boundary is a dissolve in a
+// costume.
+static inline bool vd_hidden(float2 quad, float4 hide) {
+  return quad.x < hide.x || quad.y < hide.y || quad.x > 1.0 - hide.z ||
+         quad.y > 1.0 - hide.w;
 }
 
 // YCbCr to RGB for any of the standard matrices, built from kr and kb.
@@ -104,6 +122,7 @@ fragment float4 vd_fragment_nv12(VertexOut in [[stage_in]],
                                  constant VdLayerUniforms& u [[buffer(0)]],
                                  texture2d<float> luma [[texture(0)]],
                                  texture2d<float> chroma [[texture(1)]]) {
+  if (vd_hidden(in.quad, u.hide)) discard_fragment();
   float y = luma.sample(vd_sampler, in.uv).r;
   float2 cbcr = chroma.sample(vd_sampler, in.uv).rg;
   float3 rgb = ycbcr_to_rgb(y, cbcr.x, cbcr.y, u.kr, u.kb, u.full_range != 0u);
@@ -117,6 +136,7 @@ fragment float4 vd_fragment_yuv420p(VertexOut in [[stage_in]],
                                     texture2d<float> luma [[texture(0)]],
                                     texture2d<float> cb [[texture(1)]],
                                     texture2d<float> cr [[texture(2)]]) {
+  if (vd_hidden(in.quad, u.hide)) discard_fragment();
   float y = luma.sample(vd_sampler, in.uv).r;
   float u_ = cb.sample(vd_sampler, in.uv).r;
   float v_ = cr.sample(vd_sampler, in.uv).r;
@@ -148,6 +168,7 @@ fragment float4 vd_fragment_blur(VertexOut in [[stage_in]],
 fragment float4 vd_fragment_texture(VertexOut in [[stage_in]],
                                     constant VdLayerUniforms& u [[buffer(0)]],
                                     texture2d<float> source [[texture(0)]]) {
+  if (vd_hidden(in.quad, u.hide)) discard_fragment();
   const float4 texel = source.sample(vd_sampler, in.uv);
   // Already premultiplied by the pass that produced it, so opacity scales
   // both halves together.

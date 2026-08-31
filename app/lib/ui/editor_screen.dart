@@ -151,6 +151,10 @@ class _EditorScreenState extends State<EditorScreen> {
         // it goes after the others so the frames it dumps show an overlay on
         // top of a shot that already has a caption and a shape on it.
         await runStickerSelfTest(engine, _store, timeline);
+        // Last, and it puts the timeline back the way it found it: a
+        // transition is the one pass that changes what a *cut* looks like, so
+        // leaving one on would change every frame the play pass dumps.
+        await runTransitionSelfTest(engine, _store);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {

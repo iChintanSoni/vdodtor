@@ -234,6 +234,54 @@ final class SetClipShape extends EditCommand {
       next is SetClipShape && next.clipId == clipId ? next : null;
 }
 
+/// Changes how a clip joins the one before it.
+///
+/// On the *incoming* clip, because that is where a transition is written down
+/// — see [ClipTransition]. Merged on the clip id like the rest of the set, so
+/// picking a preset and then dragging its length is one decision about one cut.
+///
+/// Applies to any clip. A transition on a clip that does not abut another does
+/// nothing at all rather than being refused: a clip is dragged away from its
+/// neighbour and back again all the time, and a transition that had to be
+/// re-picked every time it lost its cut would be a setting nobody trusts.
+final class SetClipTransition extends EditCommand {
+  const SetClipTransition(this.clipId, this.transition);
+
+  final String clipId;
+  final ClipTransition transition;
+
+  @override
+  String get label => 'Set transition';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+
+    // Bounded by the two clips it joins: half the window sits on each side, so
+    // the longest it may be is twice the shorter neighbour. The clip before it
+    // is whatever ends exactly where this one starts — and when there is none,
+    // only this clip's own length bounds it.
+    final index = track.indexOfClip(clipId);
+    final previous = index > 0 ? track.clips[index - 1] : null;
+    final before = previous != null && previous.end == clip.start
+        ? previous.duration
+        : clip.duration;
+    final next = transition.clamped().clampedBetween(before, clip.duration);
+    if (clip.transition == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(transition: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipTransition && next.clipId == clipId ? next : null;
+}
+
 /// Changes how a clip arrives and how it leaves.
 ///
 /// The fifth of the set with [SetClipTransform], [SetClipAudio],

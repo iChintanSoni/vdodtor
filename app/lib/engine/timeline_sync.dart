@@ -36,6 +36,10 @@ EngineTimeline engineTimelineFor(Project project) {
           fit: FitMode.stretch,
           transform: _engineTransformFor(clip.transform),
           animation: _engineAnimationFor(clip.animation),
+          // Captions and shapes join at a cut like anything else. Two titles
+          // butted together on one lane dissolve between themselves, which is
+          // what the engine's "any two clips on one lane" rule already means.
+          transition: _engineTransitionFor(clip.transition),
         ));
         continue;
       }
@@ -99,6 +103,7 @@ EngineTimeline engineTimelineFor(Project project) {
         },
         transform: _engineTransformFor(transform),
         animation: _engineAnimationFor(clip.animation),
+        transition: _engineTransitionFor(clip.transition),
       ));
     }
   }
@@ -190,3 +195,14 @@ EngineShape _engineShapeFor(ClipShape shape) => EngineShape(
       shadowBlur: shape.shadowBlur,
       headSize: shape.headSize,
     );
+
+/// The transition at a clip's head. Only one that would change a frame crosses
+/// — a preset with no length and a length with no preset are both a plain cut,
+/// and the engine should not have to work that out twice.
+EngineTransition _engineTransitionFor(ClipTransition transition) =>
+    transition.isActive
+        ? EngineTransition(
+            preset: EngineTransitionPreset.values[transition.preset.index],
+            ticks: transition.duration.raw,
+          )
+        : EngineTransition.none;
