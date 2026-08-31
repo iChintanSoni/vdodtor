@@ -4,6 +4,7 @@ import 'package:vdodtor/commands/document_store.dart';
 import 'package:vdodtor/commands/edits.dart';
 import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/ids.dart';
+import 'package:vdodtor/model/time.dart';
 import 'package:vdodtor/ui/inspector.dart';
 import 'package:vdodtor/ui/timeline/timeline_controller.dart';
 
@@ -183,5 +184,115 @@ void main() {
     await tester.pump();
     expect(store.project.clipById('b')!.transform, ClipTransform.identity);
     expect(find.text('Reset'), findsNothing);
+  });
+
+  group('sound', () {
+    // The sound section is below the transform controls, and a ListView does
+    // not build what it has not laid out — so it has to be scrolled to before
+    // it can be found at all.
+    Future<void> scrollToSound(WidgetTester tester) => tester.scrollUntilVisible(
+          find.text('SOUND'),
+          120,
+          scrollable: find.byType(Scrollable).first,
+        );
+
+    testWidgets('a clip with sound gets a level and fades', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+
+      expect(find.text('SOUND'), findsOneWidget);
+      expect(find.text('Volume'), findsOneWidget);
+      expect(find.text('Fade in'), findsOneWidget);
+      expect(find.text('Fade out'), findsOneWidget);
+    });
+
+    testWidgets('a silent file gets no level to set', (tester) async {
+      // A control that cannot do anything is worse than an absent one.
+      var p = emptyProject().addMedia(videoAsset('silent', audio: false));
+      p = p.updateTrack(
+        mainTrackId,
+        (t) => t.withClips(
+            [clipOf('q', 'silent', start: Tick.zero, duration: secs(2))]),
+      );
+      store.dispose();
+      controller.dispose();
+      store = DocumentStore(p);
+      controller = TimelineController(
+        store: store,
+        transport: FakeTransport(durationTicks: secs(6).raw),
+        ids: IdGen.seeded(2),
+      );
+      controller.select('q');
+      await pumpInspector(tester);
+
+      expect(find.text('SOUND'), findsNothing);
+      expect(find.text('FILL'), findsOneWidget);
+    });
+
+    testWidgets('a clip on an audio lane has no picture to place',
+        (tester) async {
+      var p = emptyProject().addMedia(audioAsset('music'));
+      p = p.updateTrack(
+        audioTrackId,
+        (t) => t.withClips(
+            [clipOf('bed', 'music', start: Tick.zero, duration: secs(4))]),
+      );
+      store.dispose();
+      controller.dispose();
+      store = DocumentStore(p);
+      controller = TimelineController(
+        store: store,
+        transport: FakeTransport(durationTicks: secs(6).raw),
+        ids: IdGen.seeded(2),
+      );
+      controller.select('bed');
+      await pumpInspector(tester);
+
+      expect(find.text('FILL'), findsNothing);
+      expect(find.text('SOUND'), findsOneWidget);
+    });
+
+    testWidgets('the fader reads in decibels, not in multipliers',
+        (tester) async {
+      // The ear is logarithmic; a fader marked 0.50 tells nobody anything.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+      expect(find.text('0.0 dB'), findsOneWidget);
+
+      store.run(const SetClipAudio('b', ClipAudio(volume: 0.5)));
+      await tester.pump();
+      expect(find.text('-6.0 dB'), findsOneWidget);
+    });
+
+    testWidgets('mute reads as silent rather than as minus infinity',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+      await tester.tap(find.text('Mute'));
+      await tester.pump();
+
+      expect(store.project.clipById('b')!.audio.muted, isTrue);
+      expect(find.text('Muted'), findsOneWidget);
+
+      // The fader does not drop to the bottom. Mute is not "turned all the way
+      // down" — the level is kept so that unmuting gives it back, and a fader
+      // that moved would be saying the opposite.
+      expect(find.text('0.0 dB'), findsOneWidget);
+      expect(store.project.clipById('b')!.audio.volume, 1);
+    });
+
+    testWidgets('a level of nothing reads as silent, not as -inf dB',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+
+      store.run(const SetClipAudio('b', ClipAudio(volume: 0)));
+      await tester.pump();
+      expect(find.text('silent'), findsOneWidget);
+    });
   });
 }

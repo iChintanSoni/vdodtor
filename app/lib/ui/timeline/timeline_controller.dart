@@ -432,7 +432,12 @@ class TimelineController extends ChangeNotifier {
     if (lane == null) return _dragOriginTrackId;
     final clip = project.clipById(clipId);
     final asset = clip == null ? null : project.assetFor(clip);
-    if (!MoveClip.accepts(lane, asset)) return _dragOriginTrackId;
+    // The lane it started on decides what it is allowed to become: a detached
+    // audio clip may cross to another audio lane, a video clip may not.
+    final origin = project.trackOfClip(clipId)?.kind ?? TrackKind.main;
+    if (!MoveClip.accepts(lane, asset, from: origin)) {
+      return _dragOriginTrackId;
+    }
     return lane.id;
   }
 
@@ -700,6 +705,117 @@ class TimelineController extends ChangeNotifier {
       name: 'Overlay $number',
     )));
     store.endGesture();
+    return true;
+  }
+
+  bool get canAddAudioTrack => project.canAddTrackOfKind(TrackKind.audio);
+
+  /// Adds an audio lane below the ones already there.
+  bool addAudioTrack() {
+    if (!canAddAudioTrack) return false;
+    store.endGesture();
+    store.run(AddTrack(_newAudioTrack()));
+    store.endGesture();
+    return true;
+  }
+
+  Track _newAudioTrack() => Track.of(
+        id: _ids.next('tr-'),
+        kind: TrackKind.audio,
+        name: 'Audio ${project.trackCountOfKind(TrackKind.audio) + 1}',
+      );
+
+  // --- detaching audio -----------------------------------------------------
+
+  /// The selected clips whose sound could be lifted onto a lane of its own:
+  /// on a visual lane, with a source that has audio, and not already silent.
+  List<Clip> get detachableClips {
+    final out = <Clip>[];
+    for (final id in _selectedClipIds) {
+      final track = project.trackOfClip(id);
+      if (track == null || !track.kind.isVisual) continue;
+      final clip = track.clipById(id)!;
+      if (clip.audio.muted) continue;
+      final asset = project.assetFor(clip);
+      if (asset == null || !asset.probe.hasAudio) continue;
+      out.add(clip);
+    }
+    return out;
+  }
+
+  bool get canDetachAudio => detachableClips.isNotEmpty;
+
+  /// Lifts each selected clip's sound onto an audio lane, muting the clip it
+  /// came from. One undo entry however many clips are selected.
+  ///
+  /// Where each one lands is decided here rather than in the command: the
+  /// first audio lane with room at that moment in time, and a new lane when
+  /// none has any. Detaching two clips that overlap has to put them on
+  /// different lanes, because one lane cannot hold two clips at once.
+  bool detachAudio() {
+    final sources = detachableClips;
+    if (sources.isEmpty) return false;
+
+    // What each lane already holds, plus what this edit is about to put there.
+    final lanes = <String, List<TimeSpan>>{
+      for (final t in project.tracks)
+        if (t.kind == TrackKind.audio && !t.locked)
+          t.id: [for (final c in t.clips) c.span],
+    };
+    final order = lanes.keys.toList();
+    final created = <Track>[];
+    final detachments = <AudioDetachment>[];
+
+    for (final clip in sources) {
+      String? target;
+      for (final laneId in order) {
+        if (lanes[laneId]!.every((s) => !s.overlaps(clip.span))) {
+          target = laneId;
+          break;
+        }
+      }
+      if (target == null) {
+        // Counting the ones this edit has already invented, so the cap holds
+        // across a multi-clip detach rather than only against the saved file.
+        if (project.trackCountOfKind(TrackKind.audio) + created.length >=
+            Project.maxTracksOfKind(TrackKind.audio)) {
+          continue; // out of lanes; the rest of the selection still detaches
+        }
+        final track = Track.of(
+          id: _ids.next('tr-'),
+          kind: TrackKind.audio,
+          name: 'Audio ${project.trackCountOfKind(TrackKind.audio) + created.length + 1}',
+        );
+        created.add(track);
+        lanes[track.id] = [];
+        order.add(track.id);
+        target = track.id;
+      }
+
+      lanes[target]!.add(clip.span);
+      detachments.add((
+        fromClipId: clip.id,
+        toTrackId: target,
+        clip: Clip(
+          id: _ids.next('cl-'),
+          mediaId: clip.mediaId,
+          start: clip.start,
+          duration: clip.duration,
+          sourceIn: clip.sourceIn,
+          label: clip.label,
+          // The sound arrives at the level the video clip was playing it,
+          // fades and all. Detaching is a change of where a sound lives, not
+          // of how loud it is.
+          audio: clip.audio,
+        ),
+      ));
+    }
+
+    if (detachments.isEmpty) return false;
+    store.endGesture();
+    store.run(DetachAudio(detachments, newTracks: created));
+    store.endGesture();
+    notifyListeners();
     return true;
   }
 

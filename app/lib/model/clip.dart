@@ -143,6 +143,150 @@ final class ClipTransform {
           'rot $rotationDegrees opacity $opacity)';
 }
 
+/// How loud a clip is, and how it gets there.
+///
+/// The video half of a clip is [ClipTransform]; this is the other half. Both
+/// hang off every clip regardless of what the clip actually carries, because a
+/// clip does not know whether its source has a picture or a sound until the
+/// media is probed, and the document must be describable without opening a
+/// file.
+///
+/// [volume] is a linear multiplier, not decibels. Decibels are the right thing
+/// to *show* — the ear is logarithmic and a fader marked in dB is the one
+/// people can use — but the wrong thing to store: 0 is a legitimate volume and
+/// has no logarithm, so a dB document would need a magic value for silence.
+/// The conversion belongs at the fader, not in the file.
+@immutable
+final class ClipAudio {
+  const ClipAudio({
+    this.volume = 1,
+    this.fadeIn = Tick.zero,
+    this.fadeOut = Tick.zero,
+    this.muted = false,
+  });
+
+  /// A clip nobody has touched: full volume, no fades, audible. The default
+  /// for every clip, and the value serialisation leaves out of the file.
+  static const unity = ClipAudio();
+
+  /// Linear gain. 1 is the source as recorded; 0 is silence. Above 1 is a
+  /// boost, capped at [maxVolume] — a fader that goes to infinity is a fader
+  /// that turns everything into clipping.
+  final double volume;
+
+  /// Ramp from silence over this long at the head, and to silence over this
+  /// long at the tail. Ticks, like every other length in the document.
+  final Tick fadeIn;
+  final Tick fadeOut;
+
+  /// Silent, without forgetting how loud it was. That distinction is the whole
+  /// point of having both this and [volume]: unmuting has to give the level
+  /// back, so mute cannot be spelled `volume = 0`.
+  final bool muted;
+
+  /// +6 dB. Enough to rescue a quiet recording, short of enough to destroy
+  /// one by accident.
+  static const double maxVolume = 2;
+
+  bool get isUnity => this == unity;
+
+  bool get hasFade => fadeIn.raw > 0 || fadeOut.raw > 0;
+
+  /// What [volume] actually amounts to once mute is taken into account.
+  double get effectiveVolume => muted ? 0 : volume.clamp(0.0, maxVolume);
+
+  /// The multiplier at [offset] ticks into a clip [duration] long, fades and
+  /// volume and mute all together.
+  ///
+  /// The engine computes the same envelope in C — `vd_audio_fade_gain` in
+  /// `engine/src/vd_audio_renderer.c` — and the two are tested against the
+  /// same table. Change one and you must change the other.
+  ///
+  /// The ramps are linear in amplitude. Linear is not the most flattering
+  /// curve for a long fade, but it is the one where the handle position means
+  /// what it looks like it means, and a shaped curve is an option to add later
+  /// rather than a default to guess at now.
+  double gainAt(Tick offset, Tick duration) =>
+      effectiveVolume * fadeShapeAt(offset, duration, fadeIn, fadeOut);
+
+  /// The fade envelope alone, without volume or mute. Static because the
+  /// engine needs exactly this function and nothing around it.
+  static double fadeShapeAt(
+      Tick offset, Tick duration, Tick fadeIn, Tick fadeOut) {
+    if (duration.raw <= 0) return 0;
+    if (offset.raw < 0 || offset.raw >= duration.raw) return 0;
+
+    var gain = 1.0;
+    if (fadeIn.raw > 0 && offset.raw < fadeIn.raw) {
+      gain *= offset.raw / fadeIn.raw;
+    }
+    // Measured from the far edge, so the last tick of a clip is as quiet as
+    // the first — a fade out that reached zero one tick early would leave an
+    // audible click exactly where the fade existed to prevent one.
+    final remaining = duration.raw - offset.raw;
+    if (fadeOut.raw > 0 && remaining < fadeOut.raw) {
+      gain *= remaining / fadeOut.raw;
+    }
+    return gain;
+  }
+
+  /// The same fades, shortened so they fit inside a clip [duration] long.
+  ///
+  /// Two fades that overlap are not wrong so much as unaskable-for: the
+  /// envelope multiplies them and the result dips in the middle, which is
+  /// nobody's intent. Trimming a clip shorter than its own fades is the
+  /// ordinary way to arrive there, so the clamp lives here rather than in the
+  /// setter — every path that shortens a clip goes through it.
+  ClipAudio clampedTo(Tick duration) {
+    if (duration.raw <= 0) {
+      return copyWith(fadeIn: Tick.zero, fadeOut: Tick.zero);
+    }
+    var inTicks = fadeIn.raw < 0 ? 0 : fadeIn.raw;
+    var outTicks = fadeOut.raw < 0 ? 0 : fadeOut.raw;
+    final total = inTicks + outTicks;
+    if (total > duration.raw) {
+      // Shared in the proportion asked for, taken from the lengths as
+      // requested. Clamping each to the whole clip first and proportioning
+      // afterwards would turn a 1:3 request into 3:4 — moving a fade the user
+      // never touched, because the other one was too long.
+      inTicks = (inTicks * duration.raw) ~/ total;
+      outTicks = duration.raw - inTicks;
+    }
+    if (inTicks == fadeIn.raw && outTicks == fadeOut.raw) return this;
+    return copyWith(fadeIn: Tick(inTicks), fadeOut: Tick(outTicks));
+  }
+
+  ClipAudio copyWith({
+    double? volume,
+    Tick? fadeIn,
+    Tick? fadeOut,
+    bool? muted,
+  }) =>
+      ClipAudio(
+        volume: volume ?? this.volume,
+        fadeIn: fadeIn ?? this.fadeIn,
+        fadeOut: fadeOut ?? this.fadeOut,
+        muted: muted ?? this.muted,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipAudio &&
+      other.volume == volume &&
+      other.fadeIn == fadeIn &&
+      other.fadeOut == fadeOut &&
+      other.muted == muted;
+
+  @override
+  int get hashCode => Object.hash(volume, fadeIn.raw, fadeOut.raw, muted);
+
+  @override
+  String toString() => isUnity
+      ? 'ClipAudio.unity'
+      : 'ClipAudio(volume $volume${muted ? ' muted' : ''} '
+          'fade ${fadeIn.raw}/${fadeOut.raw})';
+}
+
 /// One piece of media placed on a track.
 ///
 /// A clip is a window onto its source: [sourceIn] is where the window opens in
@@ -158,6 +302,7 @@ final class Clip {
     this.label = '',
     this.enabled = true,
     this.transform = ClipTransform.identity,
+    this.audio = ClipAudio.unity,
   });
 
   final String id;
@@ -182,6 +327,10 @@ final class Clip {
   /// nobody has moved, which is almost all of them.
   final ClipTransform transform;
 
+  /// How loud it is. [ClipAudio.unity] for a clip nobody has faded, and
+  /// present even on a clip whose source has no sound — see [ClipAudio].
+  final ClipAudio audio;
+
   Tick get end => start + duration;
   Tick get sourceOut => sourceIn + duration;
   TimeSpan get span => TimeSpan(start, duration);
@@ -200,6 +349,7 @@ final class Clip {
     String? label,
     bool? enabled,
     ClipTransform? transform,
+    ClipAudio? audio,
   }) =>
       Clip(
         id: id ?? this.id,
@@ -210,6 +360,7 @@ final class Clip {
         label: label ?? this.label,
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
+        audio: audio ?? this.audio,
       );
 
   /// Moves the clip on the timeline without touching its source window.
@@ -217,14 +368,24 @@ final class Clip {
 
   /// Trims the head. Positive [delta] shortens the clip from the left, which
   /// moves both [start] and [sourceIn]; the tail stays put.
-  Clip trimHeadBy(Tick delta) => copyWith(
+  Clip trimHeadBy(Tick delta) => _withDuration(
+        duration - delta,
         start: start + delta,
         sourceIn: sourceIn + delta,
-        duration: duration - delta,
       );
 
   /// Trims the tail. Positive [delta] lengthens the clip to the right.
-  Clip trimTailBy(Tick delta) => copyWith(duration: duration + delta);
+  Clip trimTailBy(Tick delta) => _withDuration(duration + delta);
+
+  /// Every change of length goes through here, so that fades longer than the
+  /// clip they are on cannot outlive the trim that made them so.
+  Clip _withDuration(Tick newDuration, {Tick? start, Tick? sourceIn}) =>
+      copyWith(
+        start: start,
+        sourceIn: sourceIn,
+        duration: newDuration,
+        audio: audio.clampedTo(newDuration),
+      );
 
   @override
   bool operator ==(Object other) =>
@@ -236,11 +397,12 @@ final class Clip {
       other.sourceIn == sourceIn &&
       other.label == label &&
       other.enabled == enabled &&
-      other.transform == transform;
+      other.transform == transform &&
+      other.audio == audio;
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform);
+      sourceIn.raw, label, enabled, transform, audio);
 
   @override
   String toString() =>

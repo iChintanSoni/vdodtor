@@ -72,6 +72,13 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   change?" test. Edits go through `EditCommand` + `DocumentStore`, never in place.
 - **The vendored FFmpeg must stay LGPL.** `tools/build_ffmpeg.sh` fails the build rather
   than emit one with `CONFIG_GPL`, `CONFIG_NONFREE` or `CONFIG_VERSION3` set.
+- **The fade envelope is written twice and tested once.** `vd_audio_fade_gain` in
+  `engine/src/vd_audio_renderer.c` and `ClipAudio.fadeShapeAt` in `app/lib/model/clip.dart`
+  are the same function, and the same ten-row table is asserted in both test suites — like
+  `vd_time` and `time.dart`. Change one and you must change the other.
+- **The lane decides which half of a file a clip contributes.** A clip on an audio lane is
+  sound even when its source has a picture — that is what a detached clip is — so
+  `timeline_sync` sets `hasVideo` from the track kind, not from the probe alone.
 - **The compositor is pinned by golden frames.** `engine/tests/golden/*.png` are whole
   composited frames compared pixel for pixel, so any change to how the picture is drawn
   turns `vd_golden_test` red — including changes that are correct. That is the point:

@@ -10,7 +10,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - Keep the status line below current whenever a milestone starts or finishes.
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
-> M2 has started: the timeline cuts, and the compositor is now pinned by golden frames.**
+> M2 has started: the timeline cuts, the compositor is pinned by golden frames, and
+> the audio lanes finally make a sound.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -55,6 +56,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > dragged onto them, and every clip carries a transform — offset, scale, rotation, crop,
 > opacity, flip — so a picture-in-picture is a thing the editor can now make. A clip whose
 > shape does not match the project gets **blur fill** by default rather than black bars.
+> Sound works: six audio lanes that actually reach the mixer, per-clip volume, mute and
+> fades, and ⌘⇧D to lift a clip's audio onto a lane of its own. A music bed on an audio
+> lane was silent until this — the render list was built from visual tracks only — which
+> is the half of M2's exit criteria that was missing.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -412,7 +417,58 @@ audio, scrub anywhere, quit and reopen with everything restored.
       nothing; approving one means reading the diff of the picture. On a red CI the actual
       frame and an amplified difference come back as an artifact, so the first question —
       what changed, and where — is answered without reproducing anything
-- [ ] Audio: 6 tracks; per-clip volume, mute, fade in/out; detach audio from video
+- [x] Audio: 6 tracks; per-clip volume, mute, fade in/out; detach audio from video
+      — the six lanes were already in the model, and finding that out was the least
+      interesting thing here. **Nothing on them made a sound.** The render list was built
+      from visual tracks only and then handed to both the compositor and the mixer, so a
+      music bed on an audio lane was dropped before it reached either — the one shape this
+      milestone exits on, silent, with no test anywhere that would have said so.
+      What fixes it is a rule rather than a special case: **the lane decides which half of a
+      file a clip contributes.** A clip on an audio lane is sound even when its file has a
+      picture, which is exactly what a detached clip is, and the picture must not come back
+      with it. `VdTimelineClip` grew `has_video` so the compositor can skip a music file
+      instead of opening a decoder to discover there is nothing in it, and the document says
+      so rather than the engine probing — a music bed should not cost a file open on every
+      edit to establish what the document already knows.
+      `ClipAudio` on every clip: volume, fade in, fade out, mute. Volume is a linear
+      multiplier and *not* decibels, because 0 is a legitimate volume and has no logarithm —
+      a dB document would need a magic value for silence. The fader shows dB, since the ear
+      is logarithmic and a fader marked 0.50 tells nobody anything; the conversion lives at
+      the fader. Mute is its own flag rather than `volume = 0`, because unmuting has to give
+      the level back, and the inspector test that matters is the one asserting the fader
+      does **not** move when you mute.
+      The fade envelope is computed in two languages and tested against **one table** —
+      `vd_audio_fade_gain` in C and `ClipAudio.fadeShapeAt` in Dart, the same ten rows
+      asserted in both files, the way `vd_time` and `time.dart` already do it. A fade the
+      timeline draws and a fade the speakers play being the same shape is not something to
+      leave to two people reading the same prose. The mixer evaluates it **per audio frame**,
+      not per chunk: a chunk is 1024 frames, and a fade that stepped once a chunk would be a
+      staircase of about fifty steps — not a fade but a series of small clicks.
+      Two things fell out that are worth keeping. A muted clip is **not decoded** — reading
+      it and multiplying by zero sounds identical and costs a seek and a decode per chunk,
+      and mute is a state a clip sits in for a long time. And a muted clip is still *sent*,
+      because it is still part of how long the project is; dropping it would make playback
+      stop short of the end the moment someone muted the last clip.
+      Detach is one edit that does two things — the sound appears on a lane and the clip it
+      came from goes quiet — because apart, the middle state plays everything twice and undo
+      takes two presses to come back from something that felt like one press. It makes the
+      lanes it needs, so detaching four clips that overlap is still a single undo entry
+      rather than an `AddTrack` to press ⌘Z through on the way out. The video clip is muted
+      rather than stripped, since there is nothing to strip: a clip is a window onto a file
+      and the file still has the sound in it, which is also what makes the edit reversible
+      by hand.
+      That forced the one rule that had to bend. An audio lane used to accept only files
+      with *no* picture, which would have stranded every detached clip on the lane it landed
+      on, one of six. It now takes anything that makes a sound — but only from another audio
+      lane or from a file with no picture, so dragging a video clip down onto an audio lane
+      still refuses rather than throwing its picture away without saying so.
+      Adding `gain` and `has_video` to the struct made a zeroed `VdTimelineClip` mean
+      "silent and invisible", which is a bug that looks like nothing happening at all — so
+      `vd_timeline_clip_default()` exists to say the boring thing out loud. The engine tests
+      that memset caught it immediately and loudly, which is how it should be found.
+      44 new Dart tests and 5 new engine ones, including the one that would have caught the
+      original hole: a clip with no picture, through the whole engine, still makes a sound
+      and still costs exactly one composited layer
 - [ ] Waveforms rendered from multi-resolution peak files at every zoom level
 - [ ] Keyframed volume (manual ducking)
 - [ ] Rotation metadata honored; VFR sources normalized to project timebase

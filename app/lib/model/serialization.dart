@@ -91,6 +91,7 @@ Map<String, Object?> _trackToJson(Track t) => {
             // it, not like a dump of every field that exists.
             if (!c.transform.isIdentity)
               'transform': _transformToJson(c.transform),
+            if (!c.audio.isUnity) 'audio': _audioToJson(c.audio),
           },
       ],
     };
@@ -111,6 +112,20 @@ Map<String, Object?> _transformToJson(ClipTransform t) => {
       if (t.flipHorizontal) 'flipH': true,
       if (t.flipVertical) 'flipV': true,
     };
+
+Map<String, Object?> _audioToJson(ClipAudio a) => {
+      if (a.volume != 1) 'volume': a.volume,
+      if (a.fadeIn.raw != 0) 'fadeIn': a.fadeIn.raw,
+      if (a.fadeOut.raw != 0) 'fadeOut': a.fadeOut.raw,
+      if (a.muted) 'muted': true,
+    };
+
+ClipAudio _audioFromJson(Map<String, Object?> json, String where) => ClipAudio(
+      volume: _double(json, 'volume', 1),
+      fadeIn: Tick(_intOr(json, 'fadeIn', '$where.fadeIn', 0)),
+      fadeOut: Tick(_intOr(json, 'fadeOut', '$where.fadeOut', 0)),
+      muted: _bool(json, 'muted', false),
+    );
 
 ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
     ClipTransform(
@@ -135,6 +150,15 @@ ClipTransform _transformFromJson(Map<String, Object?> json, String where) =>
 double _double(Map<String, Object?> json, String key, double fallback) {
   final value = json[key];
   return value is num ? value.toDouble() : fallback;
+}
+
+/// An integer that may be absent. Absent means [fallback]; present and not an
+/// integer is still an error, unlike [_double]. These are tick counts, and a
+/// fade that quietly became zero because its number was written as a string is
+/// a fade that disappeared without anyone being told.
+int _intOr(Map<String, Object?> json, String key, String at, int fallback) {
+  if (json[key] == null) return fallback;
+  return _int(json, key, at);
 }
 
 /// Rebuilds a project from [projectToJson]'s output.
@@ -235,6 +259,13 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
           ? ClipTransform.identity
           : _transformFromJson(
               _asMap(c['transform'], '$where.transform'), '$where.transform'),
+      // Clamped on the way in: a file can always claim a fade longer than the
+      // clip carrying it, whether through a hand edit or a version of this
+      // program that did not clamp.
+      audio: c['audio'] == null
+          ? ClipAudio.unity
+          : _audioFromJson(_asMap(c['audio'], '$where.audio'), '$where.audio')
+              .clampedTo(duration),
     ));
   }
 

@@ -34,6 +34,24 @@ MediaAsset videoAsset(String id, {double seconds = 10, bool audio = true}) =>
       ),
     );
 
+/// A file with sound and no picture — a music bed. The case that made audio
+/// lanes worth having, and the one nothing reached the engine for until the
+/// levels work.
+MediaAsset audioAsset(String id, {double seconds = 30}) => MediaAsset(
+      id: id,
+      path: '/media/$id.m4a',
+      displayName: '$id.m4a',
+      probe: MediaProbe(
+        kind: MediaKind.audio,
+        duration: secs(seconds),
+        hasVideo: false,
+        hasAudio: true,
+        audioChannels: 2,
+        audioSampleRate: 48000,
+        audioCodec: 'aac',
+      ),
+    );
+
 Clip clipOf(
   String id,
   String mediaId, {
