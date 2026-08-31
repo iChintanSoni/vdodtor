@@ -117,6 +117,7 @@ class _VdodtorAppState extends State<VdodtorApp> {
           key: ValueKey(open.path),
           open: open,
           access: workspace.fileAccess,
+          peakCache: workspace.paths.peaks,
           onClose: () => unawaited(workspace.close()),
         );
     }

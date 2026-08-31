@@ -10,8 +10,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - Keep the status line below current whenever a milestone starts or finishes.
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
-> M2 has started: the timeline cuts, the compositor is pinned by golden frames, and
-> the audio lanes finally make a sound.**
+> M2 has started: the timeline cuts, the compositor is pinned by golden frames, the
+> audio lanes make a sound, and the clips on them show what that sound looks like.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -469,7 +469,81 @@ audio, scrub anywhere, quit and reopen with everything restored.
       44 new Dart tests and 5 new engine ones, including the one that would have caught the
       original hole: a clip with no picture, through the whole engine, still makes a sound
       and still costs exactly one composited layer
-- [ ] Waveforms rendered from multi-resolution peak files at every zoom level
+- [x] Waveforms rendered from multi-resolution peak files at every zoom level
+      — a waveform is not one array. At 1200 px/s a pixel is under a millisecond of
+      audio and at 2 px/s it is half a second, so drawing a half-hour interview from the
+      finest data would scan five million values to paint a thousand pixels, on every
+      repaint, on every lane. What is stored instead is a **pyramid**: level 0 holds a
+      minimum and a maximum per 128 audio frames — 2.7 ms, finer than a pixel at the
+      deepest zoom the timeline offers — and each level above folds pairs of the one
+      below. Whatever the zoom, the reader picks the level whose bucket is closest to a
+      pixel and reads two or three buckets for each one, so drawing costs the same at
+      every zoom rather than the same per second of audio.
+      **The fold keeps the extremes, never an average**, and that is the whole reason it
+      works. An average of averages smooths a drum hit away until zooming out turns it
+      into a flat line — which reads as a calmer recording, not as a bug. A minimum of
+      minima keeps it, because the coarse bucket still spans the sample that made it. The
+      test that pins it takes one loud bucket in four thousand and asserts it is exactly
+      as tall at 2 px/s as at 1200; the engine side asserts the same thing structurally,
+      that every coarse bucket is the extremes of the two beneath it, on every bucket of
+      every level rather than on a sample.
+      A pixel **folds every bucket it touches** rather than sampling one. Point-sampling
+      is the obvious implementation and it makes transients flicker in and out as the
+      view scrolls, because whether a peak shows then depends on where the pixel grid
+      happens to land.
+      Peaks are signed and kept at both ends: a rectified envelope mirrored about its
+      centre looks tidier and is a picture of a file nobody has. They are taken **across
+      the channels, not over a downmix** — summing lets two out-of-phase channels cancel
+      into a flat line for audio that is plainly audible, and averaging draws a
+      hard-panned track at half its height. `audio_steps.m4a` exists to catch exactly
+      that: three seconds of silence, then a quarter on both channels, then nine tenths
+      on the *left alone*, so the last second reads 0.90 or the rule was not followed.
+      Where the split falls is the part worth remembering. **The engine analyses into
+      memory and the app owns the file.** `vd_peaks_analyze` opens the same
+      `VdAudioSource` the mixer uses — so the waveform on screen is the sound that will
+      come out of the speakers rather than a second opinion about the file — and hands
+      back a pyramid. Everything about *keeping* it is Dart's: the format, the directory,
+      the staleness rule, the sweep. The engine has no idea where this machine puts its
+      caches and should not learn, and the format ends up with **one parser** rather than
+      the two that a C writer and a Dart reader would have needed to keep in step.
+      What is cached is a property of the **file**, never of the clip. Volume, fades and
+      mute scale the drawn envelope at paint time, which is what makes a fader instant —
+      pulling one repaints, where anything baked per clip would have to be rebuilt — and
+      what lets one analysis serve every clip cut from the same file. A muted clip
+      therefore draws as a flat line rather than as nothing, because a lane that went
+      blank where a clip was muted would read as missing media.
+      A peak file is stamped with the length and modification time of the media it came
+      from, and a mismatch deletes it rather than drawing a waveform of a file that has
+      been re-exported underneath. A version number at the front means a format change
+      throws every old file away unread, which is the whole migration story a cache
+      needs. The bytes are in **host order on purpose**: these sit beside the machine
+      that wrote them and are never shared, and reading a few million samples one at a
+      time to be portable about it would cost more than the analysis the cache exists to
+      skip. Anything unreadable — a truncated write, a foreign file — costs one
+      re-analysis and nothing else.
+      On screen it is one vertical line per pixel column, drawn in a single call. An
+      audio lane gives its whole clip to the waveform; a picture lane gives it a strip
+      along the bottom, because what identifies a video clip is its name and its sound is
+      the thing you look for underneath. Only the visible part of a clip is drawn, so a
+      ten-minute clip scrolled mostly off screen costs what its sliver costs. Silence is
+      a line through the middle rather than a gap.
+      27 new Dart tests and a new engine suite, including the two that would have caught
+      the ways this goes quietly wrong: the spike that has to survive every zoom, and a
+      pixel-level check that a quarter-volume clip is drawn less than half as tall as a
+      full one. Those are pixel tests in the literal sense — the timeline is painted onto
+      a canvas and the assertions read rows of it, because *where* ink lands inside a
+      clip is the whole question and no amount of inspecting the painter's arguments
+      would answer it. One subtlety fell out worth writing down: below one cycle per
+      bucket the envelope legitimately traces the wave itself, zero crossings and all, so
+      a test demanding a flat reading from a steady tone at *every* level would be
+      demanding the analyser lie.
+      Confirmed through the real engine rather than only in tests: `VD_SELFTEST=1`
+      analyses `audio_steps.m4a` and prints the envelope a tenth of a second at a time,
+      which reads **0.00 nine times, 0.25 ten times, then 0.90** — the fixture's own
+      shape, out of FFmpeg, through FFI, at 8 KB for three seconds and 5 ms warm. It then
+      draws the timeline with that file on an audio lane and writes the frame out, so the
+      three steps are visible as a hairline, a half-height band and a full one. Reading
+      it back from the peak file instead of analysing takes 2 ms
 - [ ] Keyframed volume (manual ducking)
 - [ ] Rotation metadata honored; VFR sources normalized to project timebase
 - [ ] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge
