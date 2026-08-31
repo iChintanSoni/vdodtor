@@ -497,6 +497,137 @@ void main() {
     });
   });
 
+  group('a shape', () {
+    /// Adds one at the playhead and selects it, which is what the toolbar
+    /// button does.
+    String addShape([ShapeKind kind = ShapeKind.rectangle]) {
+      controller.addShapeClip(kind: kind);
+      return controller.selectedClipId!;
+    }
+
+    Future<void> scrollTo(WidgetTester tester, Finder finder) async {
+      await tester.scrollUntilVisible(finder, 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('gets the four kinds and no text field', (tester) async {
+      addShape();
+      await pumpInspector(tester);
+
+      expect(find.text('SHAPE'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+      for (final icon in [
+        Icons.crop_square,
+        Icons.circle_outlined,
+        Icons.remove,
+        Icons.arrow_right_alt,
+      ]) {
+        expect(find.byIcon(icon), findsOneWidget);
+      }
+    });
+
+    testWidgets('an ordinary clip gets no shape controls', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      expect(find.text('SHAPE'), findsNothing);
+    });
+
+    testWidgets('a caption gets no shape controls either', (tester) async {
+      controller.addTextClip();
+      await pumpInspector(tester);
+      expect(find.text('SHAPE'), findsNothing);
+    });
+
+    testWidgets('picking a kind lands, and keeps the shape visible',
+        (tester) async {
+      // Switching a filled rectangle to a line has to carry its colour into
+      // the stroke and give the stroke a width, or the clip vanishes.
+      final id = addShape();
+      await pumpInspector(tester);
+
+      await tester.tap(find.byIcon(Icons.remove));
+      await tester.pump();
+
+      final shape = store.project.clipById(id)!.shape!;
+      expect(shape.kind, ShapeKind.line);
+      expect(shape.isBlank, isFalse);
+    });
+
+    testWidgets('a line is measured by its length, not its height',
+        (tester) async {
+      // A line runs across the middle of its box, so the box's height changes
+      // nothing about it — and a slider that moves nothing is a slider that
+      // teaches people not to trust the panel.
+      addShape(ShapeKind.line);
+      await pumpInspector(tester);
+
+      expect(find.text('Length'), findsOneWidget);
+      expect(find.text('Height'), findsNothing);
+      expect(find.text('LINE'), findsOneWidget);
+      expect(find.text('OUTLINE'), findsNothing);
+    });
+
+    testWidgets('only a rectangle gets a corner and only an arrow a head',
+        (tester) async {
+      addShape();
+      await pumpInspector(tester);
+      expect(find.text('Corner'), findsOneWidget);
+      expect(find.text('Head'), findsNothing);
+
+      await tester.tap(find.byIcon(Icons.arrow_right_alt));
+      await tester.pumpAndSettle();
+      expect(find.text('Corner'), findsNothing);
+      expect(find.text('Head'), findsOneWidget);
+    });
+
+    testWidgets('a line gets no fill, because it has no interior',
+        (tester) async {
+      addShape();
+      await pumpInspector(tester);
+      expect(find.text('Fill'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.remove));
+      await tester.pumpAndSettle();
+      expect(find.text('Fill'), findsNothing);
+    });
+
+    testWidgets('the shadow controls appear only once there is a shadow',
+        (tester) async {
+      final id = addShape();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('SHADOW'));
+      expect(find.text('Blur'), findsNothing);
+
+      store.run(SetClipShape(id, const ClipShape(shadowColor: 0xB3000000)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollTo(tester, find.text('Blur'));
+      expect(find.text('Blur'), findsOneWidget);
+    });
+
+    testWidgets('a shape gets no fit or crop', (tester) async {
+      // Its raster is made at the size of the frame, so a fit mode would do
+      // nothing and a crop would cut the corner off the rectangle.
+      addShape();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('PLACE'));
+
+      expect(find.text('FILL'), findsNothing);
+      expect(find.text('CROP'), findsNothing);
+      expect(find.text('PLACE'), findsOneWidget);
+    });
+
+    testWidgets('and it can still be animated', (tester) async {
+      // An animation is the transform the clip already has, over time. A shape
+      // that could not pop in would be the odd one out for no reason.
+      addShape();
+      await pumpInspector(tester);
+      await scrollTo(tester, find.text('ANIMATE'));
+      expect(find.text('ANIMATE'), findsOneWidget);
+    });
+  });
+
   group('animation', () {
     Future<void> scrollToAnimate(WidgetTester tester) async {
       await tester.scrollUntilVisible(find.text('ANIMATE'), 120,

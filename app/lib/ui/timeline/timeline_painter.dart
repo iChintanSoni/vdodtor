@@ -174,10 +174,10 @@ class TimelinePainter extends CustomPainter {
   void _paintClip(Canvas canvas, Clip clip, Track track, int laneIndex,
       double x0, double x1, double top, double viewWidth) {
     final asset = controller.project.assetFor(clip);
-    // A caption has no asset and is not missing one: it draws itself. Without
-    // the first clause every caption on the timeline would be painted as
-    // broken media, which is a warning about nothing.
-    final missing = !clip.isText &&
+    // A caption or a shape has no asset and is not missing one: it draws
+    // itself. Without the first clause every drawn clip on the timeline would
+    // be painted as broken media, which is a warning about nothing.
+    final missing = !clip.isGenerated &&
         (asset == null || controller.unreachableMediaIds.contains(asset.id));
     final selected = controller.isSelected(clip.id);
     // Handles mean "you can trim this", and trimming is a single-clip idea.

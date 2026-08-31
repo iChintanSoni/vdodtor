@@ -139,6 +139,11 @@ class _EditorScreenState extends State<EditorScreen> {
         // up: two captions on the timeline would make every dumped frame a
         // question about which one moved.
         await runAnimationSelfTest(engine, _store, caption);
+        // After the animation pass, so the shape it dumps lands under a
+        // caption that is already animated: the frame then shows both of the
+        // things the engine draws, on the lanes they share, in the order they
+        // composite.
+        await runShapeSelfTest(engine, _store, timeline);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
@@ -236,6 +241,7 @@ class _EditorScreenState extends State<EditorScreen> {
         EditorAction.zoomToFit: () => _timeline?.zoomToFit(),
         EditorAction.split: () => _timeline?.splitAtPlayhead(),
         EditorAction.addText: () => _timeline?.addTextClip(),
+        EditorAction.addShape: () => _timeline?.addShapeClip(),
         EditorAction.duplicate: () => _timeline?.duplicateSelected(),
         EditorAction.detachAudio: () => _timeline?.detachAudio(),
         EditorAction.delete: () => _timeline?.deleteSelected(),
@@ -645,6 +651,14 @@ class _TransportBar extends StatelessWidget {
             icon: const Icon(Icons.title, size: 20),
             onPressed:
                 timeline.canAddTextClip ? () => timeline.addTextClip() : null,
+          ),
+          IconButton(
+            tooltip: timeline.canAddShapeClip
+                ? 'Add a shape at the playhead (⌘R)'
+                : 'Every text lane is full at the playhead',
+            icon: const Icon(Icons.crop_square, size: 20),
+            onPressed:
+                timeline.canAddShapeClip ? () => timeline.addShapeClip() : null,
           ),
           IconButton(
             tooltip: timeline.canAddOverlayTrack

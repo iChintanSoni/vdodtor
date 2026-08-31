@@ -16,8 +16,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
-> **M3 has started: the editor can put words on the picture, and make them
-> arrive.** A caption is a clip with no
+> **M3 has started: the editor can put words on the picture, draw shapes beside them, and
+> make both arrive.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -33,6 +33,16 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > preset but the typewriter is the same pixels moved about, so an animated caption is laid
 > out **once** however much it moves; the typewriter redraws once per *character*, never
 > once per frame, because the caption cache is keyed on how much of it has been typed.
+>
+> And it can now draw **shapes**: a rectangle, an ellipse, a line and an arrow, with a
+> fill, a stroke, a corner and a shadow — ⌘R at the playhead, on the lanes the captions
+> already use. This is the change that shows what "a caption is a source, not a
+> compositing mode" was worth: a shape inherited the compositor, the transform, the
+> z-order, the animation presets and the raster cache unchanged, and cost one field on the
+> render list plus 230 lines of Core Graphics. Every length is a fraction of the output
+> **height** — both of them, so a circle is round in a 16:9 project and in a 9:16 one.
+> Measured in the running app: three layers, one draw per shape, and **zero** further
+> draws across eight seeks.
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -916,8 +926,71 @@ start to finish without touching another editor; undo works through the whole se
       boundary; one test compares all three, including the generated bindings,
       so a preset inserted in the middle of the header renames every animation
       on disk loudly rather than quietly.
-- [ ] Shape primitives: rect, rounded rect, circle, line/arrow — fill/stroke, same transforms
+- [x] Shape primitives: rect, rounded rect, circle, line/arrow — fill/stroke, same transforms
       and animation presets as text
+      — four kinds rather than six, because a rounded rectangle is a rectangle
+      with a corner and a circle is an ellipse with equal sides: both are one
+      slider away from the entry beside them, and a picker with two rows that
+      draw the same thing makes the reader look for a difference that is not
+      there.
+      A shape is the **second** source the engine draws rather than decodes,
+      and the interesting thing is how little it cost. Everything a caption
+      already had, it inherited: the same `VdLayer` into the same compositor,
+      the same transform, the same z-order, the same in/out presets, the same
+      "keep the raster until the spec changes" bargain. `vd_shape.c` is 230
+      lines of Core Graphics and the wiring was one field on `VdTimelineClip`.
+      That is what "a caption is a source, not a compositing mode" was worth —
+      the decision paid for itself the first time a second drawn thing arrived.
+      **Every length is a fraction of the output height.** Not of the width,
+      and not one of each: measured half against the width and half against the
+      height, a shape changes shape when the project's aspect does, and then a
+      circle is only round at 16:9. One unit for all four numbers also makes
+      them comparable by eye. This is one rule where a caption has two — a size
+      against the output and everything else against the font size — because a
+      caption has a single size to hang the rest off and a shape has two, so
+      picking either would make the other axis surprising.
+      **One box, four shapes.** A rectangle fills it, an ellipse is inscribed
+      in it, a line runs across it from the middle of the left edge to the
+      middle of the right. That is what makes the two size numbers mean the
+      same thing in all of them — and it has an honest consequence, which is
+      that a line's box has a height that changes nothing. The inspector says
+      so by calling the width "Length" and not offering the height at all: a
+      slider that moves nothing teaches people not to trust the panel.
+      **A line has no interior, so the stroke *is* the shape** — which is the
+      one place the model needed a decision rather than a field. A filled
+      rectangle turned into a line has its colour in the wrong field and no
+      thickness at all, so it would vanish, and a picker whose third entry
+      blanks the clip is a picker nobody presses twice. `ClipShape.withKind`
+      carries the colour across and gives the stroke a width, once, and only
+      when there is nothing there already. Changing the kind is not only
+      changing the kind.
+      **One shadow for the whole silhouette**, cast from inside a Core Graphics
+      transparency layer. Without the layer a stroked shape casts two — the
+      fill's and the stroke's — and they show through each other wherever the
+      shape is not opaque, which looks like a rendering bug because it is one.
+      The test is one byte: a shape at half opacity casts a shadow at half
+      opacity, where two would compound to 1-(1-0.5)², and 0x80 is not 0xBF.
+      **Shapes share the text lanes** rather than getting lanes of their own.
+      A shape is the same kind of thing — no file, drawn by the engine, wants
+      to sit over the picture — and a second family of lanes would be a second
+      cap to keep in step with `VD_MAX_LAYERS` for no difference anybody could
+      see. So `MoveClip.accepts` is written against `isGenerated` rather than
+      `isText`, and ⌘R puts one at the playhead the way ⌘T puts a caption.
+      Two things were **written once** rather than twice on the way through.
+      `vd_raster` is the pixel buffer, the context and the colour that both
+      drawn sources need — the alternative was thirty-five duplicated lines and
+      the copy that drifts is always the one nobody is looking at. `vd_ink.h`
+      is how both engine test files read a raster back, and text and shapes are
+      checked the same way for the same reason: what Core Graphics puts along
+      the edge of a circle is no more a contract than what Core Text puts along
+      the edge of a glyph, so a golden PNG of either would go red on an OS
+      upgrade with nothing wrong behind it. The compositor keeps its goldens;
+      neither drawn source joins them.
+      Measured in the running app: three layers — a decoded frame, a caption
+      and a shape over it — one draw per shape, and **zero** further draws
+      across eight seeks. The typewriter, offered on a shape because the menu
+      does not change shape with the selection, quietly does nothing to it and
+      costs nothing per frame doing so.
 
 ### Stickers & GIFs
 - [ ] GIF / animated WebP / APNG decode → cached RGBA sequences, retimed to project fps

@@ -37,6 +37,9 @@ class Inspector extends StatelessWidget {
   void _setText(Clip clip, ClipText text) =>
       _store.run(SetClipText(clip.id, text), fromGestureStart: true);
 
+  void _setShape(Clip clip, ClipShape shape) =>
+      _store.run(SetClipShape(clip.id, shape), fromGestureStart: true);
+
   void _setAnimation(Clip clip, ClipAnimation animation) =>
       _store.run(SetClipAnimation(clip.id, animation), fromGestureStart: true);
 
@@ -56,7 +59,8 @@ class Inspector extends StatelessWidget {
     final track = timeline.project.trackOfClip(clip.id);
     final asset = timeline.project.assetFor(clip);
     final caption = clip.text;
-    final showsPicture = caption != null ||
+    final drawing = clip.shape;
+    final showsPicture = clip.isGenerated ||
         ((track?.kind.isVisual ?? true) && (asset?.probe.hasVideo ?? true));
     final hasSound = asset?.probe.hasAudio ?? false;
 
@@ -93,7 +97,9 @@ class Inspector extends StatelessWidget {
             ],
           ),
           Text(
-            clip.label.isEmpty ? (caption?.label ?? 'Clip') : clip.label,
+            clip.label.isEmpty
+                ? (caption?.label ?? drawing?.label ?? 'Clip')
+                : clip.label,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 12, color: VdColors.text),
@@ -107,6 +113,12 @@ class Inspector extends StatelessWidget {
               key: ValueKey(clip.id),
               text: caption,
               onChanged: (t) => _setText(clip, t),
+              onCommit: _commit,
+            ),
+          if (drawing != null)
+            _ShapeControls(
+              shape: drawing,
+              onChanged: (s) => _setShape(clip, s),
               onCommit: _commit,
             ),
           if (showsPicture)
@@ -186,10 +198,11 @@ class _TransformControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = clip.transform;
 
-    // A caption has no source to fit, crop or mirror: its raster is made at
+    // A drawn clip has no source to fit, crop or mirror: its raster is made at
     // the size of the frame, so a fit mode would do nothing and a crop would
-    // cut the words off. What is left is where it sits and how big it is.
-    final hasSource = !clip.isText;
+    // cut the words — or the corner off the rectangle. What is left is where
+    // it sits and how big it is.
+    final hasSource = !clip.isGenerated;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -558,6 +571,206 @@ class _TextControlsState extends State<_TextControls> {
       ],
     );
   }
+}
+
+/// What a shape looks like.
+///
+/// Stateless, unlike [_TextControls]: there is no text field here, so there is
+/// no caret to protect and the whole panel is a function of the document.
+///
+/// Which controls appear depends on the kind, because half of them would do
+/// nothing on the others. A corner slider on an ellipse and a fill colour on a
+/// line are controls that move and change no pixel, and a panel full of those
+/// teaches people not to trust the panel.
+class _ShapeControls extends StatelessWidget {
+  const _ShapeControls({
+    required this.shape,
+    required this.onChanged,
+    required this.onCommit,
+  });
+
+  final ClipShape shape;
+  final ValueChanged<ClipShape> onChanged;
+  final VoidCallback onCommit;
+
+  /// A change made by a click rather than a drag: it opens and closes its own
+  /// undo entry, so it cannot fold into whatever was dragged before it.
+  void _tap(ClipShape next) {
+    onCommit();
+    onChanged(next);
+    onCommit();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = shape;
+    final stroked = s.kind.isStroke;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _SectionLabel('SHAPE'),
+        _KindPicker(kind: s.kind, onChanged: (k) => _tap(s.withKind(k))),
+        _Slider(
+          // A line has no interior, so its box's width is the only thing about
+          // it anybody would call a size — and "length" is what they would
+          // call it.
+          label: stroked ? 'Length' : 'Width',
+          value: s.width,
+          min: ClipShape.minSize,
+          max: ClipShape.maxSize,
+          format: _percentOfFrame,
+          onChanged: (v) => onChanged(s.copyWith(width: v)),
+          onCommit: onCommit,
+        ),
+        // The box's height does not reach a line: it runs across the middle,
+        // so the only thing that would change is where the middle is, and the
+        // box is centred either way.
+        if (!stroked)
+          _Slider(
+            label: 'Height',
+            value: s.height,
+            min: ClipShape.minSize,
+            max: ClipShape.maxSize,
+            format: _percentOfFrame,
+            onChanged: (v) => onChanged(s.copyWith(height: v)),
+            onCommit: onCommit,
+          ),
+        if (s.kind == ShapeKind.rectangle)
+          _Slider(
+            label: 'Corner',
+            value: s.corner,
+            min: 0,
+            max: 1,
+            // Not a fraction of anything on the frame: 100% is as round as
+            // this box allows, which is a different number of pixels on every
+            // shape and the same shape on all of them.
+            format: (v) => '${(v * 100).round()}%',
+            onChanged: (v) => onChanged(s.copyWith(corner: v)),
+            onCommit: onCommit,
+          ),
+        if (s.kind == ShapeKind.arrow)
+          _Slider(
+            label: 'Head',
+            value: s.headSize,
+            min: ClipShape.minHeadSize,
+            max: ClipShape.maxHeadSize,
+            format: (v) => '${(v * 100).round()}%',
+            onChanged: (v) => onChanged(s.copyWith(headSize: v)),
+            onCommit: onCommit,
+          ),
+        if (!stroked)
+          _Swatches(
+            label: 'Fill',
+            value: s.fillColor,
+            options: _fillPalette,
+            allowNone: true,
+            onChanged: (c) => _tap(s.copyWith(fillColor: c)),
+          ),
+
+        // For a line and an arrow this *is* the shape rather than an outline
+        // on one, so it is not offered as something to switch on: the slider
+        // is here whatever the kind, and only the heading changes.
+        _SectionLabel(stroked ? 'LINE' : 'OUTLINE'),
+        _Slider(
+          label: 'Width',
+          value: s.strokeWidth,
+          min: 0,
+          max: ClipShape.maxStrokeWidth,
+          format: _percentOfFrame,
+          onChanged: (v) => onChanged(s.copyWith(strokeWidth: v)),
+          onCommit: onCommit,
+        ),
+        // Only worth a colour once there is something to colour, and the
+        // slider above is where one comes from.
+        if (s.strokeWidth > 0)
+          _Swatches(
+            label: 'Colour',
+            value: s.strokeColor,
+            options: _fillPalette,
+            onChanged: (c) => _tap(s.copyWith(strokeColor: c)),
+          ),
+
+        const _SectionLabel('SHADOW'),
+        _Swatches(
+          label: 'Colour',
+          value: s.shadowColor,
+          options: _shadowPalette,
+          allowNone: true,
+          onChanged: (c) => _tap(s.copyWith(shadowColor: c)),
+        ),
+        if (s.hasShadow) ...[
+          _Slider(
+            label: 'X',
+            value: s.shadowOffsetX,
+            min: -ClipShape.maxShadowOffset,
+            max: ClipShape.maxShadowOffset,
+            format: _percentOfFrame,
+            onChanged: (v) => onChanged(s.copyWith(shadowOffsetX: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Y',
+            value: s.shadowOffsetY,
+            min: -ClipShape.maxShadowOffset,
+            max: ClipShape.maxShadowOffset,
+            format: _percentOfFrame,
+            onChanged: (v) => onChanged(s.copyWith(shadowOffsetY: v)),
+            onCommit: onCommit,
+          ),
+          _Slider(
+            label: 'Blur',
+            value: s.shadowBlur,
+            min: 0,
+            max: ClipShape.maxShadowBlur,
+            format: _percentOfFrame,
+            onChanged: (v) => onChanged(s.copyWith(shadowBlur: v)),
+            onCommit: onCommit,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Which of the four to draw, as icons rather than as a menu: the whole
+/// question is what the thing will look like.
+class _KindPicker extends StatelessWidget {
+  const _KindPicker({required this.kind, required this.onChanged});
+
+  final ShapeKind kind;
+  final ValueChanged<ShapeKind> onChanged;
+
+  static const _icons = {
+    ShapeKind.rectangle: Icons.crop_square,
+    ShapeKind.ellipse: Icons.circle_outlined,
+    ShapeKind.line: Icons.remove,
+    ShapeKind.arrow: Icons.arrow_right_alt,
+  };
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          for (final option in ShapeKind.values) ...[
+            Expanded(
+              child: Tooltip(
+                message: option.label,
+                child: OutlinedButton(
+                  onPressed: () => onChanged(option),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    foregroundColor:
+                        option == kind ? VdColors.accent : VdColors.dim,
+                    side: BorderSide(
+                        color: option == kind ? VdColors.accent : VdColors.line),
+                  ),
+                  child: Icon(_icons[option], size: 16),
+                ),
+              ),
+            ),
+            if (option != ShapeKind.values.last) const SizedBox(width: 4),
+          ],
+        ],
+      );
 }
 
 /// The typefaces the app ships, previewed in themselves.

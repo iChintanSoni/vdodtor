@@ -40,11 +40,16 @@ typedef struct {
   int64_t last_used;
   bool decoder_failed;  // do not retry every frame
 
-  // A generated clip instead of a decoded one. `text` is owned; `raster` is
-  // the CVPixelBufferRef it last produced, kept until the spec or the output
-  // size changes. Laying a caption out again on every frame would cost more
-  // than decoding one.
+  // A generated clip instead of a decoded one. `text` and `shape` are owned
+  // and at most one of them is set; `raster` is the CVPixelBufferRef whichever
+  // it is last produced, kept until the spec or the output size changes.
+  // Laying a caption out again on every frame would cost more than decoding
+  // one, and a shape is cheap enough that the cache is really there so the
+  // *layer* is stable — a new pixel buffer every frame would have the
+  // compositor re-wrapping a texture sixty times a second for a rectangle
+  // that never moved.
   VdTextSpec* text;
+  VdShapeSpec* shape;
   void* raster;
   int32_t raster_width;
   int32_t raster_height;
@@ -206,10 +211,10 @@ static VdDecoder* decoder_for(VdEngine* e, VdClipEntry* clip) {
 
 // The raster for `clip`, drawn if the one it has is missing or stale.
 //
-// Caller holds render_lock. Returns NULL for a clip that carries no text,
+// Caller holds render_lock. Returns NULL for a clip the engine does not draw,
 // which is how the caller tells the two kinds of layer apart.
 static void* raster_for(VdEngine* e, VdClipEntry* clip, int32_t reveal) {
-  if (!clip->text) return NULL;
+  if (!clip->text && !clip->shape) return NULL;
   if (clip->raster && clip->raster_width == e->width &&
       clip->raster_height == e->height && clip->raster_reveal == reveal) {
     return clip->raster;
@@ -222,13 +227,20 @@ static void* raster_for(VdEngine* e, VdClipEntry* clip, int32_t reveal) {
     CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
     clip->raster = NULL;
   }
-  clip->raster = vd_text_render(clip->text, e->width, e->height, reveal, NULL);
+  clip->raster =
+      clip->text
+          ? vd_text_render(clip->text, e->width, e->height, reveal, NULL)
+          : vd_shape_render(clip->shape, e->width, e->height, NULL);
   clip->raster_width = e->width;
   clip->raster_height = e->height;
   clip->raster_reveal = reveal;
 
   pthread_mutex_lock(&e->lock);
-  e->stats.text_rasters++;
+  if (clip->text) {
+    e->stats.text_rasters++;
+  } else {
+    e->stats.shape_rasters++;
+  }
   pthread_mutex_unlock(&e->lock);
   return clip->raster;
 }
@@ -237,6 +249,7 @@ static void free_clip_contents(VdClipEntry* clip) {
   if (clip->decoder) vd_decoder_close(clip->decoder);
   if (clip->raster) CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
   vd_text_spec_free(clip->text);
+  vd_shape_spec_free(clip->shape);
   free(clip->path);
 }
 
@@ -317,12 +330,16 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     // decoded one — same transform, same opacity, same z-order — because the
     // compositor is the one thing preview and export share and a second path
     // through it is a second thing to keep in step.
-    if (clip->text) {
+    if (clip->text || clip->shape) {
       // A typewriter is the one animation the transform cannot express, so it
       // reaches into the raster instead. Rounded up, so the first character
       // appears as soon as the animation starts rather than a frame later.
+      //
+      // A shape has nothing to reveal, so it asks for all of it and the
+      // typewriter quietly does nothing — which is what vd_anim.h promises a
+      // preset chosen for a clip that cannot use it will do.
       const int32_t reveal =
-          anim.reveal >= 1.0f
+          (!clip->text || anim.reveal >= 1.0f)
               ? -1
               : (int32_t)ceilf(anim.reveal * (float)clip->text_length);
       void* raster = raster_for(e, clip, reveal);
@@ -638,6 +655,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->has_video = src->has_video;
     dst->anim = src->anim;
     dst->text = vd_text_spec_copy(src->text);
+    dst->shape = vd_shape_spec_copy(src->shape);
     // Counted once, here, rather than per frame: a typewriter divides its time
     // by this and composed characters are not free to count.
     dst->text_length = dst->text ? vd_text_length(dst->text) : 0;
@@ -652,11 +670,15 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
         old->decoder = NULL;
         break;
       }
-      // The same bargain for a caption: a raster survives any edit that did
-      // not change what the caption says or how it looks, so dragging a text
-      // clip along its lane costs no layout at all.
-      if (old->raster && old->text && dst->text &&
-          vd_text_spec_equal(old->text, dst->text)) {
+      // The same bargain for a drawn clip: a raster survives any edit that did
+      // not change what the caption says or what the shape looks like, so
+      // dragging one along its lane costs no drawing at all.
+      const bool same_drawing =
+          (old->text && dst->text &&
+           vd_text_spec_equal(old->text, dst->text)) ||
+          (old->shape && dst->shape &&
+           vd_shape_spec_equal(old->shape, dst->shape));
+      if (old->raster && same_drawing) {
         dst->raster = old->raster;
         dst->raster_width = old->raster_width;
         dst->raster_height = old->raster_height;

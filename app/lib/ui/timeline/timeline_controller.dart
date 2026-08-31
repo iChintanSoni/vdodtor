@@ -544,7 +544,7 @@ class TimelineController extends ChangeNotifier {
     // audio clip may cross to another audio lane, a video clip may not.
     final origin = project.trackOfClip(clipId)?.kind ?? TrackKind.main;
     if (!MoveClip.accepts(lane, asset,
-        from: origin, isText: clip?.isText ?? false)) {
+        from: origin, isGenerated: clip?.isGenerated ?? false)) {
       return _dragOriginTrackId;
     }
     return lane.id;
@@ -1020,10 +1020,14 @@ class TimelineController extends ChangeNotifier {
     return true;
   }
 
-  // --- captions ------------------------------------------------------------
+  // --- captions and shapes -------------------------------------------------
 
   /// How long a caption is when it first appears. Three seconds is long enough
   /// to read a line and short enough that trimming it down is the exception.
+  ///
+  /// A shape gets the same length. It is not a length anybody reads, but two
+  /// numbers would mean a caption and the shape behind it arriving at
+  /// different times, which is a trim nobody asked for.
   static final Tick defaultCaptionDuration =
       Tick(3 * Timebase.project.ticksPerSecond);
 
@@ -1031,16 +1035,53 @@ class TimelineController extends ChangeNotifier {
       project.canAddTrackOfKind(TrackKind.text) ||
       _textLaneWithRoomAt(playhead) != null;
 
-  /// Puts a caption on a text lane at the playhead and selects it.
+  /// A shape goes on a text lane, so it is the same question.
+  bool get canAddShapeClip => canAddTextClip;
+
+  /// Puts a caption on a text lane at the playhead and selects it. See
+  /// [_addDrawnClip] for which lane, and for what happens when there is none.
+  bool addTextClip({ClipText text = const ClipText(text: 'Text')}) =>
+      _addDrawnClip(
+        label: 'Add text',
+        build: (id, at) => Clip.caption(
+          id: id,
+          start: at,
+          duration: defaultCaptionDuration,
+          text: text,
+        ),
+      );
+
+  /// Puts a shape on a text lane at the playhead and selects it.
+  ///
+  /// Every word of [addTextClip] applies: the same lanes, the same "make one
+  /// when there is no room", the same single undo entry. A shape is the other
+  /// thing the app draws, and giving it lanes of its own would mean a second
+  /// cap to keep in step with `VD_MAX_LAYERS` for no difference anybody could
+  /// see on screen.
+  bool addShapeClip({ShapeKind kind = ShapeKind.rectangle}) => _addDrawnClip(
+        label: 'Add shape',
+        build: (id, at) => Clip.drawing(
+          id: id,
+          start: at,
+          duration: defaultCaptionDuration,
+          shape: ClipShape.of(kind),
+        ),
+      );
+
+  /// The half of adding a caption and adding a shape that is the same, which
+  /// is all of it but the clip.
   ///
   /// It goes on the first text lane with room for it and makes a new lane when
   /// there is none — which is what someone adding a second caption over the
   /// first actually means. Stacking them on one lane is impossible (lanes hold
   /// no overlaps) and refusing would be a button that stops working the moment
-  /// two captions want to be on screen together.
+  /// two things want to be on screen together.
   ///
   /// Returns false only when every lane is full and no more may be added.
-  bool addTextClip({ClipText text = const ClipText(text: 'Text')}) {
+  bool _addDrawnClip({
+    required String label,
+    required Clip Function(String id, Tick at) build,
+  }) {
     final at = playhead;
     final existing = _textLaneWithRoomAt(at);
     if (existing == null && !project.canAddTrackOfKind(TrackKind.text)) {
@@ -1053,12 +1094,7 @@ class TimelineController extends ChangeNotifier {
           kind: TrackKind.text,
           name: 'Text ${project.trackCountOfKind(TrackKind.text) + 1}',
         );
-    final clip = Clip.caption(
-      id: _ids.next('c-'),
-      start: at,
-      duration: defaultCaptionDuration,
-      text: text,
-    );
+    final clip = build(_ids.next('c-'), at);
 
     store.endGesture();
     // One undo entry even when a lane had to be made: adding a caption is one
@@ -1066,7 +1102,7 @@ class TimelineController extends ChangeNotifier {
     // InsertClips.newTracks exists to avoid.
     store.run(InsertClips(
       [(trackId: track.id, clip: clip, index: null)],
-      label: 'Add text',
+      label: label,
       newTracks: existing == null ? [track] : const [],
     ));
     store.endGesture();

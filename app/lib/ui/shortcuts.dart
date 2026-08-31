@@ -30,6 +30,7 @@ enum EditorAction {
   zoomToFit,
   split,
   addText,
+  addShape,
   duplicate,
   detachAudio,
   delete,
@@ -130,6 +131,11 @@ const List<ShortcutSpec> editorShortcuts = [
   ShortcutSpec(EditorAction.addText,
       [SingleActivator(LogicalKeyboardKey.keyT, meta: true)],
       'Add a caption at the playhead', ShortcutGroup.editing),
+  // R for rectangle, beside T for text, and nothing in this editor renders on
+  // demand for ⌘R to have meant first.
+  ShortcutSpec(EditorAction.addShape,
+      [SingleActivator(LogicalKeyboardKey.keyR, meta: true)],
+      'Add a shape at the playhead', ShortcutGroup.editing),
   ShortcutSpec(EditorAction.duplicate,
       [SingleActivator(LogicalKeyboardKey.keyD, meta: true)],
       'Duplicate', ShortcutGroup.editing),

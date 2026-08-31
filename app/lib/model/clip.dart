@@ -696,6 +696,269 @@ final class ClipText {
       '${(size * 100).toStringAsFixed(1)}%)';
 }
 
+/// What a shape is.
+///
+/// Order matches `VdShapeKind` in `engine/include/vdodtor/vd_shape.h`; the
+/// index crosses the FFI boundary as an integer, so these may be appended to
+/// and never reordered.
+///
+/// **Four kinds, not six.** A rounded rectangle is a [rectangle] with a
+/// [ClipShape.corner] and a circle is an [ellipse] with equal sides, because
+/// both are one slider away from the entry beside them — and a picker with two
+/// rows that draw the same thing makes the reader look for a difference that
+/// is not there.
+enum ShapeKind {
+  rectangle('Rectangle'),
+  ellipse('Ellipse'),
+  line('Line'),
+  arrow('Arrow');
+
+  const ShapeKind(this.label);
+  final String label;
+
+  /// True for the two kinds that are all outline. They have no interior, so
+  /// [ClipShape.fillColor] says nothing about them and the stroke *is* the
+  /// shape.
+  bool get isStroke => this == ShapeKind.line || this == ShapeKind.arrow;
+}
+
+/// A rectangle, an ellipse, a line or an arrow: what it looks like.
+///
+/// The second thing a clip can draw instead of showing a file, and it works on
+/// exactly the terms [ClipText] does — nullable, exclusive with [Clip.mediaId],
+/// rasterised in the engine and handed to the compositor as an ordinary layer,
+/// so the transform, the opacity and the in/out animation all reach it without
+/// anything here knowing they do.
+///
+/// **Every length is a fraction of the output height.** Not of the width, and
+/// not one of each: a shape measured half against the width and half against
+/// the height changes shape when the project's aspect does, and then a circle
+/// is only round at 16:9. One unit for all four numbers also makes them
+/// comparable by eye.
+///
+/// That is one rule where [ClipText] has two — a size against the output, and
+/// everything else against the font size. A caption has a single size to hang
+/// the rest off; a shape has two, so there is no single one to choose and
+/// picking either would make the other axis surprising.
+///
+/// Colours are 0xAARRGGBB and alpha 0 is off, the same rule captions follow: a
+/// fill with no alpha draws no fill, a stroke with none draws no outline, a
+/// shadow colour with none casts no shadow.
+@immutable
+final class ClipShape {
+  const ClipShape({
+    this.kind = ShapeKind.rectangle,
+    this.width = 0.5,
+    this.height = 0.28,
+    this.corner = 0,
+    this.fillColor = 0xFFFFFFFF,
+    this.strokeColor = 0xFF000000,
+    this.strokeWidth = 0,
+    this.shadowColor = 0x00000000,
+    this.shadowOffsetX = 0,
+    this.shadowOffsetY = 0,
+    this.shadowBlur = 0,
+    this.headSize = 0.25,
+  });
+
+  /// A shape of [kind] that somebody would recognise as one the moment it
+  /// appears.
+  ///
+  /// The defaults differ by kind and have to. A line's colour lives in
+  /// [strokeColor] and its thickness in [strokeWidth], so the plain
+  /// constructor's unstroked rectangle would draw *nothing* as a line — and a
+  /// button that adds an invisible clip is a button that looks broken. An
+  /// ellipse starts square, so the first thing it is is a circle.
+  factory ClipShape.of(ShapeKind kind) => switch (kind) {
+        ShapeKind.rectangle => const ClipShape(),
+        ShapeKind.ellipse =>
+          const ClipShape(kind: ShapeKind.ellipse, width: 0.4, height: 0.4),
+        ShapeKind.line => const ClipShape(
+            kind: ShapeKind.line,
+            width: 0.7,
+            strokeColor: 0xFFFFFFFF,
+            strokeWidth: defaultStrokeWidth,
+          ),
+        ShapeKind.arrow => const ClipShape(
+            kind: ShapeKind.arrow,
+            width: 0.7,
+            strokeColor: 0xFFFFFFFF,
+            strokeWidth: defaultStrokeWidth,
+          ),
+      };
+
+  /// What a shape looks like before anybody styles it — the value the
+  /// serialisation compares against nothing, because a shape is written out
+  /// whole. Kept for the same reason [ClipText.plain] is: a test that wants
+  /// "an ordinary one" should not have to list twelve fields.
+  static const plain = ClipShape();
+
+  final ShapeKind kind;
+
+  /// The box the shape is drawn in, centred in the frame, as fractions of the
+  /// output height. Equal values are a square — and so, for an ellipse, a
+  /// circle — in a 16:9 project and in a 9:16 one.
+  final double width;
+  final double height;
+
+  /// How round a rectangle's corners are: 0 square, 1 as round as the box
+  /// allows, which is a pill on an oblong. A proportion rather than a length,
+  /// so a rectangle keeps its corners when it is resized. Ignored by every
+  /// other kind.
+  final double corner;
+
+  /// Ignored by the two [ShapeKind.isStroke] kinds, which have no interior.
+  final int fillColor;
+
+  /// Drawn over the fill, straddling the edge, which is what keeps a filled
+  /// shape the size its box says it is. For a line or an arrow this *is* the
+  /// shape.
+  final int strokeColor;
+  final double strokeWidth;
+
+  /// Cast by the whole shape — fill and stroke as one silhouette — onto
+  /// whatever is behind it. +y is down.
+  final int shadowColor;
+  final double shadowOffsetX;
+  final double shadowOffsetY;
+  final double shadowBlur;
+
+  /// How much of an arrow is head, as a fraction of its length. A proportion
+  /// for the same reason [corner] is one: a stretched arrow should still look
+  /// like an arrow. Ignored by every other kind.
+  final double headSize;
+
+  /// Thick enough to see at 1080p and thin enough to read as a line.
+  static const double defaultStrokeWidth = 0.012;
+
+  // The ends of every slider in the inspector, so the control and the document
+  // cannot disagree about what is allowed. Sizes go past 1 because a shape
+  // used as a background wash has to cover a 16:9 frame, and 16/9 of the
+  // height is 1.78 of it.
+  static const double minSize = 0.01;
+  static const double maxSize = 2.0;
+  static const double maxStrokeWidth = 0.1;
+  static const double maxShadowOffset = 0.2;
+  static const double maxShadowBlur = 0.2;
+  static const double minHeadSize = 0.05;
+  static const double maxHeadSize = 1.0;
+
+  bool get hasFill => !kind.isStroke && _visible(fillColor);
+  bool get hasStroke => strokeWidth > 0 && _visible(strokeColor);
+  bool get hasShadow => _visible(shadowColor);
+
+  /// True when nothing about this shape would mark the frame. A shape someone
+  /// has made invisible is still a clip on the timeline — the label has to
+  /// come from the kind rather than from what is left of it.
+  bool get isBlank => !hasFill && !hasStroke;
+
+  /// A one-line summary for the timeline and the bin.
+  String get label => kind.label;
+
+  static bool _visible(int argb) => (argb >> 24) & 0xFF != 0;
+
+  /// Every number pulled inside the range the inspector offers. Applied on the
+  /// way into the document rather than on the way out, so a file written by a
+  /// future version with a wider range opens as something this one can still
+  /// edit.
+  ClipShape clamped() => ClipShape(
+        kind: kind,
+        width: width.clamp(minSize, maxSize),
+        height: height.clamp(minSize, maxSize),
+        corner: corner.clamp(0.0, 1.0),
+        fillColor: fillColor,
+        strokeColor: strokeColor,
+        strokeWidth: strokeWidth.clamp(0.0, maxStrokeWidth),
+        shadowColor: shadowColor,
+        shadowOffsetX: shadowOffsetX.clamp(-maxShadowOffset, maxShadowOffset),
+        shadowOffsetY: shadowOffsetY.clamp(-maxShadowOffset, maxShadowOffset),
+        shadowBlur: shadowBlur.clamp(0.0, maxShadowBlur),
+        headSize: headSize.clamp(minHeadSize, maxHeadSize),
+      );
+
+  /// The same shape as another kind, with whatever that kind needs to still be
+  /// visible.
+  ///
+  /// Not `copyWith(kind: …)`, because changing the kind is not only changing
+  /// the kind. A filled rectangle turned into a line has its colour in the
+  /// wrong field and no thickness at all, so it would vanish — and a picker
+  /// whose third entry blanks the clip is a picker nobody presses twice. The
+  /// colour moves across and the stroke is given a width, once, and only when
+  /// there is nothing there already.
+  ClipShape withKind(ShapeKind next) {
+    if (next == kind) return this;
+    if (!next.isStroke || hasStroke) return copyWith(kind: next);
+    return copyWith(
+      kind: next,
+      strokeColor: _visible(strokeColor) ? strokeColor : fillColor,
+      strokeWidth: strokeWidth > 0 ? strokeWidth : defaultStrokeWidth,
+    );
+  }
+
+  ClipShape copyWith({
+    ShapeKind? kind,
+    double? width,
+    double? height,
+    double? corner,
+    int? fillColor,
+    int? strokeColor,
+    double? strokeWidth,
+    int? shadowColor,
+    double? shadowOffsetX,
+    double? shadowOffsetY,
+    double? shadowBlur,
+    double? headSize,
+  }) =>
+      ClipShape(
+        kind: kind ?? this.kind,
+        width: width ?? this.width,
+        height: height ?? this.height,
+        corner: corner ?? this.corner,
+        fillColor: fillColor ?? this.fillColor,
+        strokeColor: strokeColor ?? this.strokeColor,
+        strokeWidth: strokeWidth ?? this.strokeWidth,
+        shadowColor: shadowColor ?? this.shadowColor,
+        shadowOffsetX: shadowOffsetX ?? this.shadowOffsetX,
+        shadowOffsetY: shadowOffsetY ?? this.shadowOffsetY,
+        shadowBlur: shadowBlur ?? this.shadowBlur,
+        headSize: headSize ?? this.headSize,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipShape &&
+      other.kind == kind &&
+      other.width == width &&
+      other.height == height &&
+      other.corner == corner &&
+      other.fillColor == fillColor &&
+      other.strokeColor == strokeColor &&
+      other.strokeWidth == strokeWidth &&
+      other.shadowColor == shadowColor &&
+      other.shadowOffsetX == shadowOffsetX &&
+      other.shadowOffsetY == shadowOffsetY &&
+      other.shadowBlur == shadowBlur &&
+      other.headSize == headSize;
+
+  @override
+  int get hashCode => Object.hash(
+        kind,
+        width,
+        height,
+        corner,
+        fillColor,
+        strokeColor,
+        strokeWidth,
+        shadowColor,
+        Object.hash(shadowOffsetX, shadowOffsetY, shadowBlur),
+        headSize,
+      );
+
+  @override
+  String toString() => 'ClipShape(${kind.name} '
+      '${(width * 100).toStringAsFixed(0)}x${(height * 100).toStringAsFixed(0)}%)';
+}
+
 /// How a clip arrives and how it leaves.
 ///
 /// **A preset names the direction the clip travels, not the edge it comes
@@ -878,8 +1141,9 @@ final class ClipAnimation {
 /// length of both. Trimming moves the window edges; moving slides [start].
 ///
 /// Or it generates its own picture, and then it is a window onto nothing:
-/// [text] is set, [mediaId] is not, and [sourceIn] means nothing because there
-/// is no source to be offset into. Exactly one of the two is always present.
+/// [text] or [shape] is set, [mediaId] is not, and [sourceIn] means nothing
+/// because there is no source to be offset into. Exactly one of the three is
+/// always present.
 final class Clip {
   const Clip({
     required this.id,
@@ -893,9 +1157,14 @@ final class Clip {
     this.audio = ClipAudio.unity,
     this.animation = ClipAnimation.still,
     this.text,
-  }) : assert(mediaId == null || text == null,
-            'a clip is a window onto a file or something the app draws, '
-            'never both');
+    this.shape,
+  }) : assert(
+            (mediaId == null ? 0 : 1) +
+                    (text == null ? 0 : 1) +
+                    (shape == null ? 0 : 1) ==
+                1,
+            'a clip is a window onto a file or one of the things the app '
+            'draws, never two of them and never none');
 
   /// A caption: a clip with no file behind it. The duration is whatever the
   /// caller asks for, because nothing bounds it — there is no source to run
@@ -916,6 +1185,26 @@ final class Clip {
         transform: transform,
         animation: animation,
         text: text,
+      );
+
+  /// A shape: the other clip with no file behind it, on the same terms as
+  /// [Clip.caption].
+  factory Clip.drawing({
+    required String id,
+    required Tick start,
+    required Tick duration,
+    required ClipShape shape,
+    ClipTransform transform = ClipTransform.identity,
+    ClipAnimation animation = ClipAnimation.still,
+  }) =>
+      Clip(
+        id: id,
+        mediaId: null,
+        start: start,
+        duration: duration,
+        transform: transform,
+        animation: animation,
+        shape: shape,
       );
 
   final String id;
@@ -947,11 +1236,24 @@ final class Clip {
   /// has animated, which is almost all of them.
   final ClipAnimation animation;
 
-  /// The caption this clip draws, or null for a clip that shows a file.
+  /// The caption this clip draws, or null for a clip that is not one.
   final ClipText? text;
 
-  /// True for a clip the app draws rather than decodes.
+  /// The shape this clip draws, or null for a clip that is not one.
+  final ClipShape? shape;
+
+  /// True for a clip whose picture is a caption.
   bool get isText => text != null;
+
+  /// True for a clip whose picture is a shape.
+  bool get isShape => shape != null;
+
+  /// True for a clip the app draws rather than decodes — a caption or a shape.
+  ///
+  /// This is what the rules about lanes and about what an inspector offers are
+  /// written against, rather than "has no asset": a clip whose media is merely
+  /// missing is still a video clip and still belongs where video goes.
+  bool get isGenerated => text != null || shape != null;
 
   Tick get end => start + duration;
   Tick get sourceOut => sourceIn + duration;
@@ -980,6 +1282,7 @@ final class Clip {
     ClipAudio? audio,
     ClipAnimation? animation,
     ClipText? text,
+    ClipShape? shape,
   }) =>
       Clip(
         id: id ?? this.id,
@@ -992,9 +1295,11 @@ final class Clip {
         transform: transform ?? this.transform,
         audio: audio ?? this.audio,
         animation: animation ?? this.animation,
-        // A caption never becomes a media clip and a media clip never becomes
-        // a caption, so there is no need to be able to clear this.
+        // What a clip *is* never changes: a caption never becomes a shape or a
+        // media clip and neither becomes a caption, so there is no need to be
+        // able to clear either of these.
         text: text ?? this.text,
+        shape: shape ?? this.shape,
       );
 
   /// Moves the clip on the timeline without touching its source window.
@@ -1037,22 +1342,23 @@ final class Clip {
       other.transform == transform &&
       other.audio == audio &&
       other.animation == animation &&
-      other.text == text;
+      other.text == text &&
+      other.shape == shape;
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, audio, animation, text);
+      sourceIn.raw, label, enabled, transform, audio, animation, text, shape);
 
   @override
-  String toString() => isText
-      ? 'Clip($id, ${start.raw}+${duration.raw}, $text)'
+  String toString() => isGenerated
+      ? 'Clip($id, ${start.raw}+${duration.raw}, ${text ?? shape})'
       : 'Clip($id, ${start.raw}+${duration.raw}, src ${sourceIn.raw})';
 }
 
 /// The longest a clip may be trimmed given the source it points at.
 ///
 /// Zero means unbounded, which covers an image — no intrinsic length — and a
-/// caption, which has no source to run out of at all.
+/// caption or a shape, which have no source to run out of at all.
 Tick maxDurationFor(Clip clip, MediaAsset? asset) {
   if (asset == null || asset.probe.kind == MediaKind.image) return Tick.zero;
   return asset.probe.duration - clip.sourceIn;

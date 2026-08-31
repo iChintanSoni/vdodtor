@@ -198,11 +198,48 @@ final class SetClipText extends EditCommand {
       next is SetClipText && next.clipId == clipId ? next : null;
 }
 
+/// Changes what a shape looks like.
+///
+/// [SetClipText] for the other thing the app draws, refusing a clip that is
+/// not a shape for the same reason and merged on the clip id the same way:
+/// picking a corner radius and then dragging the width is one decision about
+/// one shape.
+final class SetClipShape extends EditCommand {
+  const SetClipShape(this.clipId, this.shape);
+
+  final String clipId;
+  final ClipShape shape;
+
+  @override
+  String get label => 'Edit shape';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    if (!clip.isShape) throw EditException('clip $clipId is not a shape');
+
+    final next = shape.clamped();
+    if (clip.shape == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(shape: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipShape && next.clipId == clipId ? next : null;
+}
+
 /// Changes how a clip arrives and how it leaves.
 ///
-/// The fourth of the set with [SetClipTransform], [SetClipAudio] and
-/// [SetClipText], merged on the clip id the same way: picking a preset and
-/// then dragging its length is one decision about one clip.
+/// The fifth of the set with [SetClipTransform], [SetClipAudio],
+/// [SetClipText] and [SetClipShape], merged on the clip id the same way:
+/// picking a preset and then dragging its length is one decision about one
+/// clip.
 ///
 /// Unlike the other three this applies to *any* clip. An animation is the
 /// transform the clip already has, over time, so there is nothing about it
@@ -363,7 +400,7 @@ final class MoveClip extends EditCommand {
     final to = project.trackById(toTrackId!);
     if (to == null) throw EditException('no track $toTrackId');
     if (!accepts(to, project.assetFor(clip),
-        from: from.kind, isText: clip.isText)) {
+        from: from.kind, isGenerated: clip.isGenerated)) {
       return project;
     }
 
@@ -402,19 +439,24 @@ final class MoveClip extends EditCommand {
   /// holds a clip whose *file* still has video, and it has to be free to move
   /// between the six audio lanes like anything else.
   ///
-  /// A caption is decided by [isText] rather than by having no asset, because
-  /// those are different reasons to have none: a caption belongs on a text lane
-  /// and nowhere else, where a clip whose media is merely missing is still a
-  /// video clip and still belongs where video goes.
+  /// A drawn clip is decided by [isGenerated] rather than by having no asset,
+  /// because those are different reasons to have none: a caption or a shape
+  /// belongs on a text lane and nowhere else, where a clip whose media is
+  /// merely missing is still a video clip and still belongs where video goes.
   static bool accepts(Track track, MediaAsset? asset,
-      {TrackKind from = TrackKind.main, bool isText = false}) {
+      {TrackKind from = TrackKind.main, bool isGenerated = false}) {
     if (track.locked) return false;
-    // Both ways round: a caption may only land on a text lane, and a text lane
-    // may only hold captions. A caption on the magnetic main lane would
+    // Both ways round: a drawn clip may only land on a text lane, and a text
+    // lane may only hold drawn ones. A caption on the magnetic main lane would
     // repack the video around it and then composite underneath it, which is
     // two surprises for one drag.
-    if (isText || track.kind == TrackKind.text) {
-      return isText && track.kind == TrackKind.text;
+    //
+    // A shape shares the lane rather than getting lanes of its own. It is the
+    // same kind of thing — no file, drawn by the engine, wants to sit over the
+    // picture — and a second family of lanes would mean a second cap to keep
+    // in step with VD_MAX_LAYERS for no difference anybody could see.
+    if (isGenerated || track.kind == TrackKind.text) {
+      return isGenerated && track.kind == TrackKind.text;
     }
     if (asset == null) return track.kind.isVisual;
     if (track.kind.isVisual) return asset.probe.hasVideo;
@@ -604,10 +646,11 @@ final class SplitClip extends EditCommand {
       animation: clip.animation
           .copyWith(inPreset: AnimationPreset.none, inDuration: Tick.zero)
           .clampedTo(tailDuration),
-      // A caption is copied whole, like the transform. It does not vary with
-      // time, so both halves say the same thing — and a tail that lost its
-      // words would be a cut that deleted them.
+      // A caption or a shape is copied whole, like the transform. Neither
+      // varies with time, so both halves draw the same thing — and a tail
+      // that lost its words would be a cut that deleted them.
       text: clip.text,
+      shape: clip.shape,
     );
 
     final index = track.indexOfClip(clipId);
