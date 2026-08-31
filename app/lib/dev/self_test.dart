@@ -11,6 +11,7 @@ import '../engine/media_probe.dart';
 import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
+import '../media/fonts.dart';
 import '../media/peaks.dart';
 import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
@@ -522,6 +523,79 @@ Future<void> drawWaveformSelfTest(
   final out = '${Directory.systemTemp.path}/vdodtor_waveform.png';
   await _drawTimeline(project, cache, out, size, duration: peaks.duration);
   stdout.writeln('[selftest] waveform: timeline drawn to $out');
+}
+
+/// Puts a caption on the timeline through the real commands, then dumps the
+/// frame the engine draws for it.
+///
+/// The engine's own tests check the layout in ink bounds, which is the only
+/// thing a rasteriser can be pinned on across macOS releases. What they cannot
+/// check is that a caption reaches the screen *through the app*: the fonts
+/// registered from the bundle, the document sync carrying the words rather
+/// than a path, the compositor accepting a premultiplied BGRA layer over a
+/// decoded one. All three fail silently, and all three are visible in one PNG.
+///
+/// It also prints the raster count before and after a scrub, because the whole
+/// value of the cache is a number that does not move.
+Future<void> runCaptionSelfTest(PreviewEngine engine, DocumentStore store,
+    TimelineController timeline) async {
+  stdout.writeln('[selftest] caption: fonts registered — '
+      '${BundledFonts.families.join(", ")}');
+
+  // Over the middle of what is already there, so the frame shows the caption
+  // on top of a picture rather than on black.
+  final duration = store.project.duration;
+  timeline.seekTo(Tick(duration.raw ~/ 3));
+  if (!timeline.addTextClip(
+    text: const ClipText(
+      text: 'vdodtor',
+      font: 'Anton',
+      size: 0.16,
+      strokeColor: 0xFF101010,
+      strokeWidth: 0.06,
+      shadowColor: 0xB3000000,
+      shadowOffsetY: 0.05,
+      shadowBlur: 0.05,
+      boxColor: 0x99000000,
+    ),
+  )) {
+    stdout.writeln('[selftest] caption: nowhere to put one');
+    return;
+  }
+
+  final clip = store.project.clipById(timeline.selectedClipId!)!;
+  final track = store.project.trackOfClip(clip.id)!;
+  stdout.writeln('[selftest] caption: "${clip.text!.label}" on ${track.name} '
+      'at ${clip.start.raw} for ${clip.duration.raw} ticks');
+
+  final sent = engineTimelineFor(store.project)
+      .clips
+      .where((c) => c.text != null)
+      .toList();
+  stdout.writeln('[selftest] caption: ${sent.length} reached the engine, '
+      'path=${sent.isEmpty ? "-" : sent.first.path} '
+      'font=${sent.isEmpty ? "-" : sent.first.text!.font}');
+
+  // Let the render list land, then look at the middle of the caption.
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  engine.seek(clip.start.raw + clip.duration.raw ~/ 2);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+
+  final drawn = engine.stats;
+  final path = '${Directory.systemTemp.path}/vdodtor_caption.png';
+  engine.dumpPng(path);
+  stdout.writeln('[selftest] caption: layers=${drawn.activeLayers} '
+      'rasters=${drawn.textRasters} -> $path');
+
+  // Scrubbing across it must not lay it out again: a caption does not change
+  // with time, and re-running Core Text every frame is the failure the cache
+  // exists to prevent.
+  for (var i = 1; i <= 8; i++) {
+    engine.seek(clip.start.raw + clip.duration.raw * i ~/ 9);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+  }
+  stdout.writeln('[selftest] caption: after 8 seeks, rasters='
+      '${engine.stats.textRasters} (was ${drawn.textRasters})');
 }
 
 /// A playhead that never moves. The timeline needs one to draw; nothing here

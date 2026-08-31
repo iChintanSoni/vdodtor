@@ -300,6 +300,24 @@ static id<MTLTexture> plane_texture(VdCompositor* c, CVPixelBufferRef buffer,
   return CVMetalTextureGetTexture(ref);
 }
 
+// The same, for a buffer that has no planes to ask about. A generated layer
+// arrives as interleaved BGRA, and CVPixelBufferGetWidthOfPlane answers 0 for
+// one of those — the plane accessors are for planar buffers only.
+static id<MTLTexture> whole_texture(VdCompositor* c, CVPixelBufferRef buffer,
+                                    MTLPixelFormat format,
+                                    CVMetalTextureRef* keep_alive) {
+  const size_t w = CVPixelBufferGetWidth(buffer);
+  const size_t h = CVPixelBufferGetHeight(buffer);
+  CVMetalTextureRef ref = nullptr;
+  if (CVMetalTextureCacheCreateTextureFromImage(
+          kCFAllocatorDefault, c->texture_cache, buffer, nullptr, format, w, h,
+          0, &ref) != kCVReturnSuccess) {
+    return nil;
+  }
+  *keep_alive = ref;
+  return CVMetalTextureGetTexture(ref);
+}
+
 // The blur runs at a fraction of the output. A background that is about to be
 // blurred into a wash does not need four million pixels to do it, and every
 // one of them costs a tap in each of two passes.
@@ -468,7 +486,15 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       id<MTLRenderPipelineState> pipeline = nil;
       id<MTLTexture> planes[3] = {nil, nil, nil};
 
-      if (layer.format == VD_PIXEL_NV12) {
+      if (layer.format == VD_PIXEL_BGRA) {
+        // Already the colour the output is in and already premultiplied, so
+        // there is nothing to convert: the same pass that draws the blur-fill
+        // background draws this, and for the same reason.
+        CVMetalTextureRef a = nullptr;
+        planes[0] = whole_texture(c, buffer, MTLPixelFormatBGRA8Unorm, &a);
+        if (a) refs.push_back(a);
+        pipeline = c->pipeline_texture;
+      } else if (layer.format == VD_PIXEL_NV12) {
         CVMetalTextureRef a = nullptr, b = nullptr;
         planes[0] = plane_texture(c, buffer, 0, MTLPixelFormatR8Unorm, &a);
         planes[1] = plane_texture(c, buffer, 1, MTLPixelFormatRG8Unorm, &b);
@@ -485,7 +511,10 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         if (d) refs.push_back(d);
         pipeline = c->pipeline_yuv420p;
       }
-      if (!planes[0] || !planes[1]) continue;
+      // A YCbCr layer is missing half its picture without its chroma plane; a
+      // BGRA one has everything in the first texture.
+      if (!planes[0]) continue;
+      if (layer.format != VD_PIXEL_BGRA && !planes[1]) continue;
 
       if (wants_blur && has_bars && ensure_blur_textures(c)) {
         // The background is the same picture, cover-fitted so it reaches the

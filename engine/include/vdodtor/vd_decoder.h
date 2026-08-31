@@ -32,6 +32,12 @@ typedef enum {
   // Software decode, copied into a planar buffer. Slower, and the compositor
   // has to sample it differently.
   VD_PIXEL_YUV420P = 1,
+  // Not something a decoder produces: premultiplied BGRA, which is what a
+  // generated layer — a caption, a shape — arrives as. It lives in this enum
+  // rather than in one of its own because VdLayer::format is the only thing
+  // that reads it, and the compositor should not have to be told twice what
+  // kind of pixels it is being handed.
+  VD_PIXEL_BGRA = 2,
 } VdPixelFormat;
 
 typedef struct {

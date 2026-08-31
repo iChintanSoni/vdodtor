@@ -174,7 +174,11 @@ void main() {
             reason: '${spec.action.name} is bound but not listed');
         expect(find.text(describeChord(spec.keys.first)), findsWidgets);
       }
-      for (final group in ShortcutGroup.values) {
+      // Back up the list, and therefore in reverse order: the loop above
+      // finished at the bottom, and scrolling up looking for a heading that is
+      // still below would run to the end of its patience and report the
+      // heading missing when it is merely the other way.
+      for (final group in ShortcutGroup.values.reversed) {
         await tester.scrollUntilVisible(find.text(group.title), -60,
             scrollable: list);
         expect(find.text(group.title), findsOneWidget);

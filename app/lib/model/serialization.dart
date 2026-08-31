@@ -93,6 +93,7 @@ Map<String, Object?> _trackToJson(Track t) => {
             if (!c.transform.isIdentity)
               'transform': _transformToJson(c.transform),
             if (!c.audio.isUnity) 'audio': _audioToJson(c.audio),
+            if (c.text != null) 'text': _textToJson(c.text!),
           },
       ],
     };
@@ -126,6 +127,74 @@ Map<String, Object?> _audioToJson(ClipAudio a) => {
           for (final p in a.points) {'t': p.sourceTime.raw, 'v': p.value},
         ],
     };
+
+/// A caption, in full.
+///
+/// The only part of a clip written out whole rather than as a diff against a
+/// default. The others are properties of a clip that mostly nobody touched;
+/// this one *is* the clip, and a file where a caption's colour is missing
+/// because it happened to be white reads like a file that lost it.
+Map<String, Object?> _textToJson(ClipText t) => {
+      'text': t.text,
+      if (t.font.isNotEmpty) 'font': t.font,
+      'size': t.size,
+      // Hex, because that is how anybody reading a project file thinks about a
+      // colour, and a decimal 4294967295 is not a colour anyone recognises.
+      'color': _colorToJson(t.color),
+      'strokeColor': _colorToJson(t.strokeColor),
+      'strokeWidth': t.strokeWidth,
+      'shadowColor': _colorToJson(t.shadowColor),
+      'shadowX': t.shadowOffsetX,
+      'shadowY': t.shadowOffsetY,
+      'shadowBlur': t.shadowBlur,
+      'boxColor': _colorToJson(t.boxColor),
+      'boxPadding': t.boxPadding,
+      'boxRadius': t.boxRadius,
+      'letterSpacing': t.letterSpacing,
+      'lineSpacing': t.lineSpacing,
+      'maxWidth': t.maxWidth,
+      'align': t.alignment.name,
+    };
+
+String _colorToJson(int argb) =>
+    '#${(argb & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0').toUpperCase()}';
+
+/// `#AARRGGBB`, and only that. A colour that will not parse is an error rather
+/// than a fallback: guessing black would silently rewrite the caption someone
+/// wrote, and guessing white would do it just as silently in the other
+/// direction.
+int _colorFromJson(Map<String, Object?> json, String key, String at) {
+  final value = json[key];
+  if (value is num) return value.toInt() & 0xFFFFFFFF;
+  if (value is String) {
+    final parsed = int.tryParse(value.replaceFirst('#', ''), radix: 16);
+    if (parsed != null) return parsed & 0xFFFFFFFF;
+  }
+  throw ProjectDecodeException('expected a #AARRGGBB colour, got $value',
+      path: at);
+}
+
+ClipText _textFromJson(Map<String, Object?> json, String where) => ClipText(
+      text: (json['text'] as String?) ?? '',
+      font: (json['font'] as String?) ?? '',
+      size: _double(json, 'size', 0.08),
+      color: _colorFromJson(json, 'color', '$where.color'),
+      strokeColor: _colorFromJson(json, 'strokeColor', '$where.strokeColor'),
+      strokeWidth: _double(json, 'strokeWidth', 0),
+      shadowColor: _colorFromJson(json, 'shadowColor', '$where.shadowColor'),
+      shadowOffsetX: _double(json, 'shadowX', 0),
+      shadowOffsetY: _double(json, 'shadowY', 0.04),
+      shadowBlur: _double(json, 'shadowBlur', 0.06),
+      boxColor: _colorFromJson(json, 'boxColor', '$where.boxColor'),
+      boxPadding: _double(json, 'boxPadding', 0.25),
+      boxRadius: _double(json, 'boxRadius', 0.15),
+      letterSpacing: _double(json, 'letterSpacing', 0),
+      lineSpacing: _double(json, 'lineSpacing', 1),
+      maxWidth: _double(json, 'maxWidth', 0.9),
+      alignment: json['align'] == null
+          ? TextAlignment.center
+          : _enum(TextAlignment.values, json, 'align', '$where.align'),
+    );
 
 ClipAudio _audioFromJson(Map<String, Object?> json, String where) => ClipAudio(
       volume: _double(json, 'volume', 1),
@@ -312,6 +381,13 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
           ? ClipAudio.unity
           : _audioFromJson(_asMap(c['audio'], '$where.audio'), '$where.audio')
               .clampedTo(duration),
+      // Clamped on the way in for the same reason a fade is: a file may claim
+      // a size or a spacing this version has no slider for, and a caption that
+      // cannot be edited is worse than one that opens slightly changed.
+      text: c['text'] == null
+          ? null
+          : _textFromJson(_asMap(c['text'], '$where.text'), '$where.text')
+              .clamped(),
     ));
   }
 

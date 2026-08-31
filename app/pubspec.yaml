@@ -61,6 +61,13 @@ flutter:
     # are the same files engine/tests/media uses.
     - assets/dev/
 
+    # The typeface catalogue. Declared here as well as under `fonts:` below,
+    # and deliberately: `fonts:` is what lets Flutter preview a face in the
+    # inspector, and `assets:` is what lets the app read the same bytes out of
+    # the bundle and hand them to the engine, which does the actual drawing.
+    # One set of files, two consumers — see lib/media/fonts.dart.
+    - assets/fonts/
+
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.
@@ -76,6 +83,23 @@ flutter:
 
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter.ttf
+    - family: Anton
+      fonts:
+        - asset: assets/fonts/Anton.ttf
+    - family: Playfair Display
+      fonts:
+        - asset: assets/fonts/PlayfairDisplay.ttf
+    - family: Caveat
+      fonts:
+        - asset: assets/fonts/Caveat.ttf
+    - family: Space Mono
+      fonts:
+        - asset: assets/fonts/SpaceMono.ttf
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a

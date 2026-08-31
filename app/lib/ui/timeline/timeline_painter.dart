@@ -174,8 +174,11 @@ class TimelinePainter extends CustomPainter {
   void _paintClip(Canvas canvas, Clip clip, Track track, int laneIndex,
       double x0, double x1, double top, double viewWidth) {
     final asset = controller.project.assetFor(clip);
-    final missing = asset == null ||
-        controller.unreachableMediaIds.contains(asset.id);
+    // A caption has no asset and is not missing one: it draws itself. Without
+    // the first clause every caption on the timeline would be painted as
+    // broken media, which is a warning about nothing.
+    final missing = !clip.isText &&
+        (asset == null || controller.unreachableMediaIds.contains(asset.id));
     final selected = controller.isSelected(clip.id);
     // Handles mean "you can trim this", and trimming is a single-clip idea.
     final lone = clip.id == controller.selectedClipId;
@@ -205,7 +208,9 @@ class TimelinePainter extends CustomPainter {
     }
     final width = x1 - x0;
 
-    if (!missing) {
+    // A caption falls through both: there is no file to have a waveform, and
+    // nothing on a text lane makes a sound to draw a line over.
+    if (!missing && asset != null) {
       _paintWaveform(canvas, clip, track, asset, rect, x0, x1, viewWidth);
       _paintVolumeLine(canvas, clip, track, rect);
     }
@@ -230,9 +235,12 @@ class TimelinePainter extends CustomPainter {
 
     canvas.save();
     canvas.clipRRect(rect);
-    final label = clip.label.isEmpty
-        ? (asset?.displayName ?? 'clip')
-        : clip.label;
+    // A caption is named by what it says. Every other clip is named by its
+    // file, and a caption has none — "clip" on a lane full of them would tell
+    // you nothing about which is which.
+    final label = clip.label.isNotEmpty
+        ? clip.label
+        : (clip.text?.label ?? asset?.displayName ?? 'clip');
     _text(label, VdColors.text.withValues(alpha: missing ? 0.75 : 0.95), 11,
             FontWeight.w500)
         .paint(canvas, Offset(x0 + 7, top + 8));
@@ -425,6 +433,11 @@ class TimelinePainter extends CustomPainter {
 
   String _clipDetail(Clip clip, MediaAsset? asset) {
     final length = timecode(clip.duration.raw, controller.frameRate);
+    final caption = clip.text;
+    if (caption != null) {
+      final face = caption.font.isEmpty ? 'system' : caption.font;
+      return '$length · $face';
+    }
     if (asset == null || !asset.probe.hasVideo) return length;
     return '$length · ${asset.probe.displayWidth}×${asset.probe.displayHeight}';
   }

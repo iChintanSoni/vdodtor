@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'app/workspace.dart';
 import 'dev/self_test.dart';
+import 'media/fonts.dart';
 import 'ui/editor_screen.dart';
 import 'ui/new_project_dialog.dart';
 import 'ui/start_screen.dart';
@@ -39,6 +40,10 @@ class _VdodtorAppState extends State<VdodtorApp> {
   }
 
   Future<void> _launch() async {
+    // Before anything can open a project, because a caption drawn before its
+    // face is registered falls back to the system's and nothing would redraw
+    // it afterwards.
+    await BundledFonts.load();
     await widget.workspace.start();
     if (selfTestRequested &&
         widget.workspace.stage == WorkspaceStage.chooser) {

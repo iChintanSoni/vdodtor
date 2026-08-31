@@ -455,11 +455,256 @@ final class ClipAudio {
           '${points.isEmpty ? '' : ' ${points.length} points'})';
 }
 
+/// Where each line sits inside a caption.
+///
+/// The block is laid out in a box as wide as wrapping allows, so this moves a
+/// single line as well as a ragged one. A box that hugged the words would
+/// leave "align left" doing nothing to one line, which is the case it is asked
+/// for most.
+enum TextAlignment { left, center, right }
+
+/// A caption: what it says and how it looks.
+///
+/// The third thing that can hang off a clip, beside [ClipTransform] and
+/// [ClipAudio] — but unlike those two it is *nullable*, and its presence is
+/// what makes a clip a caption rather than a window onto a file. A clip has a
+/// [Clip.mediaId] or a [Clip.text], never both.
+///
+/// **Nothing here is measured in pixels.** Sizes, offsets, padding and spacing
+/// are fractions — of the output height, or of the font size they hang off —
+/// for the same reason [ClipTransform] has no pixels in it: a project cut at
+/// 1080p and exported at 4K has to put the same words in the same place at the
+/// same size, and a point size stored in the file would be right at exactly
+/// one resolution.
+///
+/// Colours are 0xAARRGGBB. Alpha 0 is how the two optional parts are switched
+/// off — a shadow colour with no alpha casts no shadow, a box colour with no
+/// alpha draws no box — which is one rule rather than two booleans that could
+/// disagree with the colours beside them. It also means turning a shadow back
+/// on does not mean guessing what offset and blur it had.
+@immutable
+final class ClipText {
+  const ClipText({
+    this.text = '',
+    this.font = '',
+    this.size = 0.08,
+    this.color = 0xFFFFFFFF,
+    this.strokeColor = 0xFF000000,
+    this.strokeWidth = 0,
+    this.shadowColor = 0x00000000,
+    this.shadowOffsetX = 0,
+    this.shadowOffsetY = 0.04,
+    this.shadowBlur = 0.06,
+    this.boxColor = 0x00000000,
+    this.boxPadding = 0.25,
+    this.boxRadius = 0.15,
+    this.letterSpacing = 0,
+    this.lineSpacing = 1,
+    this.maxWidth = 0.9,
+    this.alignment = TextAlignment.center,
+  });
+
+  /// What a caption looks like before anybody styles it: white, unstroked,
+  /// unboxed, centred, at a readable size. The value serialisation leaves out
+  /// of the file, field by field.
+  static const plain = ClipText();
+
+  /// What the words are. Empty draws nothing at all rather than a placeholder:
+  /// a caption someone has cleared must not black out the picture under it.
+  final String text;
+
+  /// Family name, from the engine's catalogue. Empty means the system's own
+  /// face, which is what a project made with a font pack falls back to on a
+  /// machine without it.
+  final String font;
+
+  /// Cap height as a fraction of the output height.
+  final double size;
+
+  final int color;
+
+  /// An outline, drawn under the fill so only its outer half shows. Width is a
+  /// fraction of the font size.
+  final int strokeColor;
+  final double strokeWidth;
+
+  /// Cast by the ink — fill and outline together — onto whatever is behind it.
+  /// Offsets and blur are fractions of the font size; +y is down.
+  final int shadowColor;
+  final double shadowOffsetX;
+  final double shadowOffsetY;
+  final double shadowBlur;
+
+  /// A rounded rectangle behind the block, hugging the words rather than
+  /// filling the layout box. Padding and radius are fractions of the font
+  /// size, so the box keeps its proportions as the type grows.
+  final int boxColor;
+  final double boxPadding;
+  final double boxRadius;
+
+  /// Extra space between glyphs, as a fraction of the font size. Negative
+  /// tightens.
+  final double letterSpacing;
+
+  /// Multiple of the font's own line height. Applied between lines rather than
+  /// above every one of them, so leading grows the block about its own centre
+  /// instead of sinking it down the frame.
+  final double lineSpacing;
+
+  /// How much of the frame's width the block may fill before it wraps.
+  final double maxWidth;
+
+  final TextAlignment alignment;
+
+  // The ends of every slider in the inspector, so the control and the document
+  // cannot disagree about what is allowed.
+  static const double minSize = 0.02;
+  static const double maxSize = 0.4;
+  static const double maxStrokeWidth = 0.3;
+  static const double maxShadowOffset = 0.5;
+  static const double maxShadowBlur = 0.5;
+  static const double maxBoxPadding = 1.5;
+  static const double maxBoxRadius = 1.5;
+  static const double minLetterSpacing = -0.2;
+  static const double maxLetterSpacing = 0.5;
+  static const double minLineSpacing = 0.5;
+  static const double maxLineSpacing = 3;
+  static const double minMaxWidth = 0.2;
+
+  bool get hasStroke => strokeWidth > 0 && _visible(strokeColor);
+  bool get hasShadow => _visible(shadowColor);
+  bool get hasBox => _visible(boxColor);
+
+  /// A one-line summary for the timeline and the bin. Blank captions still
+  /// need something to be called, and "Text" is what the button that made it
+  /// was called.
+  String get label {
+    final first = text.split('\n').first.trim();
+    return first.isEmpty ? 'Text' : first;
+  }
+
+  static bool _visible(int argb) => (argb >> 24) & 0xFF != 0;
+
+  /// Every number pulled inside the range the inspector offers. Applied on the
+  /// way into the document rather than on the way out of it, so a file written
+  /// by a future version with a wider range opens as something this one can
+  /// still edit.
+  ClipText clamped() => ClipText(
+        text: text,
+        font: font,
+        size: size.clamp(minSize, maxSize),
+        color: color,
+        strokeColor: strokeColor,
+        strokeWidth: strokeWidth.clamp(0.0, maxStrokeWidth),
+        shadowColor: shadowColor,
+        shadowOffsetX:
+            shadowOffsetX.clamp(-maxShadowOffset, maxShadowOffset),
+        shadowOffsetY:
+            shadowOffsetY.clamp(-maxShadowOffset, maxShadowOffset),
+        shadowBlur: shadowBlur.clamp(0.0, maxShadowBlur),
+        boxColor: boxColor,
+        boxPadding: boxPadding.clamp(0.0, maxBoxPadding),
+        boxRadius: boxRadius.clamp(0.0, maxBoxRadius),
+        letterSpacing:
+            letterSpacing.clamp(minLetterSpacing, maxLetterSpacing),
+        lineSpacing: lineSpacing.clamp(minLineSpacing, maxLineSpacing),
+        maxWidth: maxWidth.clamp(minMaxWidth, 1.0),
+        alignment: alignment,
+      );
+
+  ClipText copyWith({
+    String? text,
+    String? font,
+    double? size,
+    int? color,
+    int? strokeColor,
+    double? strokeWidth,
+    int? shadowColor,
+    double? shadowOffsetX,
+    double? shadowOffsetY,
+    double? shadowBlur,
+    int? boxColor,
+    double? boxPadding,
+    double? boxRadius,
+    double? letterSpacing,
+    double? lineSpacing,
+    double? maxWidth,
+    TextAlignment? alignment,
+  }) =>
+      ClipText(
+        text: text ?? this.text,
+        font: font ?? this.font,
+        size: size ?? this.size,
+        color: color ?? this.color,
+        strokeColor: strokeColor ?? this.strokeColor,
+        strokeWidth: strokeWidth ?? this.strokeWidth,
+        shadowColor: shadowColor ?? this.shadowColor,
+        shadowOffsetX: shadowOffsetX ?? this.shadowOffsetX,
+        shadowOffsetY: shadowOffsetY ?? this.shadowOffsetY,
+        shadowBlur: shadowBlur ?? this.shadowBlur,
+        boxColor: boxColor ?? this.boxColor,
+        boxPadding: boxPadding ?? this.boxPadding,
+        boxRadius: boxRadius ?? this.boxRadius,
+        letterSpacing: letterSpacing ?? this.letterSpacing,
+        lineSpacing: lineSpacing ?? this.lineSpacing,
+        maxWidth: maxWidth ?? this.maxWidth,
+        alignment: alignment ?? this.alignment,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipText &&
+      other.text == text &&
+      other.font == font &&
+      other.size == size &&
+      other.color == color &&
+      other.strokeColor == strokeColor &&
+      other.strokeWidth == strokeWidth &&
+      other.shadowColor == shadowColor &&
+      other.shadowOffsetX == shadowOffsetX &&
+      other.shadowOffsetY == shadowOffsetY &&
+      other.shadowBlur == shadowBlur &&
+      other.boxColor == boxColor &&
+      other.boxPadding == boxPadding &&
+      other.boxRadius == boxRadius &&
+      other.letterSpacing == letterSpacing &&
+      other.lineSpacing == lineSpacing &&
+      other.maxWidth == maxWidth &&
+      other.alignment == alignment;
+
+  @override
+  int get hashCode => Object.hash(
+        text,
+        font,
+        size,
+        color,
+        strokeColor,
+        strokeWidth,
+        shadowColor,
+        Object.hash(shadowOffsetX, shadowOffsetY, shadowBlur),
+        boxColor,
+        boxPadding,
+        boxRadius,
+        letterSpacing,
+        lineSpacing,
+        maxWidth,
+        alignment,
+      );
+
+  @override
+  String toString() => 'ClipText("$label", ${font.isEmpty ? 'system' : font} '
+      '${(size * 100).toStringAsFixed(1)}%)';
+}
+
 /// One piece of media placed on a track.
 ///
 /// A clip is a window onto its source: [sourceIn] is where the window opens in
 /// the source, [start] is where it lands on the timeline, and [duration] is the
 /// length of both. Trimming moves the window edges; moving slides [start].
+///
+/// Or it generates its own picture, and then it is a window onto nothing:
+/// [text] is set, [mediaId] is not, and [sourceIn] means nothing because there
+/// is no source to be offset into. Exactly one of the two is always present.
 final class Clip {
   const Clip({
     required this.id,
@@ -471,12 +716,33 @@ final class Clip {
     this.enabled = true,
     this.transform = ClipTransform.identity,
     this.audio = ClipAudio.unity,
-  });
+    this.text,
+  }) : assert(mediaId == null || text == null,
+            'a clip is a window onto a file or something the app draws, '
+            'never both');
+
+  /// A caption: a clip with no file behind it. The duration is whatever the
+  /// caller asks for, because nothing bounds it — there is no source to run
+  /// out of, exactly as for a still image.
+  factory Clip.caption({
+    required String id,
+    required Tick start,
+    required Tick duration,
+    required ClipText text,
+    ClipTransform transform = ClipTransform.identity,
+  }) =>
+      Clip(
+        id: id,
+        mediaId: null,
+        start: start,
+        duration: duration,
+        transform: transform,
+        text: text,
+      );
 
   final String id;
 
-  /// Key into [Project.media]. Null is reserved for the generated clips that
-  /// arrive in M3 (text, shapes), which have no source file.
+  /// Key into [Project.media], or null for a generated clip — see [text].
   final String? mediaId;
 
   /// Position on the timeline, in project ticks.
@@ -498,6 +764,12 @@ final class Clip {
   /// How loud it is. [ClipAudio.unity] for a clip nobody has faded, and
   /// present even on a clip whose source has no sound — see [ClipAudio].
   final ClipAudio audio;
+
+  /// The caption this clip draws, or null for a clip that shows a file.
+  final ClipText? text;
+
+  /// True for a clip the app draws rather than decodes.
+  bool get isText => text != null;
 
   Tick get end => start + duration;
   Tick get sourceOut => sourceIn + duration;
@@ -524,6 +796,7 @@ final class Clip {
     bool? enabled,
     ClipTransform? transform,
     ClipAudio? audio,
+    ClipText? text,
   }) =>
       Clip(
         id: id ?? this.id,
@@ -535,6 +808,9 @@ final class Clip {
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
         audio: audio ?? this.audio,
+        // A caption never becomes a media clip and a media clip never becomes
+        // a caption, so there is no need to be able to clear this.
+        text: text ?? this.text,
       );
 
   /// Moves the clip on the timeline without touching its source window.
@@ -572,19 +848,23 @@ final class Clip {
       other.label == label &&
       other.enabled == enabled &&
       other.transform == transform &&
-      other.audio == audio;
+      other.audio == audio &&
+      other.text == text;
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, audio);
+      sourceIn.raw, label, enabled, transform, audio, text);
 
   @override
-  String toString() =>
-      'Clip($id, ${start.raw}+${duration.raw}, src ${sourceIn.raw})';
+  String toString() => isText
+      ? 'Clip($id, ${start.raw}+${duration.raw}, $text)'
+      : 'Clip($id, ${start.raw}+${duration.raw}, src ${sourceIn.raw})';
 }
 
 /// The longest a clip may be trimmed given the source it points at.
-/// Images have no intrinsic length, so they are unbounded.
+///
+/// Zero means unbounded, which covers an image — no intrinsic length — and a
+/// caption, which has no source to run out of at all.
 Tick maxDurationFor(Clip clip, MediaAsset? asset) {
   if (asset == null || asset.probe.kind == MediaKind.image) return Tick.zero;
   return asset.probe.duration - clip.sourceIn;

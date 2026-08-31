@@ -209,12 +209,20 @@ final class Project {
 
   /// The most lanes of each kind a project may hold (product brief §4):
   /// one magnetic main video track, three parallel overlays, six audio.
+  ///
+  /// The visual ones add up to the compositor's own bound: `VD_MAX_LAYERS` in
+  /// `engine/src/vd_engine.c` is one main plus three overlays plus eight text,
+  /// and the two numbers have to move together. A lane the document allows and
+  /// the compositor silently drops is a caption that is on the timeline and
+  /// not on the screen.
   static int maxTracksOfKind(TrackKind kind) => switch (kind) {
         TrackKind.main => 1,
         TrackKind.overlay => 3,
         TrackKind.audio => 6,
-        // Text lanes arrive in M3 and have no stated limit yet.
-        TrackKind.text => 64,
+        // Not in the brief, which says nothing about how many. Eight is enough
+        // for a title, a lower third and a run of captions at once, and few
+        // enough that the compositor can promise to draw all of them.
+        TrackKind.text => 8,
       };
 
   bool canAddTrackOfKind(TrackKind kind) =>

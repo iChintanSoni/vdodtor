@@ -543,7 +543,8 @@ class TimelineController extends ChangeNotifier {
     // The lane it started on decides what it is allowed to become: a detached
     // audio clip may cross to another audio lane, a video clip may not.
     final origin = project.trackOfClip(clipId)?.kind ?? TrackKind.main;
-    if (!MoveClip.accepts(lane, asset, from: origin)) {
+    if (!MoveClip.accepts(lane, asset,
+        from: origin, isText: clip?.isText ?? false)) {
       return _dragOriginTrackId;
     }
     return lane.id;
@@ -1017,6 +1018,75 @@ class TimelineController extends ChangeNotifier {
     )));
     store.endGesture();
     return true;
+  }
+
+  // --- captions ------------------------------------------------------------
+
+  /// How long a caption is when it first appears. Three seconds is long enough
+  /// to read a line and short enough that trimming it down is the exception.
+  static final Tick defaultCaptionDuration =
+      Tick(3 * Timebase.project.ticksPerSecond);
+
+  bool get canAddTextClip =>
+      project.canAddTrackOfKind(TrackKind.text) ||
+      _textLaneWithRoomAt(playhead) != null;
+
+  /// Puts a caption on a text lane at the playhead and selects it.
+  ///
+  /// It goes on the first text lane with room for it and makes a new lane when
+  /// there is none — which is what someone adding a second caption over the
+  /// first actually means. Stacking them on one lane is impossible (lanes hold
+  /// no overlaps) and refusing would be a button that stops working the moment
+  /// two captions want to be on screen together.
+  ///
+  /// Returns false only when every lane is full and no more may be added.
+  bool addTextClip({ClipText text = const ClipText(text: 'Text')}) {
+    final at = playhead;
+    final existing = _textLaneWithRoomAt(at);
+    if (existing == null && !project.canAddTrackOfKind(TrackKind.text)) {
+      return false;
+    }
+
+    final track = existing ??
+        Track.of(
+          id: _ids.next('tr-'),
+          kind: TrackKind.text,
+          name: 'Text ${project.trackCountOfKind(TrackKind.text) + 1}',
+        );
+    final clip = Clip.caption(
+      id: _ids.next('c-'),
+      start: at,
+      duration: defaultCaptionDuration,
+      text: text,
+    );
+
+    store.endGesture();
+    // One undo entry even when a lane had to be made: adding a caption is one
+    // action, and pressing ⌘Z twice to take back one button is the bug
+    // InsertClips.newTracks exists to avoid.
+    store.run(InsertClips(
+      [(trackId: track.id, clip: clip, index: null)],
+      label: 'Add text',
+      newTracks: existing == null ? [track] : const [],
+    ));
+    store.endGesture();
+
+    _selectedClipIds
+      ..clear()
+      ..add(clip.id);
+    notifyListeners();
+    return true;
+  }
+
+  /// The first text lane where a caption starting at [at] would fit, or null.
+  Track? _textLaneWithRoomAt(Tick at) {
+    final end = Tick(at.raw + defaultCaptionDuration.raw);
+    for (final track in project.tracks) {
+      if (track.kind != TrackKind.text || track.locked) continue;
+      final clash = track.clips.any((c) => c.start < end && at < c.end);
+      if (!clash) return track;
+    }
+    return null;
   }
 
   bool get canAddAudioTrack => project.canAddTrackOfKind(TrackKind.audio);

@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "vdodtor/vd_compositor.h"
+#include "vdodtor/vd_text.h"
 #include "vdodtor/vd_time.h"
 
 #ifdef __cplusplus
@@ -45,9 +46,20 @@ typedef struct {
 } VdVolumePoint;
 
 typedef struct {
-  // Absolute path to the source file. Copied on set_timeline; the caller keeps
+  // Absolute path to the source file, or NULL for a clip that generates its
+  // own picture — see `text`. Copied on set_timeline; the caller keeps
   // ownership of its own string.
   const char* path;
+
+  // A caption instead of a file. NULL for every clip that has a `path`, and
+  // the two are exclusive: a clip is a window onto a source or it is something
+  // the engine draws, never both.
+  //
+  // The spec is copied on set_timeline, strings and all, and the raster it
+  // produces is kept for as long as the clip's spec is unchanged — the same
+  // bargain `path` gets with its decoder, and for the same reason: nudging a
+  // clip must not cost a re-layout of every caption on the timeline.
+  const VdTextSpec* text;
 
   VdTick start;      // position on the timeline
   VdTick duration;   // length on the timeline
@@ -206,6 +218,13 @@ typedef struct {
   // read that falls back from one to the other can dip — and a dip across a
   // frame boundary would republish a frame that has already been shown.
   int64_t clock_regressions;
+
+  // Captions laid out since the engine started. This is the number that says
+  // whether the raster cache is working: it should tick once per caption per
+  // edit that changed one, and never during playback. A steady stream of them
+  // means every frame is re-running Core Text, which is the whole thing the
+  // cache exists to prevent.
+  int64_t text_rasters;
 } VdEngineStats;
 
 VD_EXPORT void vd_engine_stats(VdEngine* engine, VdEngineStats* out);

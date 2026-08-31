@@ -412,6 +412,96 @@ static void test_layers_stack_bottom_to_top(void) {
   vd_frame_release(&top);
 }
 
+// A generated layer — a caption, a shape — arrives as premultiplied BGRA
+// rather than as YCbCr planes, and the whole point of it going through the
+// same VdLayer is that it stacks, blends and transforms like anything else.
+// This builds one by hand rather than through vd_text, because what is being
+// checked is the compositor's half of the bargain.
+static CVPixelBufferRef generated_layer(int32_t width, int32_t height,
+                                        uint8_t b, uint8_t g, uint8_t r,
+                                        uint8_t a) {
+  // Metal-compatible, like everything the compositor is handed: a plain
+  // CVPixelBuffer cannot be wrapped as a texture, and the layer would be
+  // skipped rather than drawn.
+  CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
+      kCFAllocatorDefault, 2, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks);
+  CFDictionarySetValue(attrs, kCVPixelBufferMetalCompatibilityKey,
+                       kCFBooleanTrue);
+
+  CVPixelBufferRef buffer = NULL;
+  const CVReturn status =
+      CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                          kCVPixelFormatType_32BGRA, attrs, &buffer);
+  CFRelease(attrs);
+  if (status != kCVReturnSuccess) return NULL;
+  CVPixelBufferLockBaseAddress(buffer, 0);
+  uint8_t* base = CVPixelBufferGetBaseAddress(buffer);
+  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+  for (int32_t y = 0; y < height; y++) {
+    uint8_t* row = base + (size_t)y * stride;
+    for (int32_t x = 0; x < width; x++) {
+      // Opaque in the left half, transparent in the right, so one render
+      // answers both "does it draw?" and "does its alpha mean anything?".
+      const bool solid = x < width / 2;
+      row[(size_t)x * 4 + 0] = solid ? b : 0;
+      row[(size_t)x * 4 + 1] = solid ? g : 0;
+      row[(size_t)x * 4 + 2] = solid ? r : 0;
+      row[(size_t)x * 4 + 3] = solid ? a : 0;
+    }
+  }
+  CVPixelBufferUnlockBaseAddress(buffer, 0);
+  return buffer;
+}
+
+static void test_a_generated_layer_composites_over_the_picture(void) {
+  VdFrame picture;
+  if (!first_frame("solid_sd_601.mp4", &picture)) return;
+
+  CVPixelBufferRef overlay = generated_layer(200, 200, 0, 0, 255, 255);
+  VD_CHECK(overlay != NULL);
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c && overlay) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    memset(&layers[1], 0, sizeof(layers[1]));
+    layers[1].pixel_buffer = overlay;
+    layers[1].format = VD_PIXEL_BGRA;
+    layers[1].fit = VD_FIT_STRETCH;
+    layers[1].opacity = 1.0f;
+
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, 255, 0, 0, "generated ink covers the picture");
+    // And where the generated layer has no alpha, the picture is untouched —
+    // a caption is a few glyphs on a transparent frame, so this is nearly all
+    // of what one does.
+    check_pixel_is(c, 150, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "picture shows through the transparent half");
+
+    // It obeys opacity and transform like any other layer, which is what
+    // makes fading a caption in the same operation as fading a clip.
+    layers[1].opacity = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    uint8_t half[4];
+    VD_CHECK(vd_compositor_read_pixel(c, 50, 100, half));
+    VD_CHECK(half[2] > 100 && half[2] < 160);  // half way to red
+
+    layers[1].opacity = 1.0f;
+    layers[1].transform = vd_transform_identity();
+    layers[1].transform.scale = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    // Scaled about the centre, so the corner is picture again and the ink has
+    // moved inward.
+    check_pixel_is(c, 10, 10, SOLID_R, SOLID_G, SOLID_B,
+                   "a scaled generated layer leaves the corner alone");
+    check_pixel_is(c, 75, 100, 255, 0, 0, "and keeps its ink near the middle");
+
+    vd_compositor_destroy(c);
+  }
+  if (overlay) CVPixelBufferRelease(overlay);
+  vd_frame_release(&picture);
+}
+
 static void test_a_null_layer_is_skipped_not_crashed(void) {
   VdCompositor* c = vd_compositor_create(160, 160, NULL);
   if (!c) return;
@@ -973,6 +1063,7 @@ int main(void) {
   test_sample_aspect_turns_with_the_picture();
   test_opacity_blends_towards_black();
   test_layers_stack_bottom_to_top();
+  test_a_generated_layer_composites_over_the_picture();
   test_a_null_layer_is_skipped_not_crashed();
   test_output_and_png();
   test_repeated_renders_stay_correct();

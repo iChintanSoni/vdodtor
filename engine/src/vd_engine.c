@@ -16,9 +16,12 @@
 // makes an editor feel cheap.
 #define VD_MAX_OPEN_DECODERS 8
 
-// Compositing is bounded by the product's track count: one main plus three
-// overlays.
-#define VD_MAX_LAYERS 4
+// Compositing is bounded by the product's track count: one main, three
+// overlays and eight text lanes. It moves when Project.maxTracksOfKind in
+// app/lib/model/project.dart moves, and the two have to agree — a lane the
+// document allows and the compositor silently drops is a caption that is on
+// the timeline and not on the screen.
+#define VD_MAX_LAYERS 12
 
 typedef struct {
   char* path;
@@ -34,6 +37,15 @@ typedef struct {
   VdDecoder* decoder;  // opened lazily
   int64_t last_used;
   bool decoder_failed;  // do not retry every frame
+
+  // A generated clip instead of a decoded one. `text` is owned; `raster` is
+  // the CVPixelBufferRef it last produced, kept until the spec or the output
+  // size changes. Laying a caption out again on every frame would cost more
+  // than decoding one.
+  VdTextSpec* text;
+  void* raster;
+  int32_t raster_width;
+  int32_t raster_height;
 } VdClipEntry;
 
 struct VdEngine {
@@ -181,10 +193,43 @@ static VdDecoder* decoder_for(VdEngine* e, VdClipEntry* clip) {
   return opened;
 }
 
+// The raster for `clip`, drawn if the one it has is missing or stale.
+//
+// Caller holds render_lock. Returns NULL for a clip that carries no text,
+// which is how the caller tells the two kinds of layer apart.
+static void* raster_for(VdEngine* e, VdClipEntry* clip) {
+  if (!clip->text) return NULL;
+  if (clip->raster && clip->raster_width == e->width &&
+      clip->raster_height == e->height) {
+    return clip->raster;
+  }
+  // A raster is only ever thrown away for being the wrong size here; a change
+  // to the spec throws it away in set_timeline, where the old spec is still
+  // around to be compared against.
+  if (clip->raster) {
+    CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
+    clip->raster = NULL;
+  }
+  clip->raster = vd_text_render(clip->text, e->width, e->height, NULL);
+  clip->raster_width = e->width;
+  clip->raster_height = e->height;
+
+  pthread_mutex_lock(&e->lock);
+  e->stats.text_rasters++;
+  pthread_mutex_unlock(&e->lock);
+  return clip->raster;
+}
+
+static void free_clip_contents(VdClipEntry* clip) {
+  if (clip->decoder) vd_decoder_close(clip->decoder);
+  if (clip->raster) CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
+  vd_text_spec_free(clip->text);
+  free(clip->path);
+}
+
 static void free_clips(VdEngine* e) {
   for (int32_t i = 0; i < e->clip_count; i++) {
-    if (e->clips[i].decoder) vd_decoder_close(e->clips[i].decoder);
-    free(e->clips[i].path);
+    free_clip_contents(&e->clips[i]);
   }
   free(e->clips);
   e->clips = NULL;
@@ -227,6 +272,30 @@ static int32_t render_position(VdEngine* e, VdTick position) {
 
   for (int32_t i = 0; i < active_count; i++) {
     VdClipEntry* clip = active[i];
+
+    // A generated clip draws itself. It goes through the same VdLayer as a
+    // decoded one — same transform, same opacity, same z-order — because the
+    // compositor is the one thing preview and export share and a second path
+    // through it is a second thing to keep in step.
+    if (clip->text) {
+      void* raster = raster_for(e, clip);
+      if (!raster) continue;
+      VdLayer* layer = &layers[layer_count];
+      memset(layer, 0, sizeof(*layer));
+      layer->pixel_buffer = raster;
+      layer->format = VD_PIXEL_BGRA;
+      // The raster is exactly the size of the output, so there is nothing to
+      // fit; saying so beats letting a rounding difference letterbox it.
+      layer->fit = VD_FIT_STRETCH;
+      layer->opacity = clip->opacity;
+      layer->transform = clip->transform;
+      // The raster belongs to the clip, not to this frame, so the release
+      // loop below has to find nothing here.
+      memset(&frames[layer_count], 0, sizeof(frames[0]));
+      layer_count++;
+      continue;
+    }
+
     VdDecoder* decoder = decoder_for(e, clip);
     if (!decoder) continue;
 
@@ -518,6 +587,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->fit = src->fit;
     dst->transform = src->transform;
     dst->has_video = src->has_video;
+    dst->text = vd_text_spec_copy(src->text);
 
     for (int32_t j = 0; j < previous_count; j++) {
       VdClipEntry* old = &previous[j];
@@ -528,6 +598,17 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
         old->decoder = NULL;
         break;
       }
+      // The same bargain for a caption: a raster survives any edit that did
+      // not change what the caption says or how it looks, so dragging a text
+      // clip along its lane costs no layout at all.
+      if (old->raster && old->text && dst->text &&
+          vd_text_spec_equal(old->text, dst->text)) {
+        dst->raster = old->raster;
+        dst->raster_width = old->raster_width;
+        dst->raster_height = old->raster_height;
+        old->raster = NULL;
+        break;
+      }
     }
 
     if (src->start + src->duration > duration) {
@@ -536,8 +617,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
   }
 
   for (int32_t j = 0; j < previous_count; j++) {
-    if (previous[j].decoder) vd_decoder_close(previous[j].decoder);
-    free(previous[j].path);
+    free_clip_contents(&previous[j]);
   }
   free(previous);
 

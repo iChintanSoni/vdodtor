@@ -74,6 +74,80 @@ class EngineVolumePoint {
   final double value;
 }
 
+/// Where each line sits inside a caption. Order matches `VdTextAlign` in
+/// vd_text.h — the index crosses the FFI boundary as an integer.
+enum EngineTextAlign { left, center, right }
+
+/// A caption, described to the engine.
+///
+/// Nothing here is measured in pixels: sizes, offsets, padding and spacing are
+/// fractions of the output height or of the font size they hang off, so a
+/// project cut at 1080p and exported at 4K puts the same words in the same
+/// place at the same size.
+///
+/// Colours are 0xAARRGGBB. Alpha 0 switches the two optional parts off — a
+/// shadow colour with no alpha casts no shadow, a box colour with no alpha
+/// draws no box — which is one rule rather than two booleans that could
+/// disagree with the colours beside them.
+@immutable
+class EngineText {
+  const EngineText({
+    required this.text,
+    this.font = '',
+    this.size = 0.08,
+    this.color = 0xFFFFFFFF,
+    this.strokeColor = 0xFF000000,
+    this.strokeWidth = 0,
+    this.shadowColor = 0,
+    this.shadowDx = 0,
+    this.shadowDy = 0.04,
+    this.shadowBlur = 0.06,
+    this.boxColor = 0,
+    this.boxPadding = 0.25,
+    this.boxRadius = 0.15,
+    this.letterSpacing = 0,
+    this.lineSpacing = 1,
+    this.maxWidth = 0.9,
+    this.alignment = EngineTextAlign.center,
+  });
+
+  final String text;
+
+  /// Family name as the engine knows it, from `TextFonts.families`. Empty
+  /// falls back to the system's own face.
+  final String font;
+
+  /// Cap height as a fraction of the output height.
+  final double size;
+
+  final int color;
+
+  final int strokeColor;
+
+  /// Fraction of the font size. 0 for no outline.
+  final double strokeWidth;
+
+  final int shadowColor;
+  final double shadowDx;
+  final double shadowDy;
+  final double shadowBlur;
+
+  final int boxColor;
+  final double boxPadding;
+  final double boxRadius;
+
+  /// Fraction of the font size; negative tightens.
+  final double letterSpacing;
+
+  /// Multiple of the font's own line height.
+  final double lineSpacing;
+
+  /// How much of the output's width the block may fill before it wraps.
+  final double maxWidth;
+
+  final EngineTextAlign alignment;
+}
+
 /// One clip on the render list the engine composites from.
 ///
 /// This is deliberately not the document model: the engine gets flat clips
@@ -82,7 +156,8 @@ class EngineVolumePoint {
 @immutable
 class EngineClip {
   const EngineClip({
-    required this.path,
+    this.path,
+    this.text,
     required this.startTicks,
     required this.durationTicks,
     this.sourceInTicks = 0,
@@ -95,9 +170,16 @@ class EngineClip {
     this.fadeInTicks = 0,
     this.fadeOutTicks = 0,
     this.volumePoints = const [],
-  });
+  }) : assert((path == null) != (text == null),
+            'a clip is a window onto a file or something the engine draws, '
+            'never both and never neither');
 
-  final String path;
+  /// The source file, or null for a clip the engine generates.
+  final String? path;
+
+  /// A caption instead of a file. Null for every clip that has a [path].
+  final EngineText? text;
+
   final int startTicks;
   final int durationTicks;
   final int sourceInTicks;
@@ -163,6 +245,7 @@ class EngineStats {
     required this.audioBufferedFrames,
     required this.forcedRenders,
     required this.clockRegressions,
+    required this.textRasters,
   });
 
   final int framesPresented;
@@ -196,6 +279,10 @@ class EngineStats {
 
   /// Times the playhead was seen to move backwards during playback.
   final int clockRegressions;
+
+  /// Captions laid out since the engine started. It should tick once per
+  /// caption per edit that changed one, and never during playback.
+  final int textRasters;
 }
 
 /// Drives the native preview engine and owns its Flutter texture.
@@ -243,6 +330,33 @@ class PreviewEngine extends ChangeNotifier {
     }
   }
 
+  /// One caption in native memory, borrowed from [arena] for the length of the
+  /// call. Field for field with `VdTextSpec`, and deliberately not clever
+  /// about it: a missing assignment here is a property that silently reverts
+  /// to whatever the arena's memory happened to hold.
+  static Pointer<VdTextSpec> _textSpec(Arena arena, EngineText text) {
+    final spec = arena<VdTextSpec>();
+    spec.ref
+      ..text = text.text.toNativeUtf8(allocator: arena).cast<Char>()
+      ..font = text.font.toNativeUtf8(allocator: arena).cast<Char>()
+      ..size = text.size
+      ..color = text.color
+      ..stroke_color = text.strokeColor
+      ..stroke_width = text.strokeWidth
+      ..shadow_color = text.shadowColor
+      ..shadow_dx = text.shadowDx
+      ..shadow_dy = text.shadowDy
+      ..shadow_blur = text.shadowBlur
+      ..box_color = text.boxColor
+      ..box_padding = text.boxPadding
+      ..box_radius = text.boxRadius
+      ..letter_spacing = text.letterSpacing
+      ..line_spacing = text.lineSpacing
+      ..max_width = text.maxWidth
+      ..alignAsInt = text.alignment.index;
+    return spec;
+  }
+
   /// Replaces the render list. Safe while playing; the playhead is kept.
   void setTimeline(EngineTimeline timeline) {
     _checkAlive();
@@ -252,7 +366,15 @@ class PreviewEngine extends ChangeNotifier {
       for (var i = 0; i < timeline.clips.length; i++) {
         final clip = timeline.clips[i];
         final entry = clips[i];
-        entry.path = clip.path.toNativeUtf8(allocator: arena).cast<Char>();
+        entry.path = clip.path == null
+            ? nullptr
+            : clip.path!.toNativeUtf8(allocator: arena).cast<Char>();
+        // Allocated from the same arena as the paths, for the same reason:
+        // the engine copies the spec, strings and all, before set_timeline
+        // returns.
+        entry.text = clip.text == null
+            ? nullptr
+            : _textSpec(arena, clip.text!);
         entry.start = clip.startTicks;
         entry.duration = clip.durationTicks;
         entry.source_in = clip.sourceInTicks;
@@ -364,6 +486,7 @@ class PreviewEngine extends ChangeNotifier {
         audioBufferedFrames: 0,
         forcedRenders: 0,
         clockRegressions: 0,
+        textRasters: 0,
       );
     }
     final out = calloc<VdEngineStats>();
@@ -388,6 +511,7 @@ class PreviewEngine extends ChangeNotifier {
         audioBufferedFrames: s.audio_buffered_frames,
         forcedRenders: s.forced_renders,
         clockRegressions: s.clock_regressions,
+        textRasters: s.text_rasters,
       );
     } finally {
       calloc.free(out);

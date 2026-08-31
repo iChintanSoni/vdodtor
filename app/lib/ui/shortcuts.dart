@@ -29,6 +29,7 @@ enum EditorAction {
   zoomOut,
   zoomToFit,
   split,
+  addText,
   duplicate,
   detachAudio,
   delete,
@@ -124,6 +125,11 @@ const List<ShortcutSpec> editorShortcuts = [
   ShortcutSpec(EditorAction.split,
       [SingleActivator(LogicalKeyboardKey.keyB, meta: true)],
       'Split at the playhead', ShortcutGroup.editing),
+  // ⌘T rather than a bare T: the timeline has no text field to steal a plain
+  // letter from today, and it will the moment a clip can be renamed in place.
+  ShortcutSpec(EditorAction.addText,
+      [SingleActivator(LogicalKeyboardKey.keyT, meta: true)],
+      'Add a caption at the playhead', ShortcutGroup.editing),
   ShortcutSpec(EditorAction.duplicate,
       [SingleActivator(LogicalKeyboardKey.keyD, meta: true)],
       'Duplicate', ShortcutGroup.editing),
