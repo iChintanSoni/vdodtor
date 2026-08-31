@@ -543,7 +543,14 @@ audio, scrub anywhere, quit and reopen with everything restored.
       shape, out of FFmpeg, through FFI, at 8 KB for three seconds and 5 ms warm. It then
       draws the timeline with that file on an audio lane and writes the frame out, so the
       three steps are visible as a hairline, a half-height band and a full one. Reading
-      it back from the peak file instead of analysing takes 2 ms
+      it back from the peak file instead of analysing takes 2 ms.
+      And then in the editor itself, which is where the last thing was found: the import
+      self test only ever staged `.mp4`, so nothing unattended had ever walked the branch
+      of `place` that puts a file with no picture on an audio lane. It stages the audio
+      fixtures now, and the timeline that comes up shows all four cases at once —
+      `audio_steps.m4a` stepping from a hairline to a half band to a full one,
+      `audio_only.m4a` a steady line the length of the clip, `cfr_30fps_stereo.mp4`
+      wearing a quiet strip along its bottom, and the two silent files wearing nothing
 - [ ] Keyframed volume (manual ducking)
 - [ ] Rotation metadata honored; VFR sources normalized to project timebase
 - [ ] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge

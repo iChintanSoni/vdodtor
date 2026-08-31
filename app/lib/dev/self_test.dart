@@ -128,7 +128,14 @@ List<File> stageSampleMedia(Directory into) {
   final staged = Directory('${into.path}/self-test-media');
   staged.createSync(recursive: true);
   return [
-    for (final source in sampleMediaFiles())
+    for (final source in [
+      ...sampleMediaFiles(),
+      // A file with no picture, so the import lands on an audio lane rather
+      // than the main track. That branch of `place` had never been walked by
+      // anything unattended, and a music bed on an audio lane is the shape
+      // this milestone exits on.
+      ...sampleMediaFiles(suffix: '.m4a'),
+    ])
       source.copySync('${staged.path}/${source.uri.pathSegments.last}'),
   ];
 }
@@ -211,7 +218,7 @@ Future<void> runImportSelfTest(
 /// analysis reads 0.00 / 0.25 / 0.90 straight down the page — which is a check
 /// anyone can make at a glance, where a number of buckets is a check on
 /// nothing.
-Future<void> runWaveformSelfTest(Directory library) async {
+Future<void> runWaveformSelfTest() async {
   final samples = [
     ...sampleMediaFiles(suffix: 'audio_steps.m4a'),
     ...sampleMediaFiles(),
@@ -265,7 +272,10 @@ Future<void> runWaveformSelfTest(Directory library) async {
   }
 
   // And the cache, end to end: written on the first ask, read on the second.
-  final directory = Directory('${library.path}/Peaks');
+  // In a scratch directory rather than the app's real one: this measures a
+  // cold cache, and it would not be cold twice if it shared the app's.
+  final directory =
+      Directory.systemTemp.createTempSync('vdodtor_peaks_selftest_');
   final asset = MediaAsset(
     id: 'selftest-waveform',
     path: sample.path,

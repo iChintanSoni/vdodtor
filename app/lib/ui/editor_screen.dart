@@ -123,7 +123,7 @@ class _EditorScreenState extends State<EditorScreen> {
         }
         // Not inside the import check: a waveform is worth measuring on every
         // run, and the import only happens on the first.
-        await runWaveformSelfTest(library);
+        await runWaveformSelfTest();
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
