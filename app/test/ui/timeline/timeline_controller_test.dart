@@ -198,10 +198,12 @@ void main() {
   group('following the playhead', () {
     const width = 900.0;
 
+    setUp(() => controller.viewportWidth = width);
+
     test('is on by default and keeps the playhead visible', () {
       transport.isPlaying = true;
       transport.playTo(secs(40).raw);
-      controller.pump(width);
+      controller.pump();
 
       final x = controller.geometry.xOfTick(controller.playhead);
       expect(x, greaterThan(h));
@@ -214,7 +216,7 @@ void main() {
 
       final before = controller.geometry;
       transport.playTo(secs(40).raw);
-      controller.pump(width);
+      controller.pump();
       expect(controller.geometry, before,
           reason: 'someone who scrolled somewhere meant to look at it');
     });
@@ -227,7 +229,7 @@ void main() {
 
     test('fit shows the whole timeline and follows again', () {
       controller.panBy(500);
-      controller.zoomToFit(width);
+      controller.zoomToFit();
 
       expect(controller.isFollowingPlayhead, isTrue);
       expect(controller.geometry.scrollPx, 0);
@@ -245,9 +247,138 @@ void main() {
         empty.dispose();
       });
 
+      c.viewportWidth = width;
       final before = c.geometry;
-      c.zoomToFit(width);
+      c.zoomToFit();
       expect(c.geometry, before);
+    });
+
+    test('fit before the view has been laid out changes nothing', () {
+      // The controller learns its width at layout, so there is a moment
+      // before the first frame when it does not have one. Fitting to a width
+      // of zero would collapse the zoom to its floor and read as the timeline
+      // having thrown itself away.
+      final quiet = FakeTransport();
+      final store = DocumentStore(projectWithThreeClips());
+      final c = TimelineController(store: store, transport: quiet);
+      addTearDown(() {
+        c.dispose();
+        store.dispose();
+      });
+
+      final before = c.geometry;
+      c.zoomToFit();
+      expect(c.geometry, before);
+    });
+  });
+
+  group('moving the playhead by key', () {
+    // projectWithThreeClips cuts at 0, 2, 5 and 6 seconds.
+    test('a frame at a time, and a second at a time', () {
+      controller.seekTo(secs(2));
+      controller.nudge(1);
+      expect(controller.playhead, secs(2) + Tick(4000));  // 30 fps
+      controller.skip(1);
+      expect(controller.playhead, secs(3) + Tick(4000));
+      controller.skip(-1);
+      expect(controller.playhead, secs(2) + Tick(4000));
+    });
+
+    test('to the next cut, and the one after that', () {
+      controller.seekTo(Tick.zero);
+      controller.jumpToCut(1);
+      expect(controller.playhead, secs(2));
+      controller.jumpToCut(1);
+      expect(controller.playhead, secs(5));
+      controller.jumpToCut(1);
+      expect(controller.playhead, secs(6), reason: 'the end is a cut too');
+    });
+
+    test('past the last cut it stays where it is', () {
+      // Not wrapping round to the start, which would move the playhead a long
+      // way for a key someone pressed expecting it to do nothing.
+      controller.seekTo(secs(6));
+      controller.jumpToCut(1);
+      expect(controller.playhead, secs(6));
+
+      controller.seekTo(Tick.zero);
+      controller.jumpToCut(-1);
+      expect(controller.playhead, Tick.zero);
+    });
+
+    test('backwards lands on the cut before, not the one it is on', () {
+      controller.seekTo(secs(5));
+      controller.jumpToCut(-1);
+      expect(controller.playhead, secs(2),
+          reason: 'a cut the playhead is already on is not one to jump to');
+    });
+
+    test('a cut on any lane counts', () {
+      final overlay = withOverlayTrack(store.project).updateTrack(
+        overlayTrackId,
+        (t) => t.withClips([
+          clipOf('o', 'm1', start: secs(1), duration: secs(1)),
+        ]),
+      );
+      final other = DocumentStore(overlay);
+      final quiet = FakeTransport(durationTicks: secs(6).raw);
+      final c = TimelineController(store: other, transport: quiet);
+      addTearDown(() {
+        c.dispose();
+        other.dispose();
+      });
+
+      c.seekTo(Tick.zero);
+      c.jumpToCut(1);
+      expect(c.playhead, secs(1),
+          reason: 'an overlay edge is an edit point like any other');
+    });
+  });
+
+  group('zooming with no pointer', () {
+    const width = 900.0;
+
+    setUp(() => controller.viewportWidth = width);
+
+    test('keeps the playhead where it is on screen', () {
+      controller.seekTo(secs(3));
+      final before = controller.geometry.xOfTick(controller.playhead);
+
+      controller.zoomBy(1.4);
+
+      // A pointer zoom holds still whatever is under the pointer; without one
+      // the equivalent is the playhead, and holding the left edge instead
+      // walks the thing being worked on off the screen.
+      expect(controller.geometry.pxPerSecond, closeTo(80 * 1.4, 0.001));
+      expect(controller.geometry.xOfTick(controller.playhead),
+          closeTo(before, 0.5));
+    });
+
+    test('brings the playhead back on screen when it was off it', () {
+      controller.seekTo(secs(3));
+      controller.panBy(4000);
+      expect(controller.geometry.xOfTick(controller.playhead),
+          lessThan(TimelineGeometry.headerWidth));
+
+      controller.zoomBy(1.4);
+
+      final x = controller.geometry.xOfTick(controller.playhead);
+      expect(x, greaterThanOrEqualTo(TimelineGeometry.headerWidth));
+      expect(x, lessThanOrEqualTo(width));
+    });
+
+    test('stops at the zoom bounds rather than running away', () {
+      for (var i = 0; i < 60; i++) {
+        controller.zoomBy(1.4);
+      }
+      expect(controller.geometry.pxPerSecond,
+          TimelineGeometry.maxPxPerSecond);
+
+      for (var i = 0; i < 120; i++) {
+        controller.zoomBy(1 / 1.4);
+      }
+      expect(controller.geometry.pxPerSecond,
+          TimelineGeometry.minPxPerSecond);
     });
   });
 

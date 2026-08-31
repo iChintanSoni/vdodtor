@@ -35,7 +35,6 @@ class TimelineView extends StatefulWidget {
 class _TimelineViewState extends State<TimelineView>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
-  double _width = 0;
 
   @override
   void initState() {
@@ -55,7 +54,7 @@ class _TimelineViewState extends State<TimelineView>
     }
   }
 
-  void _onTick(Duration _) => widget.controller.pump(_width);
+  void _onTick(Duration _) => widget.controller.pump();
 
   /// Runs only while playing. A paused timeline still repaints — a seek
   /// notifies the transport, which notifies the controller — but it costs
@@ -102,7 +101,11 @@ class _TimelineViewState extends State<TimelineView>
   @override
   Widget build(BuildContext context) => LayoutBuilder(
         builder: (context, constraints) {
-          _width = constraints.maxWidth;
+          // The controller needs this for anything that has to leave the
+          // playhead on screen — following it during playback, zooming from a
+          // key. Set at layout rather than passed to each call, so there is
+          // one answer and it is never the caller's guess.
+          widget.controller.viewportWidth = constraints.maxWidth;
           return Listener(
             onPointerDown: (e) => widget.controller.pointerDown(
                   e.localPosition,
