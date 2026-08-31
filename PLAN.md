@@ -16,7 +16,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
-> **M3 has started: the editor can put words on the picture.** A caption is a clip with no
+> **M3 has started: the editor can put words on the picture, and make them
+> arrive.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -25,6 +26,13 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > caption composites over the picture in the same frame as the clip under it, and eight
 > seeks across it lay it out **zero** further times — the raster is kept until the caption
 > itself changes, so scrubbing costs nothing and retyping costs one layout.
+>
+> Clips now **arrive and leave**: nine in/out presets — fade, four slides, pop, zoom, spin
+> and a typewriter — evaluated in the engine as a pure function of how far through the
+> entrance the playhead is, and folded into the transform the clip already had. Every
+> preset but the typewriter is the same pixels moved about, so an animated caption is laid
+> out **once** however much it moves; the typewriter redraws once per *character*, never
+> once per frame, because the caption cache is keyed on how much of it has been typed.
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -847,7 +855,67 @@ start to finish without touching another editor; undo works through the whole se
       Text lanes are capped at **8**, which the brief does not state; that number
       and `VD_MAX_LAYERS` are the same decision written twice and have to move
       together, or a lane the document allows is a caption the compositor drops.
-- [ ] ~8 in/out animation presets (fade, slide, pop, scale, typewriter, …)
+- [x] ~8 in/out animation presets (fade, slide, pop, scale, typewriter, …)
+      — nine of them, and the thing worth remembering is what an animation
+      *is* here: a **pure function of one number**, evaluated by the engine
+      once per layer per frame and folded into the transform the clip already
+      had. There is no keyframe list to walk and no state carried between
+      frames, so a seek into the middle of an entrance shows exactly the frame
+      playback would — a rendered frame stays a pure function of
+      `(document, time)`, which is the invariant the whole engine is shaped
+      around.
+      It also means an animation costs **nothing**. Every preset but one is
+      the same pixels moved about, so an animated caption is laid out once for
+      its whole life however much it slides, turns and fades. Measured in the
+      running app: forty frames across a spin and a slide, **one** layout.
+      **Composed with the clip's transform, never replacing it.** Offsets add,
+      scale multiplies, rotation adds, opacity multiplies. A caption parked at
+      the bottom of the frame that slides up has to slide up from below *its
+      own* position, and a clip placed at 40% that zooms in has to end at 40%.
+      The one trap was the compositor's "a zeroed scale means as-fitted"
+      convention: multiplying that zero and letting the normalisation happen
+      afterwards throws the animation away silently, so the scale is resolved
+      before it is multiplied.
+      **A preset names the direction the clip travels, not the edge it comes
+      from.** `slideUp` rises into place on the way in and carries on upwards
+      on the way out — one rule for both halves, where "in from the left, out
+      to the left" would be two and the second one is the one nobody predicts.
+      **The typewriter is the exception, and it is the interesting one.** It
+      is the only preset a transform cannot express, so it reaches into the
+      raster instead: the engine's caption cache is keyed on `(spec, size,
+      revealed characters)`, which means a caption is redrawn **once per
+      character rather than once per frame**. Thirty frames across a
+      six-character typewriter cost six layouts, and the moment it finishes it
+      stops entirely.
+      What makes it read as typing rather than as sliding is that **the layout
+      is computed from the whole caption and only the drawing is cut short**.
+      A line that re-centred itself on every keystroke would be unreadable and
+      one that will wrap would reflow underneath its own animation, so
+      `vd_text_render` lays out everything and draws a prefix — line by line,
+      run by run, and glyph by glyph in the run the reveal lands inside.
+      Characters are **composed** characters, so an accent or a flag arrives
+      whole.
+      **This one is not written twice.** The audio envelopes live in C and in
+      Dart because the app has to *draw* them on a waveform; nothing draws an
+      animation curve, so a second copy would be a second thing to keep in
+      step with no reader. `vd_anim.c` is plain C with no platform dependency
+      — the one piece of the picture testable without a GPU or a typeface —
+      and 412 checks in `vd_anim_test.c` pin every preset's two ends, the
+      properties that make each one itself, and what happens on a clip too
+      short to hold both halves. The easing *between* the ends is deliberately
+      not asserted: a curve is a design decision, and pinning its midpoint
+      would make every future adjustment a red test with nothing wrong behind
+      it.
+      Animation applies to **any** clip rather than only to a caption, which
+      is a small widening of the bullet and the honest one: it is the
+      transform the clip already has, over time, so restricting it would have
+      cost an extra check and surprised anyone who wanted a photo to pop in.
+      The typewriter is offered only where there is text for it to reveal.
+      Three enums — the document's, the plugin's and the C header's — carry
+      the same list in the same order, because the *index* is what crosses the
+      boundary; one test compares all three, including the generated bindings,
+      so a preset inserted in the middle of the header renames every animation
+      on disk loudly rather than quietly.
 - [ ] Shape primitives: rect, rounded rect, circle, line/arrow — fill/stroke, same transforms
       and animation presets as text
 

@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "vdodtor/vd_anim.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_text.h"
 #include "vdodtor/vd_time.h"
@@ -74,6 +75,14 @@ typedef struct {
   // Where this clip sits inside the frame. A zeroed transform is the identity,
   // so a caller with nothing to say about it can leave the field alone.
   VdTransform transform;
+
+  // How it arrives and how it leaves. A zeroed VdClipAnim is "no animation",
+  // so this is another field a caller can ignore.
+  //
+  // Evaluated per frame and composed with `transform` rather than replacing
+  // it: a caption parked at the bottom that slides up slides up from below
+  // its own position. See vd_anim.h.
+  VdClipAnim anim;
 
   // False for a clip that contributes only sound: one on an audio lane, or a
   // file with no picture in it. The compositor skips it rather than opening a

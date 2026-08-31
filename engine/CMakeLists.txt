@@ -75,6 +75,7 @@ endif()
 # --- engine -----------------------------------------------------------------
 add_library(vdodtor_engine STATIC
   src/vd_time.c
+  src/vd_anim.c
   src/vd_probe.c
   src/vd_decoder.c
   src/vd_engine.c

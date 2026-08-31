@@ -37,6 +37,9 @@ class Inspector extends StatelessWidget {
   void _setText(Clip clip, ClipText text) =>
       _store.run(SetClipText(clip.id, text), fromGestureStart: true);
 
+  void _setAnimation(Clip clip, ClipAnimation animation) =>
+      _store.run(SetClipAnimation(clip.id, animation), fromGestureStart: true);
+
   @override
   Widget build(BuildContext context) {
     final clip = timeline.selectedClip;
@@ -110,6 +113,15 @@ class Inspector extends StatelessWidget {
             _TransformControls(
               clip: clip,
               onChanged: (t) => _set(clip, t),
+              onCommit: _commit,
+            ),
+          // Where a clip sits, and then how it gets there. In that order
+          // because the resting position is what an animation animates to,
+          // and choosing it first is how anybody works.
+          if (showsPicture)
+            _AnimationControls(
+              clip: clip,
+              onChanged: (a) => _setAnimation(clip, a),
               onCommit: _commit,
             ),
           // After the picture, because that is the order someone works in and
@@ -771,6 +783,175 @@ const List<int> _boxPalette = [
 /// A fraction of the font size, which is what every caption measurement that
 /// is not the size itself is in.
 String _percentOfSize(double v) => '${(v * 100).round()}%';
+
+/// How a clip arrives and how it leaves.
+///
+/// Two pickers and two lengths, and nothing else — the point of presets is
+/// that the curve is somebody else's decision. A clip with no animation shows
+/// only the two pickers, so the panel does not carry four controls for a
+/// choice almost every clip declines.
+class _AnimationControls extends StatelessWidget {
+  const _AnimationControls({
+    required this.clip,
+    required this.onChanged,
+    required this.onCommit,
+  });
+
+  final Clip clip;
+  final ValueChanged<ClipAnimation> onChanged;
+  final VoidCallback onCommit;
+
+  /// The longest either half may be here: two seconds, or half the clip so an
+  /// entrance and an exit can both be at maximum without meeting in the
+  /// middle. The document clamps to the same rule — this is the slider
+  /// agreeing with it rather than a second opinion.
+  double get _maxDuration => math.min(
+        ClipAnimation.maxDuration.raw.toDouble(),
+        clip.duration.raw / 2,
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final a = clip.animation;
+    final maxDuration = _maxDuration;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const _SectionLabel('ANIMATE'),
+            const Spacer(),
+            if (a.isAnimated)
+              TextButton(
+                onPressed: () {
+                  onCommit();
+                  onChanged(ClipAnimation.still);
+                  onCommit();
+                },
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Reset', style: TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        _PresetPicker(
+          label: 'In',
+          preset: a.inPreset,
+          isText: clip.isText,
+          onChanged: (p) {
+            onCommit();
+            onChanged(a.withInPreset(p));
+            onCommit();
+          },
+        ),
+        // A length for an animation that is not there would be a slider that
+        // does nothing, and one for a clip too short to hold one would be a
+        // slider whose ends meet.
+        if (a.hasIn && maxDuration > 0)
+          _Slider(
+            label: 'In length',
+            value: a.inDuration.raw.toDouble().clamp(0, maxDuration),
+            min: 0,
+            max: maxDuration,
+            format: _seconds,
+            onChanged: (v) =>
+                onChanged(a.copyWith(inDuration: Tick(v.round()))),
+            onCommit: onCommit,
+          ),
+        const SizedBox(height: 6),
+        _PresetPicker(
+          label: 'Out',
+          preset: a.outPreset,
+          isText: clip.isText,
+          onChanged: (p) {
+            onCommit();
+            onChanged(a.withOutPreset(p));
+            onCommit();
+          },
+        ),
+        if (a.hasOut && maxDuration > 0)
+          _Slider(
+            label: 'Out length',
+            value: a.outDuration.raw.toDouble().clamp(0, maxDuration),
+            min: 0,
+            max: maxDuration,
+            format: _seconds,
+            onChanged: (v) =>
+                onChanged(a.copyWith(outDuration: Tick(v.round()))),
+            onCommit: onCommit,
+          ),
+      ],
+    );
+  }
+}
+
+class _PresetPicker extends StatelessWidget {
+  const _PresetPicker({
+    required this.label,
+    required this.preset,
+    required this.isText,
+    required this.onChanged,
+  });
+
+  final String label;
+  final AnimationPreset preset;
+
+  /// The typewriter is offered only where it would do something. It is the one
+  /// preset that is not a transform, so on a clip with no text it is an entry
+  /// that silently declines — which is fine when it is *chosen* by accident
+  /// and not fine when it is the only thing in the list that looks special.
+  final bool isText;
+
+  final ValueChanged<AnimationPreset> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final options = [
+      for (final option in AnimationPreset.values)
+        if (isText || option != AnimationPreset.typewriter) option,
+    ];
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 26,
+          child: Text(label,
+              style: const TextStyle(fontSize: 11, color: VdColors.text)),
+        ),
+        Expanded(
+          child: DropdownButtonFormField<AnimationPreset>(
+            initialValue: options.contains(preset) ? preset : options.first,
+            isDense: true,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              isDense: true,
+              contentPadding:
+                  EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              border: OutlineInputBorder(),
+            ),
+            style: const TextStyle(fontSize: 12, color: VdColors.text),
+            items: [
+              for (final option in options)
+                DropdownMenuItem(
+                  value: option,
+                  child: Text(option.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12)),
+                ),
+            ],
+            onChanged: (value) {
+              if (value != null) onChanged(value);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
 
 /// Volume, mute and fades for a clip that makes a sound.
 ///

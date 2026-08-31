@@ -134,7 +134,11 @@ class _EditorScreenState extends State<EditorScreen> {
         // Last of the edits, and before the play pass like the others: what
         // plays then has a caption over it, which is the only way to see that
         // a caption survives the clock as well as a seek.
-        await runCaptionSelfTest(engine, _store, timeline);
+        final caption = await runCaptionSelfTest(engine, _store, timeline);
+        // Handed the caption the pass above worked on, rather than looking one
+        // up: two captions on the timeline would make every dumped frame a
+        // question about which one moved.
+        await runAnimationSelfTest(engine, _store, caption);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {

@@ -1,6 +1,7 @@
 #include "vdodtor/vd_engine.h"
 
 #include <mach/mach_time.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,7 @@ typedef struct {
   float opacity;
   VdFitMode fit;
   VdTransform transform;
+  VdClipAnim anim;
   bool has_video;
 
   VdDecoder* decoder;  // opened lazily
@@ -46,6 +48,15 @@ typedef struct {
   void* raster;
   int32_t raster_width;
   int32_t raster_height;
+  // How much of the caption the cached raster has typed out. -1 is all of it,
+  // which is every caption without a typewriter on it — and the reason this is
+  // part of the key rather than a reason to throw the cache away: a typewriter
+  // redraws once per *character*, not once per frame.
+  int32_t raster_reveal;
+  // Characters in the caption, counted once when the spec arrives. A
+  // typewriter divides its time by this, and counting composed characters is
+  // not free enough to do sixty times a second.
+  int32_t text_length;
 } VdClipEntry;
 
 struct VdEngine {
@@ -197,22 +208,24 @@ static VdDecoder* decoder_for(VdEngine* e, VdClipEntry* clip) {
 //
 // Caller holds render_lock. Returns NULL for a clip that carries no text,
 // which is how the caller tells the two kinds of layer apart.
-static void* raster_for(VdEngine* e, VdClipEntry* clip) {
+static void* raster_for(VdEngine* e, VdClipEntry* clip, int32_t reveal) {
   if (!clip->text) return NULL;
   if (clip->raster && clip->raster_width == e->width &&
-      clip->raster_height == e->height) {
+      clip->raster_height == e->height && clip->raster_reveal == reveal) {
     return clip->raster;
   }
-  // A raster is only ever thrown away for being the wrong size here; a change
-  // to the spec throws it away in set_timeline, where the old spec is still
-  // around to be compared against.
+  // A raster is thrown away here for being the wrong size or for having typed
+  // out a different number of characters; a change to the spec throws it away
+  // in set_timeline, where the old spec is still around to be compared
+  // against.
   if (clip->raster) {
     CVPixelBufferRelease((CVPixelBufferRef)clip->raster);
     clip->raster = NULL;
   }
-  clip->raster = vd_text_render(clip->text, e->width, e->height, NULL);
+  clip->raster = vd_text_render(clip->text, e->width, e->height, reveal, NULL);
   clip->raster_width = e->width;
   clip->raster_height = e->height;
+  clip->raster_reveal = reveal;
 
   pthread_mutex_lock(&e->lock);
   e->stats.text_rasters++;
@@ -245,6 +258,26 @@ static int compare_track(const void* a, const void* b) {
   return 0;
 }
 
+// Folds an animation into a layer that has already been given the clip's own
+// transform.
+//
+// Composed rather than assigned, in every field: offsets add, scale
+// multiplies, rotation adds, opacity multiplies. A clip that was placed
+// somewhere and then animated has to animate from where it was placed.
+static void apply_anim(VdLayer* layer, const VdAnimValue* anim) {
+  layer->transform.offset_x += anim->offset_x;
+  layer->transform.offset_y += anim->offset_y;
+  // A zeroed scale means "as fitted" everywhere else in this struct, so it has
+  // to be resolved to 1 *before* being multiplied — multiplying the zero and
+  // letting the compositor normalise it afterwards would silently throw the
+  // animation away.
+  const float base = layer->transform.scale > 0.0f ? layer->transform.scale
+                                                   : 1.0f;
+  layer->transform.scale = base * anim->scale;
+  layer->transform.rotation_degrees += anim->rotation_degrees;
+  layer->opacity *= anim->opacity;
+}
+
 // Renders `position` into the compositor.
 //
 // Requires render_lock and *not* `lock`: decoding and compositing take
@@ -273,12 +306,26 @@ static int32_t render_position(VdEngine* e, VdTick position) {
   for (int32_t i = 0; i < active_count; i++) {
     VdClipEntry* clip = active[i];
 
+    // Where the clip is in its own entrance or exit. Pure arithmetic on the
+    // position — no state carried between frames — which is what keeps a seek
+    // into the middle of an animation showing exactly the frame playback
+    // would have.
+    const VdAnimValue anim =
+        vd_anim_at(&clip->anim, position - clip->start, clip->duration);
+
     // A generated clip draws itself. It goes through the same VdLayer as a
     // decoded one — same transform, same opacity, same z-order — because the
     // compositor is the one thing preview and export share and a second path
     // through it is a second thing to keep in step.
     if (clip->text) {
-      void* raster = raster_for(e, clip);
+      // A typewriter is the one animation the transform cannot express, so it
+      // reaches into the raster instead. Rounded up, so the first character
+      // appears as soon as the animation starts rather than a frame later.
+      const int32_t reveal =
+          anim.reveal >= 1.0f
+              ? -1
+              : (int32_t)ceilf(anim.reveal * (float)clip->text_length);
+      void* raster = raster_for(e, clip, reveal);
       if (!raster) continue;
       VdLayer* layer = &layers[layer_count];
       memset(layer, 0, sizeof(*layer));
@@ -289,6 +336,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->fit = VD_FIT_STRETCH;
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
+      apply_anim(layer, &anim);
       // The raster belongs to the clip, not to this frame, so the release
       // loop below has to find nothing here.
       memset(&frames[layer_count], 0, sizeof(frames[0]));
@@ -320,6 +368,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->fit = clip->fit;
     layer->opacity = clip->opacity;
     layer->transform = clip->transform;
+    apply_anim(layer, &anim);
     layer_count++;
   }
 
@@ -587,7 +636,12 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->fit = src->fit;
     dst->transform = src->transform;
     dst->has_video = src->has_video;
+    dst->anim = src->anim;
     dst->text = vd_text_spec_copy(src->text);
+    // Counted once, here, rather than per frame: a typewriter divides its time
+    // by this and composed characters are not free to count.
+    dst->text_length = dst->text ? vd_text_length(dst->text) : 0;
+    dst->raster_reveal = -1;
 
     for (int32_t j = 0; j < previous_count; j++) {
       VdClipEntry* old = &previous[j];
@@ -606,6 +660,10 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
         dst->raster = old->raster;
         dst->raster_width = old->raster_width;
         dst->raster_height = old->raster_height;
+        // How much of it had been typed out comes across too. Without this a
+        // half-typed raster would be taken for a finished one and the caption
+        // would stay half-typed until something else invalidated it.
+        dst->raster_reveal = old->raster_reveal;
         old->raster = NULL;
         break;
       }

@@ -94,10 +94,22 @@ static void pixel_at(CVPixelBufferRef buffer, int32_t x, int32_t y,
   CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly);
 }
 
+// Everything revealed, which is what every caption without a typewriter on it
+// asks for.
 static CVPixelBufferRef render(const VdTextSpec* spec) {
   int32_t result = VD_OK;
   CVPixelBufferRef buffer =
-      (CVPixelBufferRef)vd_text_render(spec, WIDTH, HEIGHT, &result);
+      (CVPixelBufferRef)vd_text_render(spec, WIDTH, HEIGHT, -1, &result);
+  VD_CHECK_EQ(result, VD_OK);
+  VD_CHECK(buffer != NULL);
+  return buffer;
+}
+
+static CVPixelBufferRef render_revealing(const VdTextSpec* spec,
+                                         int32_t reveal) {
+  int32_t result = VD_OK;
+  CVPixelBufferRef buffer =
+      (CVPixelBufferRef)vd_text_render(spec, WIDTH, HEIGHT, reveal, &result);
   VD_CHECK_EQ(result, VD_OK);
   VD_CHECK(buffer != NULL);
   return buffer;
@@ -223,9 +235,9 @@ static void test_nothing_typed_draws_nothing(void) {
 static void test_bad_arguments_are_refused(void) {
   VdTextSpec spec = caption("x");
   int32_t result = VD_OK;
-  VD_CHECK(vd_text_render(&spec, 0, HEIGHT, &result) == NULL);
+  VD_CHECK(vd_text_render(&spec, 0, HEIGHT, -1, &result) == NULL);
   VD_CHECK_EQ(result, VD_ERR_INVALID_ARG);
-  VD_CHECK(vd_text_render(NULL, WIDTH, HEIGHT, &result) == NULL);
+  VD_CHECK(vd_text_render(NULL, WIDTH, HEIGHT, -1, &result) == NULL);
   VD_CHECK_EQ(result, VD_ERR_INVALID_ARG);
 }
 
@@ -554,6 +566,148 @@ static void test_box_padding_grows_the_box(void) {
   CVPixelBufferRelease(b);
 }
 
+
+// --- the typewriter --------------------------------------------------------
+
+static void test_counting_characters_the_way_a_person_does(void) {
+  VdTextSpec spec = caption("Hello");
+  VD_CHECK_EQ(vd_text_length(&spec), 5);
+
+  // Composed, not code units: an accented letter written as a base plus a
+  // combining mark is one character, and a typewriter that revealed half of
+  // it would draw something that is not a letter.
+  spec.text = "e\xCC\x81";  // e + combining acute
+  VD_CHECK_EQ(vd_text_length(&spec), 1);
+  spec.text = "\xF0\x9F\x8E\xAC";  // a clapper board, outside the BMP
+  VD_CHECK_EQ(vd_text_length(&spec), 1);
+
+  spec.text = "two\nlines";
+  VD_CHECK_EQ(vd_text_length(&spec), 9);  // the newline is a character too
+
+  spec.text = "";
+  VD_CHECK_EQ(vd_text_length(&spec), 0);
+  spec.text = NULL;
+  VD_CHECK_EQ(vd_text_length(&spec), 0);
+  VD_CHECK_EQ(vd_text_length(NULL), 0);
+}
+
+static void test_a_reveal_of_nothing_draws_nothing(void) {
+  // Not even the background box. A rectangle that appears a beat before the
+  // first letter reads as a flash rather than as a backdrop.
+  VdTextSpec spec = caption("Typing");
+  spec.box_color = 0xFF0000FFu;
+  CVPixelBufferRef buffer = render_revealing(&spec, 0);
+  const Ink ink = measure(buffer);
+  VD_CHECK(ink.empty);
+  VD_CHECK_EQ(ink.coverage, 0);
+  CVPixelBufferRelease(buffer);
+}
+
+static void test_a_reveal_grows_the_ink_without_moving_it(void) {
+  // The property the whole typewriter rests on: the layout is computed from
+  // the *whole* caption and only the drawing is cut short, so a character
+  // arrives where it will finally sit. A line that re-centred itself on every
+  // keystroke would be unreadable, and one that will wrap would reflow
+  // underneath its own animation.
+  VdTextSpec spec = caption("Typing this out");
+  spec.align = VD_TEXT_ALIGN_CENTER;
+
+  CVPixelBufferRef whole = render(&spec);
+  const Ink full = measure(whole);
+  VD_CHECK(!full.empty);
+
+  int32_t previous_right = -1;
+  for (int32_t reveal = 1; reveal <= vd_text_length(&spec); reveal++) {
+    CVPixelBufferRef partial = render_revealing(&spec, reveal);
+    const Ink ink = measure(partial);
+    CVPixelBufferRelease(partial);
+    if (ink.empty) continue;  // a space reveals no ink of its own
+
+    // The left edge never moves: the first character is where it was always
+    // going to be, even though the block is centred on text that is not all
+    // drawn yet.
+    VD_CHECK(abs(ink.left - full.left) <= 1);
+    // And the right edge only ever grows, up to where the whole caption ends.
+    VD_CHECK(ink.right >= previous_right);
+    VD_CHECK(ink.right <= full.right + 1);
+    previous_right = ink.right;
+  }
+
+  // The last character lands exactly where drawing everything does.
+  CVPixelBufferRef last =
+      render_revealing(&spec, vd_text_length(&spec));
+  const Ink complete = measure(last);
+  VD_CHECK_EQ(complete.left, full.left);
+  VD_CHECK_EQ(complete.right, full.right);
+  CVPixelBufferRelease(last);
+  CVPixelBufferRelease(whole);
+}
+
+static void test_a_reveal_past_the_end_is_the_whole_caption(void) {
+  VdTextSpec spec = caption("Short");
+  CVPixelBufferRef whole = render(&spec);
+  CVPixelBufferRef over = render_revealing(&spec, 500);
+  const Ink a = measure(whole);
+  const Ink b = measure(over);
+  VD_CHECK_EQ(a.left, b.left);
+  VD_CHECK_EQ(a.right, b.right);
+  VD_CHECK_EQ(a.coverage, b.coverage);
+  CVPixelBufferRelease(whole);
+  CVPixelBufferRelease(over);
+}
+
+static void test_a_reveal_keeps_the_wrapping_it_would_have_had(void) {
+  // A caption long enough to wrap, revealed one word in. The block must still
+  // be as tall as the finished caption's first line and no taller — the lines
+  // below are empty, not re-flowed onto the first.
+  VdTextSpec spec = caption(
+      "A caption long enough that it cannot fit on one line of a frame this "
+      "wide, and so has to wrap");
+  CVPixelBufferRef whole = render(&spec);
+  const Ink full = measure(whole);
+
+  CVPixelBufferRef partial = render_revealing(&spec, 4);
+  const Ink ink = measure(partial);
+  VD_CHECK(!ink.empty);
+  // Starts on the same top line the finished caption starts on.
+  VD_CHECK(abs(ink.top - full.top) <= 1);
+  // Inside the finished block horizontally — the lines are centred, so each
+  // has its own left edge and the union's is the widest line's, not the
+  // first's. What matters is that nothing reflowed outwards.
+  VD_CHECK(ink.left >= full.left - 1);
+  VD_CHECK(ink.right <= full.right + 1);
+  // And it is one line tall, where the whole thing is several: the words that
+  // have not arrived are missing, not moved up.
+  VD_CHECK(ink_height(&ink) < ink_height(&full) / 2);
+
+  CVPixelBufferRelease(whole);
+  CVPixelBufferRelease(partial);
+}
+
+static void test_a_reveal_strokes_and_shadows_what_it_draws(void) {
+  // Both passes have to be cut to the same place. A stroke drawn for the
+  // whole caption under a fill drawn for half of it would outline words that
+  // have not arrived.
+  VdTextSpec spec = caption("Outlined");
+  spec.stroke_width = 0.1f;
+  spec.stroke_color = 0xFF000000u;
+
+  CVPixelBufferRef whole = render(&spec);
+  CVPixelBufferRef half = render_revealing(&spec, 4);
+  const Ink full = measure(whole);
+  const Ink ink = measure(half);
+
+  VD_CHECK(!ink.empty);
+  VD_CHECK(ink.right < full.right);
+  // Nothing at all beyond where the fourth character ends, outline included.
+  uint8_t beyond[4];
+  pixel_at(half, ink.right + 12, (ink.top + ink.bottom) / 2, beyond);
+  VD_CHECK_EQ(beyond[3], 0);
+
+  CVPixelBufferRelease(whole);
+  CVPixelBufferRelease(half);
+}
+
 // --- the spec itself -------------------------------------------------------
 
 static void test_the_default_spec_is_one_somebody_would_want(void) {
@@ -636,6 +790,12 @@ int main(void) {
   test_a_shadow_falls_below_and_to_the_right();
   test_the_box_sits_behind_the_words();
   test_box_padding_grows_the_box();
+  test_counting_characters_the_way_a_person_does();
+  test_a_reveal_of_nothing_draws_nothing();
+  test_a_reveal_grows_the_ink_without_moving_it();
+  test_a_reveal_past_the_end_is_the_whole_caption();
+  test_a_reveal_keeps_the_wrapping_it_would_have_had();
+  test_a_reveal_strokes_and_shadows_what_it_draws();
   test_the_default_spec_is_one_somebody_would_want();
   test_equality_is_what_the_raster_depends_on();
   test_a_copy_owns_its_strings();

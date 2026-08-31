@@ -74,6 +74,47 @@ class EngineVolumePoint {
   final double value;
 }
 
+/// How a clip arrives and how it leaves. Order matches `VdAnimPreset` in
+/// vd_anim.h — the index crosses the FFI boundary as an integer, so these may
+/// be appended to and never reordered.
+///
+/// A preset names the direction the clip *travels*: `slideUp` rises into place
+/// on the way in and carries on upwards on the way out.
+enum EngineAnimPreset {
+  none,
+  fade,
+  slideUp,
+  slideDown,
+  slideLeft,
+  slideRight,
+  pop,
+  zoom,
+  spin,
+  typewriter,
+}
+
+/// The entrance and exit on one clip.
+///
+/// Evaluated by the engine per frame and composed with the clip's own
+/// transform rather than replacing it, so a clip that was placed somewhere
+/// animates from where it was placed.
+@immutable
+class EngineAnimation {
+  const EngineAnimation({
+    this.inPreset = EngineAnimPreset.none,
+    this.inTicks = 0,
+    this.outPreset = EngineAnimPreset.none,
+    this.outTicks = 0,
+  });
+
+  static const none = EngineAnimation();
+
+  final EngineAnimPreset inPreset;
+  final int inTicks;
+  final EngineAnimPreset outPreset;
+  final int outTicks;
+}
+
 /// Where each line sits inside a caption. Order matches `VdTextAlign` in
 /// vd_text.h — the index crosses the FFI boundary as an integer.
 enum EngineTextAlign { left, center, right }
@@ -165,6 +206,7 @@ class EngineClip {
     this.opacity = 1.0,
     this.fit = FitMode.contain,
     this.transform = EngineTransform.identity,
+    this.animation = EngineAnimation.none,
     this.hasVideo = true,
     this.gain = 1.0,
     this.fadeInTicks = 0,
@@ -190,6 +232,9 @@ class EngineClip {
   final double opacity;
   final FitMode fit;
   final EngineTransform transform;
+
+  /// How it arrives and how it leaves.
+  final EngineAnimation animation;
 
   /// False for a clip that only makes a sound. The compositor skips it rather
   /// than opening a decoder for a picture that is not there.
@@ -412,6 +457,12 @@ class PreviewEngine extends ChangeNotifier {
         entry.transform.crop_h = transform.cropHeight;
         entry.transform.flip_h = transform.flipHorizontal;
         entry.transform.flip_v = transform.flipVertical;
+
+        final animation = clip.animation;
+        entry.anim.in_presetAsInt = animation.inPreset.index;
+        entry.anim.in_duration = animation.inTicks;
+        entry.anim.out_presetAsInt = animation.outPreset.index;
+        entry.anim.out_duration = animation.outTicks;
       }
 
       final native = arena<VdTimeline>();

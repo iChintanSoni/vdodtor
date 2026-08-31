@@ -36,9 +36,9 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
            can be set in
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
-engine/    C engine (CMake): vd_time (tick math), vd_probe, vd_decoder, vd_compositor
-           (Metal), vd_text (Core Text captions), vd_audio_*, vd_engine (transport),
-           vd_thumbnail, vd_peaks
+engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets), vd_probe,
+           vd_decoder, vd_compositor (Metal), vd_text (Core Text captions), vd_audio_*,
+           vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
 ```
 
@@ -142,6 +142,34 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   main, three overlays and eight text lanes; `VD_MAX_LAYERS` in `vd_engine.c` is their
   sum. A lane the document allows and the compositor drops is a caption that is on the
   timeline and not on the screen.
+- **An animation is a pure function of one number, not a keyframe list.**
+  `vd_anim_value(preset, t)` maps "how far through the entrance" to an offset, a scale,
+  a turn, an opacity and a reveal; the engine evaluates it once per layer per frame and
+  **composes** it with the transform the clip already has — offsets add, scale
+  multiplies, rotation adds, opacity multiplies. No state crosses frames, so a seek into
+  the middle of an animation shows exactly the frame playback would. Watch the compositor's
+  "a zeroed scale means as-fitted" convention: resolve the scale to 1 *before* multiplying,
+  or the animation is silently discarded by the later normalisation.
+- **A preset names the direction the clip travels, not the edge it comes from.**
+  `slideUp` rises into place on the way in and carries on upwards on the way out. One
+  rule for both halves.
+- **`vd_anim` is deliberately *not* mirrored in Dart.** The audio envelopes are written
+  twice because the app draws them on a waveform; nothing draws an animation curve, so a
+  second copy would be a second thing to keep in step with no reader. It is plain C with
+  no platform dependency — the one piece of the picture testable without a GPU or a
+  typeface. If the inspector ever previews a curve, that is the moment to port it *and*
+  add the shared table, the way `vd_time.c` and `time.dart` have one.
+- **The preset list is three enums in one order.** `AnimationPreset` (document),
+  `EngineAnimPreset` (plugin) and `VdAnimPreset` (C) cross the boundary as an *index*, so
+  a preset inserted in the middle of one renames every animation in every project on
+  disk. `app/test/model/clip_animation_test.dart` compares all three, generated bindings
+  included. Append only.
+- **The typewriter is the one animation that is not a transform.** It reaches into the
+  caption raster instead, so the engine's cache is keyed on `(spec, size, revealed
+  characters)` — a caption redraws once per *character*, never once per frame, and stops
+  entirely when the animation ends. `vd_text_render` lays out the **whole** caption and
+  draws only a prefix of it, which is what makes characters arrive where they will
+  finally sit instead of the line re-centring on every keystroke.
 - **`spikes/` is throwaway M0 code.** Read it for reference; do not build on it.
 
 Remote: `https://github.com/iChintanSoni/vdodtor.git` (branch `master`, also the main branch).

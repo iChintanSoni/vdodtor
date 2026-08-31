@@ -93,6 +93,12 @@ Map<String, Object?> _trackToJson(Track t) => {
             if (!c.transform.isIdentity)
               'transform': _transformToJson(c.transform),
             if (!c.audio.isUnity) 'audio': _audioToJson(c.audio),
+            // `isAnimated`, not `isStill`: a preset with no length to run in
+            // does nothing, and a file records what happens rather than what
+            // was clicked on the way there. A dangling preset therefore reads
+            // back as no animation, which is what it already was.
+            if (c.animation.isAnimated)
+              'animation': _animationToJson(c.animation),
             if (c.text != null) 'text': _textToJson(c.text!),
           },
       ],
@@ -127,6 +133,33 @@ Map<String, Object?> _audioToJson(ClipAudio a) => {
           for (final p in a.points) {'t': p.sourceTime.raw, 'v': p.value},
         ],
     };
+
+/// Only the half of an animation that runs. A preset with no duration does
+/// nothing, so writing one out would be recording a decision nobody made.
+Map<String, Object?> _animationToJson(ClipAnimation a) => {
+      if (a.hasIn) ...{
+        'in': a.inPreset.name,
+        'inDuration': a.inDuration.raw,
+      },
+      if (a.hasOut) ...{
+        'out': a.outPreset.name,
+        'outDuration': a.outDuration.raw,
+      },
+    };
+
+ClipAnimation _animationFromJson(Map<String, Object?> json, String where) =>
+    ClipAnimation(
+      // A file written by a version with a preset this one has never heard of
+      // opens with that half switched off rather than refusing to open at all.
+      // A caption that arrives plainly is a smaller loss than a project that
+      // will not load, and unlike a colour there is nothing here to guess
+      // wrongly — the clip is still on screen for the same length of time.
+      inPreset: _enumOr(AnimationPreset.values, json, 'in', AnimationPreset.none),
+      inDuration: Tick(_intOr(json, 'inDuration', '$where.inDuration', 0)),
+      outPreset:
+          _enumOr(AnimationPreset.values, json, 'out', AnimationPreset.none),
+      outDuration: Tick(_intOr(json, 'outDuration', '$where.outDuration', 0)),
+    );
 
 /// A caption, in full.
 ///
@@ -384,6 +417,14 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
       // Clamped on the way in for the same reason a fade is: a file may claim
       // a size or a spacing this version has no slider for, and a caption that
       // cannot be edited is worse than one that opens slightly changed.
+      // Clamped against this clip's own length, like the fades: a file can
+      // always claim an entrance longer than the clip carrying it.
+      animation: c['animation'] == null
+          ? ClipAnimation.still
+          : _animationFromJson(
+                  _asMap(c['animation'], '$where.animation'),
+                  '$where.animation')
+              .clampedTo(duration),
       text: c['text'] == null
           ? null
           : _textFromJson(_asMap(c['text'], '$where.text'), '$where.text')
@@ -472,6 +513,23 @@ Rational _rational(Map<String, Object?> json, String key, String at) {
   } on ArgumentError {
     throw ProjectDecodeException('"$raw" is not a valid rational', path: at);
   }
+}
+
+/// The same, but absent or unrecognised falls back rather than throwing.
+///
+/// Only for values where being wrong is recoverable and being unable to open
+/// the project is not — an animation preset a newer version invented, where
+/// the worst outcome is that a clip arrives plainly. A colour or a track kind
+/// gets [_enum] instead, because a wrong guess there rewrites something
+/// silently.
+T _enumOr<T extends Enum>(
+    List<T> values, Map<String, Object?> json, String key, T fallback) {
+  final raw = json[key];
+  if (raw is! String) return fallback;
+  for (final v in values) {
+    if (v.name == raw) return v;
+  }
+  return fallback;
 }
 
 T _enum<T extends Enum>(
