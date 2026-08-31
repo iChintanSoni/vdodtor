@@ -10,10 +10,11 @@ built and *how far* along it is. Update it in the same commit as the work it des
 - Keep the status line below current whenever a milestone starts or finishes.
 
 > **Status: M1's build items are all done and its exit criteria need one run by hand.
-> M2 has started: the timeline cuts, the compositor is pinned by golden frames, the
-> audio lanes make a sound, the clips on them show what that sound looks like, a
-> volume line on a clip can duck it, and a clip is now drawn the shape and the way up
-> its own file asks for.**
+> M2's build items are now all done too, and its exit criteria are one edit by hand:
+> the timeline cuts, the compositor is pinned by golden frames, the audio lanes make a
+> sound, the clips on them show what that sound looks like, a volume line on a clip can
+> duck it, a clip is drawn the shape and the way up its own file asks for, and the
+> keyboard reaches all of it.**
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -64,7 +65,9 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > is the half of M2's exit criteria that was missing. A source's own metadata is believed
 > now too: a clip shot upright plays upright, non-square pixels are the shape the file
 > asks for rather than the shape it is stored in, and a variable-rate source shows the
-> frame it says is on screen instead of one from half a second later.
+> frame it says is on screen instead of one from half a second later. And the keyboard
+> reaches all of it — 26 shortcuts from one table, with ⌘/ to see them, ⌥← and ⌥→ to
+> step cut to cut, and zoom anchored on the playhead rather than on the left edge.
 >
 > **Owner checks outstanding**, both needing hands rather than a script: dropping files on
 > the window (everything around the drop is verified — panel, bookmarks, relink, and that
@@ -699,7 +702,69 @@ audio, scrub anywhere, quit and reopen with everything restored.
       red, yellow, green clockwise from the top left: the file's own quarter
       turn, on screen, through the real preview. The play pass that follows is
       **30.0 fps, 0 late frames, 0 underruns**
-- [ ] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge
+- [x] Keyboard shortcuts v1: space, split, delete, undo/redo, zoom, nudge
+      — most of the list was already bound, one at a time, as each command
+      arrived and needed *some* way to be reached. What was missing was
+      **zoom**, which had no key at all, and the thing that makes a set of
+      shortcuts different from a pile of them: somewhere they are all written
+      down, and a way to find out what they are.
+      The bindings are now **one const table** in `lib/ui/shortcuts.dart` —
+      action, keys, label, group — with no callbacks in it. The screen supplies
+      one handler per action and `shortcutBindings` puts the two together,
+      *refusing* if any action is unhandled: a shortcut wired to nothing is a
+      key that does nothing when pressed, which reads as a broken editor rather
+      than as a missing case, and failing to build the screen is the louder
+      outcome. The map used to be assembled inside `build()`, where it could be
+      checked for none of this.
+      The mistake that table prevents is the quiet one. `CallbackShortcuts`
+      takes a *map*, so two actions on one chord do not conflict — the second
+      one written wins, for ever, and nothing says so. A test now owns that,
+      and a second test presses **every chord in the table** and asserts it
+      reaches its own action, because an activator can be well-formed, unique
+      and still never match.
+      **The arrow keys became a family**, which is the part worth remembering:
+      unmodified is a frame, which is the unit the playhead moves in; ⇧ is a
+      second, for covering ground; and **⌥ is the next edit point**, which is
+      what anyone scrubbing is actually aiming at and the only one of the three
+      a pointer cannot hit exactly. Cuts come from the same set of edges a drag
+      snaps to, so what the keyboard lands on and what a drag sticks to are one
+      idea rather than two. It stops at the ends rather than wrapping: a key
+      pressed expecting nothing to happen should not move the playhead a long
+      way.
+      **Zoom needed an anchor.** A pointer zoom holds still whatever is under
+      the pointer, because that is what the person is looking at; a key has no
+      pointer, and the toolbar buttons had been zooming around the **left edge
+      of the view** — which walks the thing being worked on off the screen
+      every second press, and is exactly what `timeline_geometry.dart`'s own
+      comment says not to do. The answer is the **playhead**, and then a scroll
+      to make sure it is still visible, which matters when it was already off
+      screen. Buttons and keys now make the same call, so a button and its
+      shortcut cannot move the timeline to two different places.
+      That needed the controller to know how wide it is being drawn, which it
+      did not. `Fit` was guessing at `MediaQuery.width - 240` — right until
+      somebody changes the layout and quietly wrong afterwards — and `pump`
+      took the width as an argument from the one caller that had it. The view
+      sets `viewportWidth` at layout now, so there is one answer and it is
+      never the caller's guess. Fitting before the first frame does nothing
+      rather than collapsing the zoom to its floor.
+      **⌘/ opens a list of all of it**, generated from the table. That is the
+      whole reason the table is data: a hand-kept list is wrong the first time
+      somebody changes a key, and the only thing that reads it is a person who
+      already believed it. Its test walks every row of the table and finds it
+      in the sheet, scrolling to it — the list is longer than the sheet and
+      builds lazily, so merely searching would pass or fail on where a row
+      happened to land.
+      **Not included, deliberately:** nudging a *clip* with the arrow keys. On
+      the main track it is not a coherent idea — the lane is magnetic, so a
+      clip pushed a frame is repacked straight back, and a clip pushed far
+      enough reorders instead. A shortcut that silently does nothing on the
+      lane most editing happens on is worse than no shortcut, and moving clips
+      by keyboard belongs with group drag, which is already a bullet of its
+      own.
+      26 shortcuts, 17 new tests. What none of them can say is which *physical*
+      key produces which logical one — the events a widget test sends are
+      synthetic — so whether `⌘+` arrives as shift-and-equal on a real keyboard
+      is the owner's to press
 
 **Exit criteria:** cut a real 2-minute multi-track video (picture-in-picture + music bed)
 start to finish without touching another editor; undo works through the whole session.

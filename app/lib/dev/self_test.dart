@@ -451,7 +451,8 @@ Future<void> _drawTimeline(Project project, Directory cache, String path,
   final store = DocumentStore(project);
   final controller = TimelineController(
       store: store, transport: _StillTransport(duration.raw));
-  controller.zoomToFit(size.width);
+  controller.viewportWidth = size.width;
+  controller.zoomToFit();
 
   final waveforms = WaveformCache(directory: cache);
   for (final asset in project.media.values) {

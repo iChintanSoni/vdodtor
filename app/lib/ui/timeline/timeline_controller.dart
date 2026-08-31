@@ -134,6 +134,14 @@ class TimelineController extends ChangeNotifier {
   /// and back on by a scrub or by playback reaching the view again.
   bool _following = true;
 
+  /// How wide the timeline is being drawn, set by the view at layout.
+  ///
+  /// The controller needs it for anything that has to end with the playhead
+  /// on screen, and the alternative was every caller passing it in: the Fit
+  /// button was guessing at `MediaQuery.width - 240`, which is right until
+  /// somebody changes the layout and wrong quietly afterwards.
+  double _viewportWidth = 0;
+
   TimelineGeometry get geometry => _geometry;
 
   /// Assets whose file the app cannot reach. Their clips are drawn as warnings
@@ -236,8 +244,33 @@ class TimelineController extends ChangeNotifier {
 
   // --- view ----------------------------------------------------------------
 
+  set viewportWidth(double value) {
+    if (value > 0) _viewportWidth = value;
+  }
+
+  double get viewportWidth => _viewportWidth;
+
   void zoomAround(double focusX, double factor) {
     _setGeometry(_geometry.zoomedAround(focusX, factor));
+  }
+
+  /// Zooms with no pointer to zoom towards — a key, or a toolbar button.
+  ///
+  /// The anchor is the **playhead**. A pointer zoom keeps what is under the
+  /// pointer still because that is what the person is looking at; without a
+  /// pointer the equivalent is the playhead, and the alternative the buttons
+  /// used to take — the left edge of the view — walks whatever you were
+  /// working on off the screen every second press.
+  ///
+  /// Then it makes sure the playhead is still visible, which matters when it
+  /// was already off screen: anchoring on something you cannot see is not
+  /// wrong so much as useless, and this is the one place the answer is free.
+  void zoomBy(double factor) {
+    var next = _geometry.zoomedAround(_geometry.xOfTick(playhead), factor);
+    if (_viewportWidth > 0) {
+      next = next.scrolledToShow(playhead, _viewportWidth);
+    }
+    _setGeometry(next);
   }
 
   void panBy(double dx) {
@@ -245,11 +278,12 @@ class TimelineController extends ChangeNotifier {
     _setGeometry(_geometry.pannedBy(dx));
   }
 
-  /// Fits [duration] across [width], with a little room at the end so the last
-  /// frame is not flush against the edge.
-  void zoomToFit(double width) {
+  /// Fits [duration] across the view, with a little room at the end so the
+  /// last frame is not flush against the edge.
+  void zoomToFit() {
     final span = duration.raw;
-    final available = width - TimelineGeometry.headerWidth - 24;
+    final available =
+        _viewportWidth - TimelineGeometry.headerWidth - 24;
     if (span <= 0 || available <= 0) return;
     final seconds = Timebase.project.toSecondsForDisplay(Tick(span));
     _following = true;
@@ -269,9 +303,9 @@ class TimelineController extends ChangeNotifier {
   /// repaints so it actually moves — the transport does not announce every
   /// frame, and asking it to would be a notification per frame for a value
   /// only this widget reads.
-  void pump(double width) {
-    if (_following) {
-      _geometry = _geometry.scrolledToShow(playhead, width);
+  void pump() {
+    if (_following && _viewportWidth > 0) {
+      _geometry = _geometry.scrolledToShow(playhead, _viewportWidth);
     }
     notifyListeners();
   }
@@ -332,6 +366,48 @@ class TimelineController extends ChangeNotifier {
   void nudge(int frames) {
     final per = Timebase.project.ticksPerFrame(frameRate);
     seekTo(Tick(playhead.raw + frames * per));
+  }
+
+  /// Steps [seconds] seconds from where the playhead is. Negative goes back.
+  ///
+  /// Still frame-snapped, by [seekTo]: a second at 29.97 is not a whole number
+  /// of frames, and a playhead resting between two of them names a picture
+  /// that does not exist.
+  void skip(int seconds) =>
+      seekTo(Tick(playhead.raw + seconds * Timebase.project.ticksPerSecond));
+
+  /// Moves the playhead to the next cut after it, in [direction]'s sense.
+  ///
+  /// A cut is any clip edge on any lane, plus zero and the end — the same
+  /// points an edge snaps to while dragging, so what the keyboard lands on and
+  /// what a drag sticks to are the same set rather than two ideas about where
+  /// the interesting moments are.
+  ///
+  /// This is the shortcut that makes the arrow keys make sense: a frame is too
+  /// small a step to cross a clip with and a second is an arbitrary one, where
+  /// the next edit point is the thing anyone is actually aiming at.
+  void jumpToCut(int direction) {
+    final here = playhead.raw;
+    int? best;
+    for (final t in _cutPoints()) {
+      if (direction < 0 ? t.raw >= here : t.raw <= here) continue;
+      if (best == null || (direction < 0 ? t.raw > best : t.raw < best)) {
+        best = t.raw;
+      }
+    }
+    if (best != null) seekTo(Tick(best));
+  }
+
+  /// Every edge worth landing on, unordered and with duplicates.
+  Iterable<Tick> _cutPoints() sync* {
+    yield Tick.zero;
+    yield duration;
+    for (final track in project.tracks) {
+      for (final clip in track.clips) {
+        yield clip.start;
+        yield clip.end;
+      }
+    }
   }
 
   // --- pointer -------------------------------------------------------------

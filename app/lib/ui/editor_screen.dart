@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../app/workspace.dart';
@@ -20,10 +19,11 @@ import '../model/media.dart';
 import '../model/time.dart';
 import 'inspector.dart';
 import 'media_bin.dart';
+import 'shortcut_sheet.dart';
+import 'shortcuts.dart';
 import 'theme.dart';
 import 'timecode.dart';
 import 'timeline/timeline_controller.dart';
-import 'timeline/timeline_geometry.dart';
 import 'timeline/timeline_view.dart';
 
 /// The editor: one open document, synced to the engine, playing through the
@@ -205,6 +205,43 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  /// One callback per action in `lib/ui/shortcuts.dart`, which owns which key
+  /// reaches which of these. Everything that acts on the timeline goes through
+  /// `_timeline?.` — before the engine has opened there is nothing to act on,
+  /// and a key pressed in that first moment should do nothing rather than
+  /// throw.
+  Map<EditorAction, VoidCallback> _shortcutHandlers(BuildContext context) => {
+        EditorAction.playPause: _togglePlayback,
+        EditorAction.nudgeBack: () => _timeline?.nudge(-1),
+        EditorAction.nudgeForward: () => _timeline?.nudge(1),
+        EditorAction.skipBack: () => _timeline?.skip(-1),
+        EditorAction.skipForward: () => _timeline?.skip(1),
+        EditorAction.previousCut: () => _timeline?.jumpToCut(-1),
+        EditorAction.nextCut: () => _timeline?.jumpToCut(1),
+        EditorAction.goToStart: () => _timeline?.seekTo(Tick.zero),
+        EditorAction.goToEnd: () {
+          final timeline = _timeline;
+          if (timeline != null) timeline.seekTo(timeline.duration);
+        },
+        EditorAction.zoomIn: () => _timeline?.zoomBy(1.4),
+        EditorAction.zoomOut: () => _timeline?.zoomBy(1 / 1.4),
+        EditorAction.zoomToFit: () => _timeline?.zoomToFit(),
+        EditorAction.split: () => _timeline?.splitAtPlayhead(),
+        EditorAction.duplicate: () => _timeline?.duplicateSelected(),
+        EditorAction.detachAudio: () => _timeline?.detachAudio(),
+        EditorAction.delete: () => _timeline?.deleteSelected(),
+        EditorAction.selectAll: () => _timeline?.selectAll(),
+        EditorAction.clearSelection: () => _timeline?.clearSelection(),
+        EditorAction.copy: () => _timeline?.copySelection(),
+        EditorAction.cut: () => _timeline?.cutSelection(),
+        EditorAction.paste: () => _timeline?.paste(),
+        EditorAction.undo: _store.undo,
+        EditorAction.redo: _store.redo,
+        EditorAction.import: () => unawaited(_importFromPicker()),
+        EditorAction.closeProject: widget.onClose,
+        EditorAction.showShortcuts: () => ShortcutSheet.toggle(context),
+      };
+
   void _togglePlayback() {
     final engine = _engine;
     if (engine == null) return;
@@ -229,48 +266,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final engine = _engine;
 
     return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.space): _togglePlayback,
-        const SingleActivator(LogicalKeyboardKey.keyI, meta: true): () =>
-            unawaited(_importFromPicker()),
-        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true):
-            _store.undo,
-        const SingleActivator(LogicalKeyboardKey.keyZ,
-            meta: true, shift: true): _store.redo,
-        const SingleActivator(LogicalKeyboardKey.keyW, meta: true):
-            widget.onClose,
-        // A frame at a time, which is the unit the playhead moves in and the
-        // only way to land on an exact cut with a pointer that cannot.
-        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
-            _timeline?.nudge(-1),
-        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
-            _timeline?.nudge(1),
-        const SingleActivator(LogicalKeyboardKey.home): () =>
-            _timeline?.seekTo(Tick.zero),
-        // The three edits with no pointer gesture of their own. The full
-        // shortcut pass is its own item; these are here because without them
-        // there is no way to reach the commands at all.
-        const SingleActivator(LogicalKeyboardKey.keyB, meta: true): () =>
-            _timeline?.splitAtPlayhead(),
-        const SingleActivator(LogicalKeyboardKey.keyD, meta: true): () =>
-            _timeline?.duplicateSelected(),
-        const SingleActivator(LogicalKeyboardKey.keyD, meta: true, shift: true):
-            () => _timeline?.detachAudio(),
-        const SingleActivator(LogicalKeyboardKey.delete): () =>
-            _timeline?.deleteSelected(),
-        const SingleActivator(LogicalKeyboardKey.backspace): () =>
-            _timeline?.deleteSelected(),
-        const SingleActivator(LogicalKeyboardKey.keyA, meta: true): () =>
-            _timeline?.selectAll(),
-        const SingleActivator(LogicalKeyboardKey.escape): () =>
-            _timeline?.clearSelection(),
-        const SingleActivator(LogicalKeyboardKey.keyC, meta: true): () =>
-            _timeline?.copySelection(),
-        const SingleActivator(LogicalKeyboardKey.keyX, meta: true): () =>
-            _timeline?.cutSelection(),
-        const SingleActivator(LogicalKeyboardKey.keyV, meta: true): () =>
-            _timeline?.paste(),
-      },
+      bindings: shortcutBindings(_shortcutHandlers(context)),
       child: Focus(
         autofocus: true,
         child: Scaffold(
@@ -656,21 +652,21 @@ class _TransportBar extends StatelessWidget {
             onPressed: timeline.canDetachAudio ? timeline.detachAudio : null,
           ),
           const SizedBox(width: 4),
+          // The same call the keys make. These used to zoom around the left
+          // edge of the view and guess the width for Fit, so a button and its
+          // shortcut moved the timeline to two different places.
           IconButton(
-            tooltip: 'Zoom out',
+            tooltip: 'Zoom out  ⌘−',
             icon: const Icon(Icons.zoom_out, size: 20),
-            onPressed: () => timeline.zoomAround(
-                TimelineGeometry.headerWidth, 1 / 1.4),
+            onPressed: () => timeline.zoomBy(1 / 1.4),
           ),
           IconButton(
-            tooltip: 'Zoom in',
+            tooltip: 'Zoom in  ⌘=',
             icon: const Icon(Icons.zoom_in, size: 20),
-            onPressed: () =>
-                timeline.zoomAround(TimelineGeometry.headerWidth, 1.4),
+            onPressed: () => timeline.zoomBy(1.4),
           ),
           TextButton(
-            onPressed: () => timeline.zoomToFit(
-                MediaQuery.sizeOf(context).width - 240),
+            onPressed: timeline.zoomToFit,
             child: const Text('Fit'),
           ),
         ],
