@@ -115,6 +115,43 @@ static bool frame_rgb(VdEngine* e, double fx, double fy, int out[3]) {
 }
 
 // Green for the first second, orange for the second. One track, no gaps.
+// A cheap digest of the whole published frame.
+//
+// Used where the question is "is this the same picture as before?" rather than
+// "what colour is it?" — which is what a speed test asks, because the claim is
+// about *which source frame* reached the screen and no single pixel says that.
+// Zero if there is nothing published, which no assertion below treats as a
+// match.
+static uint64_t frame_hash(VdEngine* e) {
+  void* buffer = vd_engine_copy_output(e);
+  if (!buffer) return 0;
+  CVPixelBufferRef pixels = (CVPixelBufferRef)buffer;
+  CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+  const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddress(pixels);
+  const size_t stride = CVPixelBufferGetBytesPerRow(pixels);
+  const size_t width = CVPixelBufferGetWidth(pixels);
+  const size_t height = CVPixelBufferGetHeight(pixels);
+
+  uint64_t hash = 1469598103934665603ULL;  // FNV-1a
+  for (size_t y = 0; y < height; y++) {
+    const uint8_t* row = base + y * stride;
+    for (size_t x = 0; x < width * 4; x++) {
+      hash ^= row[x];
+      hash *= 1099511628211ULL;
+    }
+  }
+  CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
+  CVPixelBufferRelease(pixels);
+  return hash;
+}
+
+// The hash of the frame at `position`, rendered synchronously.
+static uint64_t hash_at(VdEngine* e, VdTick position) {
+  vd_engine_seek(e, position);
+  if (vd_engine_render_now(e) != VD_OK) return 0;
+  return frame_hash(e);
+}
+
 static VdTimeline two_clip_timeline(VdTimelineClip* clips) {
   clips[0] = vd_timeline_clip_default();
   clips[0].path = fixture("solid_sd_601.mp4");
@@ -1543,6 +1580,165 @@ static void test_dragging_a_looks_strength_costs_nothing(void) {
   vd_engine_destroy(e);
 }
 
+// --- speed -----------------------------------------------------------------
+
+static const int STICKER_GREEN[3] = {0, 192, 0};
+
+// One clip of moving footage, retimed. testsrc2 changes every frame, which is
+// what makes a hash of the whole picture mean "which source frame is this".
+static VdTimeline retimed_timeline(VdTimelineClip* clips, double speed,
+                                   VdTick duration) {
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("cfr_30fps_stereo.mp4");
+  clips[0].start = 0;
+  clips[0].duration = duration;
+  clips[0].speed = speed;
+  clips[0].fit = VD_FIT_STRETCH;
+  clips[0].gain = 0.0f;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 1;
+  return timeline;
+}
+
+// A retimed clip is a window that travels over its source at a different rate,
+// and that is the whole of it: where the clip sits and how long it lasts are
+// unchanged, because the document decided both.
+//
+// Read off a sticker rather than off footage, because a sticker's frames are
+// four flat colours a quarter of a second apart — so "which frame is on
+// screen" is a question one pixel answers.
+static void test_speed_moves_the_window_over_the_source(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = sticker_timeline(clips, "sticker_4up.gif", 4 * SECOND);
+
+  clips[1].speed = 2.0;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, 0);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_RED, "2x at the head is still the first frame");
+  vd_engine_seek(e, SECOND / 8);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_GREEN, "2x an eighth in is a quarter in");
+  vd_engine_seek(e, SECOND / 4);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_BLUE, "2x a quarter in is half way");
+
+  clips[1].speed = 0.5;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_GREEN, "half speed half a second in");
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, STICKER_BLUE, "half speed a second in");
+
+  vd_engine_destroy(e);
+}
+
+// Slow motion, which turns out not to be a feature at all.
+//
+// There is no duplication step in the engine because there is nothing to
+// duplicate: a frame is on screen until the next frame starts, and asking for
+// a source time that has not left the current frame's interval hands back the
+// frame that is already there. Four project frames at a quarter speed are one
+// source frame, and the fifth is the next one.
+static void test_slow_motion_holds_each_source_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  const VdTick frame = SECOND / 30;
+  VdTimelineClip clips[1];
+  VdTimeline timeline = retimed_timeline(clips, 1.0, 2 * SECOND);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  // At its own speed, every project frame is a different source frame. This is
+  // the control: without it the assertion below would also pass on a fixture
+  // that never changed.
+  uint64_t own[5];
+  for (int i = 0; i < 5; i++) own[i] = hash_at(e, (VdTick)i * frame);
+  for (int i = 1; i < 5; i++) {
+    vd_checks++;
+    if (own[i] == own[i - 1] || own[i] == 0) {
+      vd_failures++;
+      fprintf(stderr, "FAIL frames %d and %d of the source are the same\n",
+              i - 1, i);
+    }
+  }
+
+  clips[0].speed = 0.25;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  for (int i = 0; i < 4; i++) {
+    vd_checks++;
+    const uint64_t held = hash_at(e, (VdTick)i * frame);
+    if (held != own[0]) {
+      vd_failures++;
+      fprintf(stderr,
+              "FAIL at a quarter speed project frame %d was not the source's "
+              "first frame\n",
+              i);
+    }
+  }
+  // And the fifth is the source's second, which is what makes it slow motion
+  // rather than a freeze.
+  vd_checks++;
+  if (hash_at(e, 4 * frame) != own[1]) {
+    vd_failures++;
+    fprintf(stderr, "FAIL a quarter speed never reached the second frame\n");
+  }
+
+  vd_engine_destroy(e);
+}
+
+// The other direction: at 2x every other source frame is skipped, and the one
+// that arrives is exactly the one the same source time would have given at 1x.
+static void test_speeding_up_skips_source_frames(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  const VdTick frame = SECOND / 30;
+  VdTimelineClip clips[1];
+  VdTimeline timeline = retimed_timeline(clips, 1.0, 2 * SECOND);
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  uint64_t own[8];
+  for (int i = 0; i < 8; i++) own[i] = hash_at(e, (VdTick)i * frame);
+
+  clips[0].speed = 2.0;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  for (int i = 0; i < 4; i++) {
+    vd_checks++;
+    if (hash_at(e, (VdTick)i * frame) != own[2 * i]) {
+      vd_failures++;
+      fprintf(stderr, "FAIL at 2x project frame %d was not source frame %d\n",
+              i, 2 * i);
+    }
+  }
+
+  // A zeroed speed is what a caller that memset the struct leaves behind, and
+  // it has to mean "as it was shot" rather than "stop time" — the one field on
+  // VdTimelineClip that a memset gets right by not being set.
+  clips[0].speed = 0.0;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  for (int i = 0; i < 4; i++) {
+    vd_checks++;
+    if (hash_at(e, (VdTick)i * frame) != own[i]) {
+      vd_failures++;
+      fprintf(stderr, "FAIL a zeroed speed did not play at its own speed\n");
+    }
+  }
+
+  vd_engine_destroy(e);
+}
+
 static void test_an_entrance_fades_the_picture_up_from_black(void) {
   VdEngine* e = make_engine();
   if (!e) return;
@@ -2142,6 +2338,9 @@ int main(void) {
   test_a_look_nobody_registered_draws_ungraded();
   test_a_look_does_not_change_through_the_clip();
   test_dragging_a_looks_strength_costs_nothing();
+  test_speed_moves_the_window_over_the_source();
+  test_slow_motion_holds_each_source_frame();
+  test_speeding_up_skips_source_frames();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

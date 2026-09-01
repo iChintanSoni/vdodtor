@@ -3439,6 +3439,31 @@ final class VdTimelineClip extends ffi.Struct {
   @VdTick()
   external int source_in;
 
+  /// Source seconds per timeline second: 2 plays twice as fast, 0.5 half as
+  /// fast, and 1 is every clip nobody retimed. Clamped to [0.1, 10]; zero and
+  /// anything negative are read as 1, which is what makes `speed` the one field
+  /// on this struct a caller may leave at whatever a memset gave it.
+  ///
+  /// `duration` is still the clip's length *on the timeline*, so this says
+  /// nothing about where the clip sits or how long it lasts — only how fast the
+  /// window over the source travels while it is on screen. The source window it
+  /// implies is `duration * speed`, and the document is the one that decides
+  /// both: retiming a clip is a change of length, not something the engine can
+  /// work out on its own.
+  @ffi.Double()
+  external double speed;
+
+  /// True when a retimed clip should sound like a tape played fast: everything
+  /// in it rises in pitch together. False — the default, and what a memset
+  /// gives — keeps the pitch it was recorded at and stretches time instead.
+  ///
+  /// A toggle rather than a rule, because both are right: a slow-motion shot
+  /// usually wants the voice in it to still be that voice, and a comedy speed-up
+  /// usually wants the chipmunk. Ignored at `speed` 1, where the two agree.
+  /// See vd_stretch.h.
+  @ffi.Bool()
+  external bool pitch_shift;
+
   /// Compositing order: lower renders first, so 0 is the main track.
   @ffi.Int32()
   external int track;

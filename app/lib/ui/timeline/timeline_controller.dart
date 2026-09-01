@@ -607,9 +607,14 @@ class TimelineController extends ChangeNotifier {
     final points = clip.audio.points;
     final head = clip.sourceIn;
     final tail = clip.sourceOut;
+    // Source ticks per timeline tick. A retimed clip crosses its own curve
+    // faster or slower, so a point drawn at the source time it was placed at
+    // lands somewhere else along the clip — which is exactly where it is heard.
+    final rate = clip.speed.rate;
 
     Offset at(Tick sourceTime, double value) => Offset(
-          _geometry.xOfTick(clip.start + (sourceTime - head)),
+          _geometry.xOfTick(
+              Tick(clip.start.raw + ((sourceTime - head).raw / rate).round())),
           TimelineGeometry.yOfLevel(band, value, ClipAudio.maxVolume),
         );
 
@@ -652,8 +657,7 @@ class TimelineController extends ChangeNotifier {
   /// Where [x] falls in the clip's source, clamped to its own window so a
   /// point cannot be dragged off the clip that carries it.
   Tick _sourceTimeAtX(Clip clip, double x) {
-    final onTimeline = _geometry.tickAtX(x);
-    final raw = clip.sourceIn.raw + (onTimeline.raw - clip.start.raw);
+    final raw = clip.sourceTimeAt(_geometry.tickAtX(x)).raw;
     return Tick(raw.clamp(clip.sourceIn.raw, clip.sourceOut.raw));
   }
 
@@ -726,7 +730,9 @@ class TimelineController extends ChangeNotifier {
     // under the pointer before it has moved.
     final was = origin.points[_dragPointIndex];
     final wanted = was.sourceTime.raw +
-        ((position.dx - _dragAnchorX) / _geometry.pxPerTick).round();
+        ((position.dx - _dragAnchorX) / _geometry.pxPerTick *
+                clip.speed.rate)
+            .round();
     final wasY =
         TimelineGeometry.yOfLevel(band, was.value, ClipAudio.maxVolume);
 
@@ -1219,6 +1225,10 @@ class TimelineController extends ChangeNotifier {
           start: clip.start,
           duration: clip.duration,
           sourceIn: clip.sourceIn,
+          // At the speed the picture was playing it. A detached sound that
+          // reverted to 1x would be the same take drifting out of step with
+          // the shot it came from.
+          speed: clip.speed,
           label: clip.label,
           // The sound arrives at the level the video clip was playing it,
           // fades and all. Detaching is a change of where a sound lives, not

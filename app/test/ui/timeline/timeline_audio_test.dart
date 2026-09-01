@@ -300,6 +300,41 @@ void main() {
       expect(bed().audio.points, isEmpty);
     });
 
+    test('a retimed clip draws its curve where the clip plays it', () {
+      // A point is measured in the source and the clip crosses the source at
+      // its own rate, so at 2x a duck two seconds into the file is one second
+      // into the clip — which is where it will be heard.
+      var p = emptyProject().addMedia(audioAsset('song'));
+      p = p.updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4)).copyWith(
+            speed: const ClipSpeed(rate: 2),
+            audio: ClipAudio(points: [VolumePoint(secs(2), 0.25)]),
+          ),
+        ]),
+      );
+      build(p);
+      controller.select('bed');
+
+      final clip = controller.project.clipById('bed')!;
+      final lane = controller.project.trackById(audioTrackId)!;
+      final handle = controller
+          .volumeLine(clip, lane)
+          .firstWhere((h) => h.index == 0)
+          .at;
+      expect(handle.dx, closeTo(controller.geometry.xOfTick(secs(1)), 0.5));
+
+      // And dragging it back reads the same way round: the pointer moves in
+      // timeline pixels and the point moves in source ticks.
+      controller.pointerDown(handle);
+      controller.pointerMove(handle +
+          Offset(controller.geometry.pxPerTick * secs(1).raw, 0));
+      controller.pointerUp();
+      expect(controller.project.clipById('bed')!.audio.points.single.sourceTime,
+          secs(4));
+    });
+
     test('a clip whose file is silent gets no line at all', () {
       var p = emptyProject().addMedia(videoAsset('silent', audio: false));
       p = p.updateTrack(

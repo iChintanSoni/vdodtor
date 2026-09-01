@@ -167,6 +167,12 @@ class _EditorScreenState extends State<EditorScreen> {
         // panel — and on the same terms: it puts the clip back the way it
         // found it, so what the passes below dump is about themselves.
         await runLookSelfTest(engine, _store);
+        // After the grading passes, because it is the only one that changes
+        // how *long* a clip is: the lane repacks around it, so anything
+        // measured against a clip's start has to be measured before it. It
+        // puts the clip back at its own speed on the way out, to within the
+        // tick a retime rounds to.
+        await runSpeedSelfTest(engine, _store);
         // Last, and it puts the timeline back the way it found it: a
         // transition is the one pass that changes what a *cut* looks like, so
         // leaving one on would change every frame the play pass dumps.

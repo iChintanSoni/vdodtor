@@ -411,9 +411,10 @@ final class ClipAudio {
   /// mute, the fades and the volume line, all together.
   ///
   /// [sourceIn] is the clip's own, because [points] are measured in the
-  /// source's time and this is given an offset into the clip. A caller that
-  /// leaves it out gets the fades and the fader and no automation, which is
-  /// the right answer for a clip that has none.
+  /// source's time and this is given an offset into the clip, and [speed] is
+  /// how fast that offset crosses them. A caller that leaves both out gets the
+  /// fades and the fader and no automation, which is the right answer for a
+  /// clip that has none.
   ///
   /// The engine computes the same two envelopes in C — `vd_audio_fade_gain`
   /// and `vd_audio_automation_gain` in `engine/src/vd_audio_renderer.c` — and
@@ -424,12 +425,18 @@ final class ClipAudio {
   /// curve for a long fade, but it is the one where the handle position means
   /// what it looks like it means, and a shaped curve is an option to add later
   /// rather than a default to guess at now.
-  double gainAt(Tick offset, Tick duration, {Tick sourceIn = Tick.zero}) {
+  double gainAt(Tick offset, Tick duration,
+      {Tick sourceIn = Tick.zero, double speed = 1}) {
     final shape = fadeShapeAt(offset, duration, fadeIn, fadeOut);
     if (shape == 0 || points.isEmpty) return effectiveVolume * shape;
+    // The fade above is measured on the timeline and the line below in the
+    // source, so a retimed clip moves one of them and not the other: a fade
+    // stays the length it was drawn, and the duck under it arrives sooner
+    // because the word it was drawn on does.
+    final into = speed == 1 ? offset.raw : (offset.raw * speed).round();
     return effectiveVolume *
         shape *
-        automationAt(points, Tick(sourceIn.raw + offset.raw));
+        automationAt(points, Tick(sourceIn.raw + into));
   }
 
   /// The volume line alone, at a time in the *source*. 1 where there is no
@@ -1422,6 +1429,105 @@ final class ClipTransition {
       : 'ClipTransition.none';
 }
 
+/// How fast a clip plays, and what that does to the sound in it.
+///
+/// [rate] is source seconds per timeline second: 2 plays twice as fast, 0.5
+/// half as fast. It is deliberately *not* a length — [Clip.duration] stays the
+/// clip's length on the timeline, the way it is for every other clip, so
+/// nothing about hit testing, packing or splitting has to learn a second way
+/// of asking how long a clip is. What a rate says is how fast the window
+/// travels over the source while the clip is on screen, and the source window
+/// it implies is [Clip.sourceDuration].
+///
+/// Changing the rate is therefore a change of *length*: the same frames now
+/// take a different amount of timeline. That is what [Clip.retimedTo] does and
+/// why a retime on the main lane repacks it, exactly as a trim does.
+///
+/// **The picture side of this is free.** A frame is on screen until the next
+/// frame starts, so asking the decoder for a source time that has not left the
+/// current frame's interval hands back the frame that is already there — which
+/// is the whole of "frame duplication for slow motion". There is no
+/// duplication step because there is nothing to duplicate.
+///
+/// **The sound side is the entire cost**, and it is why [pitchShift] exists.
+/// Twice as many samples have to become half as many, and there are exactly
+/// two honest ways to do it: keep the pitch and stretch time (the default — a
+/// voice slowed down is still that voice), or play the samples faster and let
+/// everything rise together, which is what a tape does. Neither is right for
+/// every clip, so the document carries the choice rather than the engine
+/// guessing. The arithmetic lives in `engine/src/vd_stretch.c`; nothing here
+/// evaluates it, for `vd_anim`'s reason — nothing in the app draws a stretch.
+@immutable
+final class ClipSpeed {
+  const ClipSpeed({this.rate = 1, this.pitchShift = false});
+
+  /// A clip playing at the speed it was shot. The default for every clip, and
+  /// the value serialisation leaves out of the file entirely.
+  static const normal = ClipSpeed();
+
+  /// Source time per timeline time. 1 is the clip as it was shot.
+  final double rate;
+
+  /// True to let the pitch rise and fall with the speed. False — the default —
+  /// keeps the recording sounding like itself. Means nothing at [rate] 1,
+  /// where the two agree.
+  final bool pitchShift;
+
+  /// The range the engine's overlap search still means something in, mirrored
+  /// from `VD_SPEED_MIN` / `VD_SPEED_MAX` in `engine/include/vdodtor/
+  /// vd_stretch.h`. Where the *method* stops working, not a product decision.
+  static const double minRate = 0.1;
+  static const double maxRate = 10;
+
+  bool get isNormal => this == normal;
+
+  /// `"2.0×"`. Two decimals below 1x and one above: 0.33× is a speed and
+  /// 3.33× is a number. Here rather than in the inspector because the timeline
+  /// writes it on the clip too, and two spellings of one rate is two things to
+  /// keep in step.
+  static String labelFor(double rate) =>
+      '${rate < 1 ? rate.toStringAsFixed(2) : rate.toStringAsFixed(1)}×';
+
+  String get label => labelFor(rate);
+
+  /// True when this changes how long the clip is or what it sounds like.
+  /// A pitch toggle on a clip at its own speed does neither.
+  bool get isRetimed => rate != 1;
+
+  /// Pulled inside the range the engine can honour, on the way into the
+  /// document — so a file written by hand or by a wider-ranged version opens
+  /// as something this one can still edit.
+  ///
+  /// A clip that lands back at 1× loses the toggle with it. The two answers
+  /// agree there, so a remembered `pitchShift` would be a decision recorded in
+  /// the file that changes nothing, keep a Reset button on a clip nobody has
+  /// retimed, and read back as a difference between two identical clips.
+  ClipSpeed clamped() {
+    final r = rate.isFinite && rate > 0 ? rate.clamp(minRate, maxRate) : 1.0;
+    if (r == 1) return normal;
+    return r == rate ? this : ClipSpeed(rate: r, pitchShift: pitchShift);
+  }
+
+  ClipSpeed copyWith({double? rate, bool? pitchShift}) => ClipSpeed(
+        rate: rate ?? this.rate,
+        pitchShift: pitchShift ?? this.pitchShift,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipSpeed &&
+      other.rate == rate &&
+      other.pitchShift == pitchShift;
+
+  @override
+  int get hashCode => Object.hash(rate, pitchShift);
+
+  @override
+  String toString() => isNormal
+      ? 'ClipSpeed.normal'
+      : 'ClipSpeed($label${pitchShift ? ' pitched' : ''})';
+}
+
 /// One piece of media placed on a track.
 ///
 /// A clip is a window onto its source: [sourceIn] is where the window opens in
@@ -1439,6 +1545,7 @@ final class Clip {
     required this.start,
     required this.duration,
     this.sourceIn = Tick.zero,
+    this.speed = ClipSpeed.normal,
     this.label = '',
     this.enabled = true,
     this.transform = ClipTransform.identity,
@@ -1511,6 +1618,10 @@ final class Clip {
   /// Offset into the source media where this clip begins.
   final Tick sourceIn;
 
+  /// How fast the window travels over the source. [ClipSpeed.normal] for a
+  /// clip nobody has retimed, which is almost all of them.
+  final ClipSpeed speed;
+
   final String label;
   final bool enabled;
 
@@ -1554,19 +1665,40 @@ final class Clip {
   bool get isGenerated => text != null || shape != null;
 
   Tick get end => start + duration;
-  Tick get sourceOut => sourceIn + duration;
+
+  /// How much of the source this clip consumes, which is its timeline length
+  /// times its speed. The same as [duration] for every clip nobody retimed.
+  Tick get sourceDuration => speed.isRetimed
+      ? Tick((duration.raw * speed.rate).round())
+      : duration;
+
+  Tick get sourceOut => sourceIn + sourceDuration;
   TimeSpan get span => TimeSpan(start, duration);
-  TimeSpan get sourceSpan => TimeSpan(sourceIn, duration);
+  TimeSpan get sourceSpan => TimeSpan(sourceIn, sourceDuration);
 
   /// Maps a timeline instant to the corresponding instant in the source.
   /// Callers must have checked [span].contains first.
-  Tick sourceTimeAt(Tick timelineTime) => sourceIn + (timelineTime - start);
+  ///
+  /// The engine computes exactly this — `source_time_at` in
+  /// `engine/src/vd_engine.c` and again in `engine/src/vd_audio_renderer.c`,
+  /// which have to agree with each other and with this: a frame and the sound
+  /// under it disagreeing about where in the file they are is the one bug in a
+  /// video editor everybody can hear.
+  Tick sourceTimeAt(Tick timelineTime) =>
+      sourceIn + _scaled(timelineTime - start);
 
   /// How loud this clip is [offset] ticks in: the fader, mute, the fades and
   /// the volume line together. The one place that knows the clip's own
-  /// [sourceIn], which the volume line is measured against.
-  double gainAt(Tick offset) =>
-      audio.gainAt(offset, duration, sourceIn: sourceIn);
+  /// [sourceIn], which the volume line is measured against — and its speed,
+  /// which decides how fast the window crosses the curve. A fade is measured
+  /// on the timeline and a volume point in the source, so retiming a clip
+  /// moves one of the two and not the other.
+  double gainAt(Tick offset) => audio.gainAt(offset, duration,
+      sourceIn: sourceIn, speed: speed.rate);
+
+  Tick _scaled(Tick timelineDelta) => speed.isRetimed
+      ? Tick((timelineDelta.raw * speed.rate).round())
+      : timelineDelta;
 
   Clip copyWith({
     String? id,
@@ -1574,6 +1706,7 @@ final class Clip {
     Tick? start,
     Tick? duration,
     Tick? sourceIn,
+    ClipSpeed? speed,
     String? label,
     bool? enabled,
     ClipTransform? transform,
@@ -1590,6 +1723,7 @@ final class Clip {
         start: start ?? this.start,
         duration: duration ?? this.duration,
         sourceIn: sourceIn ?? this.sourceIn,
+        speed: speed ?? this.speed,
         label: label ?? this.label,
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
@@ -1609,21 +1743,38 @@ final class Clip {
 
   /// Trims the head. Positive [delta] shortens the clip from the left, which
   /// moves both [start] and [sourceIn]; the tail stays put.
+  ///
+  /// [delta] is timeline ticks, so on a retimed clip the source window opens
+  /// by a different amount than the clip shortens by — half a second off the
+  /// front of a 2x clip is a second of the file.
   Clip trimHeadBy(Tick delta) => _withDuration(
         duration - delta,
         start: start + delta,
-        sourceIn: sourceIn + delta,
+        sourceIn: sourceIn + _scaled(delta),
       );
 
   /// Trims the tail. Positive [delta] lengthens the clip to the right.
   Clip trimTailBy(Tick delta) => _withDuration(duration + delta);
 
+  /// Plays the clip at a different speed, over the length that implies.
+  ///
+  /// Speed and length are one decision, not two: the frames the clip shows do
+  /// not change, so playing them faster is the same thing as taking less
+  /// timeline. [newDuration] is what the caller worked out — the command
+  /// bounds it against a frame, the source and the lane — and passing it in
+  /// rather than deriving it here is what lets a clamp on the length and the
+  /// speed it belongs to arrive as one edit.
+  Clip retimedTo(ClipSpeed newSpeed, Tick newDuration) =>
+      _withDuration(newDuration, speed: newSpeed);
+
   /// Every change of length goes through here, so that fades longer than the
   /// clip they are on cannot outlive the trim that made them so.
-  Clip _withDuration(Tick newDuration, {Tick? start, Tick? sourceIn}) =>
+  Clip _withDuration(Tick newDuration,
+          {Tick? start, Tick? sourceIn, ClipSpeed? speed}) =>
       copyWith(
         start: start,
         sourceIn: sourceIn,
+        speed: speed,
         duration: newDuration,
         audio: audio.clampedTo(newDuration),
         // For the same reason the fades are clamped: an entrance longer than
@@ -1644,6 +1795,7 @@ final class Clip {
       other.start == start &&
       other.duration == duration &&
       other.sourceIn == sourceIn &&
+      other.speed == speed &&
       other.label == label &&
       other.enabled == enabled &&
       other.transform == transform &&
@@ -1656,13 +1808,14 @@ final class Clip {
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, label, enabled, transform, color, audio, animation,
+      sourceIn.raw, speed, label, enabled, transform, color, audio, animation,
       transition, text, shape);
 
   @override
   String toString() => isGenerated
       ? 'Clip($id, ${start.raw}+${duration.raw}, ${text ?? shape})'
-      : 'Clip($id, ${start.raw}+${duration.raw}, src ${sourceIn.raw})';
+      : 'Clip($id, ${start.raw}+${duration.raw}, src ${sourceIn.raw}'
+          '${speed.isNormal ? '' : ' @${speed.rate}x'})';
 }
 
 /// The longest a clip may be trimmed given the source it points at.
@@ -1672,5 +1825,12 @@ final class Clip {
 /// which have no source at all.
 Tick maxDurationFor(Clip clip, MediaAsset? asset) {
   if (asset == null || asset.probe.kind.isEndless) return Tick.zero;
-  return asset.probe.duration - clip.sourceIn;
+  final remaining = asset.probe.duration.raw - clip.sourceIn.raw;
+  if (remaining <= 0) return Tick.zero;
+  // On the *timeline*, which is what every caller is bounding. A clip at 2x
+  // reaches the end of its file in half the time, and one at half speed takes
+  // twice as long to get there.
+  return clip.speed.isRetimed
+      ? Tick((remaining / clip.speed.rate).floor())
+      : Tick(remaining);
 }
