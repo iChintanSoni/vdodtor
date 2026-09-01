@@ -728,6 +728,128 @@ void main() {
     });
   });
 
+  group('colour', () {
+    Future<void> scrollToColour(WidgetTester tester) async {
+      await tester.scrollUntilVisible(find.text('COLOUR'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    /// The readout beside one named slider. Scoped to its own row, because
+    /// "0%" is what most of the transform's sliders say too.
+    String readout(WidgetTester tester, String label) => tester
+        .widgetList<Text>(find.descendant(
+          of: find.ancestor(
+              of: find.text(label), matching: find.byType(Row)).first,
+          matching: find.byType(Text),
+        ))
+        .last
+        .data!;
+
+    testWidgets('a clip with a picture gets all five sliders', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      for (final label in [
+        'Temperature',
+        'Tint',
+        'Brightness',
+        'Contrast',
+        'Saturation',
+      ]) {
+        expect(find.text(label), findsOneWidget);
+      }
+    });
+
+    testWidgets('they are offered in the order they are applied',
+        (tester) async {
+      // Fix the light, set the level, set the contrast, and judge the colour
+      // last — the order anybody grades in, and the order the engine composes
+      // them in. A panel in some other order teaches the wrong habit.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      double top(String label) =>
+          tester.getTopLeft(find.text(label)).dy;
+      expect(top('Temperature'), lessThan(top('Tint')));
+      expect(top('Tint'), lessThan(top('Brightness')));
+      expect(top('Brightness'), lessThan(top('Contrast')));
+      expect(top('Contrast'), lessThan(top('Saturation')));
+    });
+
+    testWidgets('a caption does not get them', (tester) async {
+      // A caption is drawn from colours the sections above already offer, and
+      // a saturation slider fighting a colour picker is two controls for one
+      // decision.
+      controller.addTextClip();
+      await pumpInspector(tester);
+      expect(find.text('COLOUR'), findsNothing);
+    });
+
+    testWidgets('dragging one grades the clip', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      final slider = find.ancestor(
+        of: find.text('Saturation'),
+        matching: find.byType(Column),
+      );
+      await tester.drag(
+          find.descendant(of: slider.first, matching: find.byType(Slider)),
+          const Offset(-40, 0));
+      await tester.pumpAndSettle();
+
+      expect(store.project.clipById('b')!.color.saturation, lessThan(0));
+      expect(store.project.clipById('b')!.color.isNeutral, isFalse);
+    });
+
+    testWidgets('a neutral grade reads as nothing changed', (tester) async {
+      // "0%" rather than "100%": a grade is a change, and the number should be
+      // the size of the change.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      for (final label in ['Temperature', 'Brightness', 'Saturation']) {
+        expect(readout(tester, label), '0%');
+      }
+    });
+
+    testWidgets('an off-centre slider says which way', (tester) async {
+      store.run(const SetClipColor(
+          'b', ClipColor(temperature: 0.5, saturation: -0.25)));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      expect(readout(tester, 'Temperature'), '+50%');
+      expect(readout(tester, 'Saturation'), '-25%');
+    });
+
+    testWidgets('the reset only appears once there is a grade', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      // The transform's own Reset is the other one, and it is not showing
+      // either: an untouched clip has nothing to put back.
+      expect(find.text('Reset'), findsNothing);
+
+      store.run(const SetClipColor('b', ClipColor(contrast: 0.4)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToColour(tester);
+      expect(find.text('Reset'), findsOneWidget);
+
+      await tester.tap(find.text('Reset'));
+      await tester.pumpAndSettle();
+      expect(store.project.clipById('b')!.color, ClipColor.neutral);
+    });
+  });
+
   group('animation', () {
     Future<void> scrollToAnimate(WidgetTester tester) async {
       await tester.scrollUntilVisible(find.text('ANIMATE'), 120,

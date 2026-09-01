@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "vdodtor/vd_color.h"
 #include "vdodtor/vd_decoder.h"
 #include "vdodtor/vd_time.h"
 
@@ -126,6 +127,19 @@ typedef struct {
   // Where this layer goes and how much of it shows. A zeroed transform is the
   // identity, so this may be ignored entirely.
   VdTransform transform;
+
+  // What this layer does to its own colour: brightness, contrast, saturation,
+  // temperature, tint. A zeroed value is the neutral grade, so this is another
+  // field a caller can leave alone — see vd_color.h.
+  //
+  // Per layer rather than per frame, and that is the decision. A grade on the
+  // frame would be an effect on the *project*, which is a different feature
+  // and a worse one to have by accident: a shot that needed warming would warm
+  // the caption over it and the shot on the lane beneath it too. Here it
+  // travels with the clip, the way its opacity and its transform do, and a
+  // blur-filled clip's backdrop is graded with it because the backdrop is the
+  // same picture.
+  VdColorAdjust color;
 } VdLayer;
 
 // Creates a compositor rendering `width` x `height` BGRA frames.

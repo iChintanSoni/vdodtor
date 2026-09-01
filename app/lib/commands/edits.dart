@@ -123,6 +123,45 @@ final class SetClipTransform extends EditCommand {
       next is SetClipTransform && next.clipId == clipId ? next : null;
 }
 
+/// Grades a clip: brightness, contrast, saturation, temperature, tint.
+///
+/// Merged on the clip id like [SetClipTransform], and it has to be: the
+/// inspector's five sliders are one decision about how a shot should look, and
+/// an undo stack with a step for every pixel of every drag is one nobody can
+/// walk back through.
+///
+/// Clamped on the way in, so the document can never hold a value the sliders
+/// cannot show. The engine clamps as well — the two are not a duplication:
+/// this one keeps the *panel* honest, and that one keeps the picture honest
+/// about a project file this version has never seen.
+final class SetClipColor extends EditCommand {
+  const SetClipColor(this.clipId, this.color);
+
+  final String clipId;
+  final ClipColor color;
+
+  @override
+  String get label => 'Grade clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    final next = color.clamped();
+    if (clip.color == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(color: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipColor && next.clipId == clipId ? next : null;
+}
+
 /// Sets a clip's volume, mute and fades.
 ///
 /// The audio counterpart of [SetClipTransform], and merged the same way: a

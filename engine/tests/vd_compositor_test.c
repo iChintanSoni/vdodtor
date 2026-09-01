@@ -3,6 +3,7 @@
 // output that looks entirely plausible until someone compares it to another
 // editor.
 #include "vd_check.h"
+#include "vdodtor/vd_color.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_decoder.h"
 
@@ -574,6 +575,175 @@ static void test_a_reveal_cuts_the_layer_at_a_hard_edge(void) {
   vd_frame_release(&picture);
 }
 
+// --- colour grading ---------------------------------------------------------
+// The arithmetic that decides what a grade means is pinned in vd_color_test.c,
+// without a GPU. What is left for here is the part only a rendered pixel can
+// answer: that the matrix reaches the fragment at all, on each of the two
+// paths a layer can take through the shader, and that a layer nobody graded is
+// untouched.
+
+// The grey the fixture's colour desaturates to, by BT.709 luma. Worked out
+// here rather than asserted as a magic number, so the fixture and the weights
+// stay the only two things this depends on.
+#define SOLID_GREY \
+  (int)(VD_LUMA_R * SOLID_R + VD_LUMA_G * SOLID_G + VD_LUMA_B * SOLID_B + 0.5f)
+
+// A zeroed grade is the neutral one, so a caller that has never heard of
+// colour can memset its layers — which is every caller in this file, and the
+// reason none of them had to change.
+static void test_a_zeroed_grade_leaves_the_picture_alone(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "a zeroed grade grades nothing");
+
+    // And spelled out, which has to come to the same thing.
+    layer.color = vd_color_neutral();
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "the neutral grade grades nothing");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// A decoded frame arrives as YCbCr and is graded after the conversion to RGB,
+// which is the only place it can be: the sliders are defined on colour, and
+// YCbCr is not colour until the matrix has been applied to it.
+static void test_a_grade_reaches_a_decoded_frame(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+
+    layer.color = vd_color_neutral();
+    layer.color.saturation = -1.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_GREY, SOLID_GREY, SOLID_GREY,
+                   "desaturated to its own luma");
+
+    // Brightness is a gain, so a colour at a fifth of full stays at its own
+    // ratios: the green half of the fixture rises and the red stays at zero.
+    layer.color = vd_color_neutral();
+    layer.color.brightness = -1.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, 0, 0, 0, "brightness all the way down");
+
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// A caption, a shape and a sticker arrive already premultiplied, so the grade
+// has to be undone and redone around the alpha rather than applied through it.
+// The number that says it was done right is not the graded colour — it is how
+// much of the picture underneath still shows, which must not have moved at
+// all: a grade changes what colour a pixel is, not whether it is there.
+static void test_a_grade_reaches_a_premultiplied_layer(void) {
+  VdFrame picture;
+  if (!first_frame("solid_sd_601.mp4", &picture)) return;
+
+  // Red at half alpha, stored premultiplied: 128 over 128.
+  CVPixelBufferRef overlay = generated_layer(200, 200, 0, 0, 128, 128);
+  VD_CHECK(overlay != NULL);
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c && overlay) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    memset(&layers[1], 0, sizeof(layers[1]));
+    layers[1].pixel_buffer = overlay;
+    layers[1].format = VD_PIXEL_BGRA;
+    layers[1].fit = VD_FIT_STRETCH;
+    layers[1].opacity = 1.0f;
+
+    // Half of the overlay's red plus half of the picture underneath it.
+    const float through = 1.0f - 128.0f / 255.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, 128, (int)(SOLID_G * through),
+                   (int)(SOLID_B * through), "ungraded, half transparent");
+
+    // Desaturated, the overlay's *straight* colour is full red, so it greys to
+    // red's own luma and is premultiplied back down by the same alpha. The
+    // picture's contribution is unchanged, which is the assertion that
+    // matters: grading through the alpha instead of around it would have
+    // changed how much of it shows.
+    layers[1].color = vd_color_neutral();
+    layers[1].color.saturation = -1.0f;
+    const int grey = (int)(VD_LUMA_R * 255.0f * 128.0f / 255.0f + 0.5f);
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, grey, grey + (int)(SOLID_G * through),
+                   grey + (int)(SOLID_B * through),
+                   "graded, and just as transparent");
+
+    vd_compositor_destroy(c);
+  }
+  if (overlay) CVPixelBufferRelease(overlay);
+  vd_frame_release(&picture);
+}
+
+// A blur-filled clip is drawn twice — its backdrop into an offscreen and then
+// the picture over it — so a grade has to reach the backdrop as well, or a
+// warmed shot sits in a pillar of the colour it used to be. And exactly once:
+// grading the offscreen and then grading it again on the way to the output
+// would leave the bars twice as far from neutral as the picture in them.
+//
+// A blurred copy of a flat colour is that colour, so the two land on the same
+// number and either mistake shows up as a difference between them.
+static void test_a_grade_reaches_the_blur_fill_backdrop(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;  // 4:3
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);  // 16:9
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    layer.color = vd_color_neutral();
+    layer.color.saturation = -1.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    check_pixel_is(c, 320, 180, SOLID_GREY, SOLID_GREY, SOLID_GREY,
+                   "the picture is graded");
+    check_pixel_is(c, 20, 180, SOLID_GREY, SOLID_GREY, SOLID_GREY,
+                   "and the bars are graded with it, once");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// One layer's grade is its own. The layer beside it on the frame is a
+// different clip, and a grade that leaked across lanes would be an effect on
+// the project wearing a clip's clothes.
+static void test_a_grade_belongs_to_one_layer(void) {
+  VdFrame picture;
+  if (!first_frame("solid_sd_601.mp4", &picture)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layers[2];
+    // The graded one underneath, in the left half; an ungraded copy over the
+    // right half, so one render answers for both.
+    layers[0] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    layers[0].color = vd_color_neutral();
+    layers[0].color.saturation = -1.0f;
+    layers[1] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    layers[1].reveal.left = 0.5f;
+
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, SOLID_GREY, SOLID_GREY, SOLID_GREY,
+                   "the graded layer");
+    check_pixel_is(c, 150, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "and the one beside it, untouched");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&picture);
+}
+
 static void test_a_null_layer_is_skipped_not_crashed(void) {
   VdCompositor* c = vd_compositor_create(160, 160, NULL);
   if (!c) return;
@@ -1137,6 +1307,11 @@ int main(void) {
   test_layers_stack_bottom_to_top();
   test_a_generated_layer_composites_over_the_picture();
   test_a_reveal_cuts_the_layer_at_a_hard_edge();
+  test_a_zeroed_grade_leaves_the_picture_alone();
+  test_a_grade_reaches_a_decoded_frame();
+  test_a_grade_reaches_a_premultiplied_layer();
+  test_a_grade_reaches_the_blur_fill_backdrop();
+  test_a_grade_belongs_to_one_layer();
   test_a_null_layer_is_skipped_not_crashed();
   test_output_and_png();
   test_repeated_renders_stay_correct();

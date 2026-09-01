@@ -54,6 +54,7 @@ typedef struct {
   float opacity;
   VdFitMode fit;
   VdTransform transform;
+  VdColorAdjust color;
   VdClipAnim anim;
   bool has_video;
 
@@ -633,6 +634,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->fit = VD_FIT_STRETCH;
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
+      layer->color = clip->color;
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -668,6 +670,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->fit = clip->fit;
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
+      layer->color = clip->color;
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -703,6 +706,9 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->fit = clip->fit;
     layer->opacity = clip->opacity;
     layer->transform = clip->transform;
+    // Straight across, not composed with anything: unlike the animation and
+    // the transition below it, a grade does not change through the clip.
+    layer->color = clip->color;
     apply_anim(layer, &anim);
     if (has_head) apply_transition(layer, &head, true);
     if (has_tail) apply_transition(layer, &tail, false);
@@ -974,6 +980,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->opacity = src->opacity;
     dst->fit = src->fit;
     dst->transform = src->transform;
+    dst->color = src->color;
     dst->has_video = src->has_video;
     dst->is_sticker = src->sticker;
     dst->anim = src->anim;

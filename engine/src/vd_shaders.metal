@@ -37,6 +37,17 @@ struct VdLayerUniforms {
   // bottom. Zeroed cuts nothing, so a layer that says nothing about it draws
   // whole — which is every layer but the incoming half of a wipe.
   float4 hide;
+  // The colour grade: one row of a 3x3 matrix per float4, with that row's
+  // offset in w. Five sliders composed on the CPU into `rgb' = m*rgb + b` —
+  // see vd_color.h, where the arithmetic that decides what a grade *means*
+  // lives and can be tested without a GPU.
+  float4 grade[3];
+  // 0 for a layer nobody graded, and then the multiply-add is skipped
+  // entirely. Not an optimisation — nine multiplies is nothing here — but a
+  // guarantee: an ungraded fragment takes the path it took before this shader
+  // learned about grading, bit for bit, so the golden frames cannot move for
+  // a feature nobody used.
+  uint graded;
 };
 
 struct VertexOut {
@@ -115,6 +126,29 @@ static inline float3 ycbcr_to_rgb(float y, float cb, float cr, float kr,
   return clamp(rgb, 0.0, 1.0);
 }
 
+// The grade, on a straight — not premultiplied — RGB triple.
+static inline float3 vd_grade(float3 rgb, constant VdLayerUniforms& u) {
+  if (u.graded == 0u) return rgb;
+  const float3 graded = float3(dot(u.grade[0].xyz, rgb) + u.grade[0].w,
+                               dot(u.grade[1].xyz, rgb) + u.grade[1].w,
+                               dot(u.grade[2].xyz, rgb) + u.grade[2].w);
+  return clamp(graded, 0.0, 1.0);
+}
+
+// The same, for a texel that arrives premultiplied — a caption, a shape, a
+// sticker, a blur-fill backdrop.
+//
+// Undone and redone around the grade rather than applied through it: the
+// matrix is affine, so multiplying the alpha through it would put the offset
+// row somewhere it does not belong and give a half-transparent pixel half a
+// contrast lift. The alpha itself is never touched — a grade changes what
+// colour a pixel is, not whether it is there.
+static inline float4 vd_grade_premultiplied(float4 texel,
+                                            constant VdLayerUniforms& u) {
+  if (u.graded == 0u || texel.a <= 0.0) return texel;
+  return float4(vd_grade(texel.rgb / texel.a, u) * texel.a, texel.a);
+}
+
 constexpr sampler vd_sampler(filter::linear, address::clamp_to_edge);
 
 // VideoToolbox output: Y plane plus interleaved CbCr.
@@ -126,6 +160,7 @@ fragment float4 vd_fragment_nv12(VertexOut in [[stage_in]],
   float y = luma.sample(vd_sampler, in.uv).r;
   float2 cbcr = chroma.sample(vd_sampler, in.uv).rg;
   float3 rgb = ycbcr_to_rgb(y, cbcr.x, cbcr.y, u.kr, u.kb, u.full_range != 0u);
+  rgb = vd_grade(rgb, u);
   // Premultiplied, to match the blend state.
   return float4(rgb * u.opacity, u.opacity);
 }
@@ -140,7 +175,7 @@ fragment float4 vd_fragment_yuv420p(VertexOut in [[stage_in]],
   float y = luma.sample(vd_sampler, in.uv).r;
   float u_ = cb.sample(vd_sampler, in.uv).r;
   float v_ = cr.sample(vd_sampler, in.uv).r;
-  float3 rgb = ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u);
+  float3 rgb = vd_grade(ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u), u);
   return float4(rgb * u.opacity, u.opacity);
 }
 
@@ -169,7 +204,7 @@ fragment float4 vd_fragment_texture(VertexOut in [[stage_in]],
                                     constant VdLayerUniforms& u [[buffer(0)]],
                                     texture2d<float> source [[texture(0)]]) {
   if (vd_hidden(in.quad, u.hide)) discard_fragment();
-  const float4 texel = source.sample(vd_sampler, in.uv);
+  const float4 texel = vd_grade_premultiplied(source.sample(vd_sampler, in.uv), u);
   // Already premultiplied by the pass that produced it, so opacity scales
   // both halves together.
   return texel * u.opacity;

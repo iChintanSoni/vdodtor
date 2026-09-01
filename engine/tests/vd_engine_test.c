@@ -31,6 +31,10 @@ static const char* fixture(const char* name) {
 static const int GREEN[3] = {0, 200, 100};   // solid_sd_601.mp4
 static const int ORANGE[3] = {200, 100, 0};  // solid_sd_orange.mp4
 static const int BLACK[3] = {0, 0, 0};
+// The two of them fully desaturated, by BT.709 luma. Used by the grading
+// tests, where the assertion is that a clip's colour arrived rather than what
+// the weights are — vd_color_test.c owns that.
+static const int ORANGE_GREY[3] = {114, 114, 114};
 
 // quadrants_cw90.mp4: four flat colours, one per quarter of the picture.
 static const int QUAD_RED[3] = {192, 0, 0};
@@ -1286,6 +1290,120 @@ static VdTimeline one_clip_timeline(VdTimelineClip* clip, const char* file) {
   return timeline;
 }
 
+// --- colour grading ---------------------------------------------------------
+// What a grade *means* is pinned in vd_color_test.c and that it reaches a
+// fragment is pinned in vd_compositor_test.c. What is left for here is the
+// engine's own half: that five numbers on a VdTimelineClip arrive on the
+// layer, that they are the same five at every instant of the clip, and that
+// dragging a slider does not cost a decoder.
+
+// The grey the green fixture desaturates to, by BT.709 luma.
+static const int GREEN_GREY[3] = {150, 150, 150};
+
+static void test_a_grade_on_a_clip_reaches_the_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.color = vd_color_neutral();
+  clip.color.saturation = -1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN_GREY, "a graded clip");
+
+  // And back off again, so the grade is a property of the timeline rather
+  // than something the engine keeps once it has seen it.
+  clip.color = vd_color_neutral();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "and ungraded again");
+
+  vd_engine_destroy(e);
+}
+
+// The property that separates a grade from the animation and the transition
+// beside it on the same struct: those are functions of time, and this is not.
+// Every instant of the clip is graded identically, so there is no head, no
+// tail and nothing to seek into the middle of.
+static void test_a_grade_does_not_change_through_the_clip(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.color = vd_color_neutral();
+  clip.color.saturation = -1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  const VdTick at[] = {0, SECOND / 2, SECOND, 2 * SECOND - 1};
+  for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); i++) {
+    vd_engine_seek(e, at[i]);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+    check_frame_is(e, GREEN_GREY, "the same grade at every instant");
+  }
+
+  vd_engine_destroy(e);
+}
+
+// One clip's grade is its own. Two clips on one lane, one graded: the frame
+// changes at the cut and nowhere else.
+static void test_a_grade_belongs_to_the_clip_that_carries_it(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = two_clip_timeline(clips);
+  clips[1].color = vd_color_neutral();
+  clips[1].color.saturation = -1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "the first clip, ungraded");
+
+  vd_engine_seek(e, SECOND + SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, ORANGE_GREY, "and the second, graded");
+
+  vd_engine_destroy(e);
+}
+
+// A slider is dragged, so this is the commonest edit there is after nudging a
+// clip: it arrives as a whole new timeline sixty times a second. Throwing the
+// decoders away each time would make the preview stutter for the whole length
+// of the drag — which is exactly when the user is trying to look at it.
+static void test_dragging_a_grade_keeps_the_decoders(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  VdTimeline timeline = two_clip_timeline(clips);
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_seek(e, 0);
+  vd_engine_render_now(e);
+  vd_engine_seek(e, SECOND);
+  vd_engine_render_now(e);
+
+  VdEngineStats before;
+  vd_engine_stats(e, &before);
+  VD_CHECK_EQ(before.open_decoders, 2);
+
+  for (int i = 1; i <= 10; i++) {
+    clips[0].color = vd_color_neutral();
+    clips[0].color.brightness = (float)i / 20.0f;
+    VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  }
+
+  VdEngineStats after;
+  vd_engine_stats(e, &after);
+  VD_CHECK_EQ(after.open_decoders, 2);
+
+  vd_engine_destroy(e);
+}
+
 static void test_an_entrance_fades_the_picture_up_from_black(void) {
   VdEngine* e = make_engine();
   if (!e) return;
@@ -1877,6 +1995,10 @@ int main(void) {
   test_a_transition_with_no_cut_does_nothing();
   test_a_transition_does_not_reach_across_lanes();
   test_a_seek_into_a_transition_matches_playing_into_it();
+  test_a_grade_on_a_clip_reaches_the_frame();
+  test_a_grade_does_not_change_through_the_clip();
+  test_a_grade_belongs_to_the_clip_that_carries_it();
+  test_dragging_a_grade_keeps_the_decoders();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

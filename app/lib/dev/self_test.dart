@@ -948,6 +948,79 @@ Future<void> runAnimationSelfTest(
   stdout.writeln('[selftest] animation: frames in ${out.path}');
 }
 
+/// A grade on a real shot, dumped one slider at a time.
+///
+/// The engine's own tests pin the arithmetic against numbers and one graded
+/// pixel against a flat fixture. What neither can answer is whether the throw
+/// of a slider is *usable* — whether full warmth is a correction or a
+/// sunburn, whether full contrast still has a picture in it — and that is a
+/// question only a frame of real footage asks. So this puts each slider at
+/// both of its ends on the first video clip and dumps a frame of each.
+///
+/// It also prints the layer count and the decoder count around the drag. Both
+/// should be flat: a grade is not an extra layer, and a slider that reopened
+/// the file on every value would stutter the preview for the whole length of
+/// the drag — which is exactly when the user is trying to look at it.
+Future<void> runColorSelfTest(
+    PreviewEngine engine, DocumentStore store) async {
+  final clip = store.project.mainTrack.clips
+      .where((c) => !c.isGenerated)
+      .firstOrNull;
+  if (clip == null) {
+    stdout.writeln('[selftest] colour: nothing on the main lane to grade');
+    return;
+  }
+
+  // Somewhere inside the clip, and away from its head so a transition or an
+  // entrance left by an earlier pass cannot be what the frame shows.
+  final at = clip.start.raw + clip.duration.raw ~/ 2;
+  engine.seek(at);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_colour_');
+  engine.dumpPng('${out.path}/neutral.png');
+  final before = engine.stats;
+
+  const grades = <String, ClipColor>{
+    'warm': ClipColor(temperature: 1),
+    'cool': ClipColor(temperature: -1),
+    'magenta': ClipColor(tint: 1),
+    'green': ClipColor(tint: -1),
+    'bright': ClipColor(brightness: 0.5),
+    'dark': ClipColor(brightness: -0.5),
+    'punchy': ClipColor(contrast: 0.5),
+    'flat': ClipColor(contrast: -0.5),
+    'vivid': ClipColor(saturation: 1),
+    'mono': ClipColor(saturation: -1),
+    // The look somebody would actually reach for, and the one that says the
+    // five compose into something rather than five things fighting.
+    'graded': ClipColor(
+        temperature: 0.25, brightness: 0.1, contrast: 0.3, saturation: 0.2),
+  };
+
+  for (final entry in grades.entries) {
+    store.endGesture();
+    store.run(SetClipColor(clip.id, entry.value));
+    store.endGesture();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    engine.dumpPng('${out.path}/${entry.key}.png');
+  }
+
+  final after = engine.stats;
+  stdout.writeln('[selftest] colour: ${grades.length} grades on ${clip.id} '
+      'at $at — layers ${before.activeLayers} then ${after.activeLayers}, '
+      'decoders ${before.openDecoders} then ${after.openDecoders}');
+
+  // And back to the shot as it was shot, so the passes after this one see the
+  // timeline they expect rather than one with a look left on it.
+  store.endGesture();
+  store.run(SetClipColor(clip.id, ClipColor.neutral));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/neutral_again.png');
+  stdout.writeln('[selftest] colour: frames in ${out.path}');
+}
+
 /// A playhead that never moves. The timeline needs one to draw; nothing here
 /// is playing.
 class _StillTransport implements TimelineTransport {

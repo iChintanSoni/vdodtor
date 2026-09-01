@@ -17,7 +17,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > keyboard reaches all of it.**
 >
 > **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
-> animated stickers over them, make them all arrive, and join one shot to the next.** A caption is a clip with no
+> animated stickers over them, make them all arrive, join one shot to the next, and grade
+> the colour of any of them.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -52,6 +53,19 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > long it may be, and it lands on an overlay lane rather than in the magnetic main one.
 > Measured in the running app: opened once, and **thirty renders across one loop cost four
 > frame changes**.
+>
+> Shots can now be **graded**: brightness, contrast, saturation, temperature and
+> tint, per clip, on the GPU. All five are affine, so they compose into one 3x3
+> matrix and an offset on the CPU and cost the shader a single multiply-add —
+> which puts the whole of what a grade *means* in plain C that is tested against
+> numbers rather than pixels, and leaves Metal holding a matrix multiply. Every
+> slider is −1..1 with 0 neutral, so a zeroed struct is the ungraded shot and an
+> ungraded fragment takes the path it took before the feature existed, bit for
+> bit. Brightness is a gain rather than a lift so black stays black, and the
+> white balance is normalised against BT.709 luma so warming a shot does not
+> also brighten it. Measured in the running app: eleven grades, layers and
+> decoders both flat, and a fully desaturated shot reads 151 where the luma of
+> its own colour is 151.1 — with the sticker on the lane above it untouched.
 >
 > And it can now draw **shapes**: a rectangle, an ellipse, a line and an arrow, with a
 > fill, a stroke, a corner and a shadow — ⌘R at the playhead, on the lanes the captions
@@ -1140,7 +1154,55 @@ start to finish without touching another editor; undo works through the whole se
       over it.
 
 ### Effects
-- [ ] Color adjust on GPU: brightness, contrast, saturation, temperature, tint
+- [x] Color adjust on GPU: brightness, contrast, saturation, temperature, tint
+      — five sliders, and the decision that matters is that **all five are one
+      matrix**. Every one of them is an affine operation on RGB: a gain, a
+      scale about a pivot, a lean towards grey, a lean towards one end of the
+      spectrum. So they compose into a single 3x3 and an offset, worked out
+      once per layer per frame on the CPU, and the shader does one
+      multiply-add and knows nothing about sliders.
+      That is what makes the part worth testing testable. `vd_color.c` is
+      plain C with no platform dependency — like `vd_anim.c` and
+      `vd_transition.c` — so what a grade *means* is asserted against numbers
+      with no GPU in the room, and what is left in Metal is a matrix multiply
+      a test could tell you nothing about. It also draws the line the LUT will
+      need: a LUT is precisely the grade that is **not** affine, which is why
+      it arrives as a lookup table and not as five numbers.
+      **Every slider runs −1..1 with 0 the shot you shot.** One range for all
+      five rather than a natural range each, so the panel is readable at a
+      glance — and so a zeroed struct is the neutral grade, which is what lets
+      a caller memset its layers and never learn the field exists. The
+      compositor asks `vd_color_is_neutral` before it does anything, so an
+      ungraded fragment takes the arithmetic it took before this existed, bit
+      for bit; the golden frames did not move.
+      Two decisions inside the maths are worth the ink. **Brightness is a gain,
+      not a lift** — adding a constant raises the blacks to grey, which is the
+      faded look and not what anybody means by "brighter". And **warming a shot
+      must not also brighten it**: raising red and lowering blue by the same
+      amount raises the picture's luma, because red weighs three times what
+      blue does, so the channel gains are divided through by the luma of the
+      white they produce. Without that, a temperature slider is an exposure
+      slider wearing a hat and the user fights it with the brightness one.
+      They compose in the order anybody grades in — fix the light, set the
+      level, set the contrast, judge the colour last — and the inspector offers
+      them in that order, because a panel in another order teaches the wrong
+      habit.
+      **A grade is per layer, not per frame.** A grade on the frame would be an
+      effect on the *project*: a shot that needed warming would warm the
+      caption over it and the clip on the lane beneath it too. Here it travels
+      with the clip the way its opacity does. It reaches the premultiplied
+      layers as well — a sticker can be tinted — undone and redone around the
+      alpha rather than applied through it, and a blur-filled clip's backdrop
+      is graded with it *once*, because grading the offscreen and then grading
+      it again on the way out would leave the bars twice as far from neutral
+      as the picture in them.
+      Measured in the running app at 1920x1080: eleven grades on one shot,
+      **layers flat at 2 and decoders flat at 5** through all of them — a
+      slider that reopened the file on every value would stutter the preview
+      for the whole drag. Fully desaturated, **91% of the frame is exactly
+      grey** and the corner reads 151 where BT.709 luma of the source's
+      (0,201,101) is 151.1; the other 9% is a single 432x432 square in the
+      middle, which is the sticker on the overlay lane, ungraded.
 - [ ] LUT filter presets (`.cube` loading, applied in linear working space)
 
 ### Speed

@@ -37,7 +37,8 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
-           vd_transition (how one clip becomes the next), vd_probe,
+           vd_transition (how one clip becomes the next),
+           vd_color (five grading sliders as one matrix), vd_probe,
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
@@ -115,6 +116,31 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A grade is five sliders and one matrix.** Brightness, contrast, saturation,
+  temperature and tint are all affine on RGB, so `vd_color_transform` composes them
+  into one 3x3 and an offset on the CPU and the shader does a single multiply-add.
+  That is what keeps the meaning of a grade in plain C, testable with no GPU, the way
+  `vd_anim` and `vd_transition` are — and it is the line the LUT work will need: a LUT
+  is the grade that *cannot* be a matrix, which is why it is a lookup table.
+  Every slider is −1..1 with 0 neutral, so a zeroed `VdColorAdjust` is the ungraded
+  shot; the compositor checks `vd_color_is_neutral` first so an ungraded fragment takes
+  the arithmetic it took before the feature existed, and the goldens did not move.
+  **Not mirrored in Dart**, for `vd_anim`'s reason: nothing in the app draws a grade.
+- **Brightness is a gain, and a white balance keeps its level.** Adding a constant
+  raises the blacks to grey — the faded look, not "brighter" — so brightness multiplies
+  and black stays black. And temperature's channel gains are divided through by the
+  BT.709 luma of the white they produce: red weighs three times what blue does, so
+  raising one and lowering the other brightens the picture, and a temperature slider
+  that does that is an exposure slider the user fights with the brightness one.
+  Saturation measures grey with BT.709 weights whatever matrix the source was coded in —
+  by then the picture is RGB, and it is the project's idea of grey that matters.
+- **A grade belongs to a layer, and reaches every kind of one.** Per frame it would be
+  an effect on the *project*: warming a shot would warm the caption over it. On a
+  premultiplied layer — caption, shape, sticker — it is undone and redone around the
+  alpha rather than applied through it, because the map is affine and pushing alpha
+  through the offset row gives a half-transparent pixel half a contrast lift. A
+  blur-filled clip's backdrop is graded *once*, inside the offscreen pass and not again
+  at the composite, or the bars end up twice as far from neutral as the picture in them.
 - **A transition's overlap is made by the engine, never by the document.** Two clips
   that meet at a cut are butt-joined and non-overlapping in `Track` — `Track.clipAt`
   binary-searches on that, and so do hit testing, split and insert — so the engine
