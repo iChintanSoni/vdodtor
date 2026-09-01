@@ -1199,11 +1199,10 @@ void vd_engine_seek(VdEngine* e, VdTick position) {
   pthread_mutex_unlock(&e->lock);
 }
 
-int32_t vd_engine_render_now(VdEngine* e) {
+int32_t vd_engine_render_at(VdEngine* e, VdTick position) {
   if (!e) return VD_ERR_INVALID_ARG;
   pthread_mutex_lock(&e->lock);
   const bool ready = e->compositor != NULL;
-  const VdTick position = current_position(e);
   pthread_mutex_unlock(&e->lock);
   if (!ready) return VD_ERR_UNSUPPORTED;
 
@@ -1213,6 +1212,14 @@ int32_t vd_engine_render_now(VdEngine* e) {
 
   notify_frame(e);
   return result;
+}
+
+int32_t vd_engine_render_now(VdEngine* e) {
+  if (!e) return VD_ERR_INVALID_ARG;
+  pthread_mutex_lock(&e->lock);
+  const VdTick position = current_position(e);
+  pthread_mutex_unlock(&e->lock);
+  return vd_engine_render_at(e, position);
 }
 
 VdTick vd_engine_position(VdEngine* e) {

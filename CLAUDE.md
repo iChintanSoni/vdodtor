@@ -43,6 +43,7 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_stretch (the sound of a speed: WSOLA, and the tape),
            vd_eq (what a clip sounds like, as a short list of presets),
            vd_probe,
+           vd_export (the timeline counted out into an MP4),
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
@@ -136,6 +137,38 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
 - **The lane decides which half of a file a clip contributes.** A clip on an audio lane is
   sound even when its source has a picture — that is what a detached clip is — so
   `timeline_sync` sets `hasVideo` from the track kind, not from the probe alone.
+- **Preview and export differ in the clock and in nothing else.** Playback works out
+  what time it is — from the audio device, or from the wall when there is no sound — and
+  renders that; an export counts frames and asks for those. Both go through
+  `vd_engine_render_at` and `vd_audio_renderer_render_at`, which are the same clip list,
+  the same decoders, the same compositor, the same envelopes and the same filters with a
+  position handed in instead of read off a clock. Nothing below those two functions can
+  tell which called it, and that is what makes the frame on screen a promise about the
+  frame in the file. Two *instances* though, not two implementations: `vd_export` makes
+  its own headless `VdEngine`, because it renders at its own size and must not drag the
+  playhead around under somebody who is still editing. The output size is the
+  **timeline's** own `width`/`height` — a 4K export of a 1080p edit is one number
+  changing, since nothing in a render list is measured in pixels — so there is no second
+  place to write a resolution down.
+- **A cancelled or failed export leaves no file.** Half a video plays, looks finished,
+  and is missing its ending, which is the part nobody checks. `vd_export_destroy` removes
+  anything that is not a completed export, and destroying a running one cancels it first.
+- **The encoder pulls; it is not pushed at.** An `AVAssetWriterInput` that has had enough
+  stops being ready, and what makes it ready again is the machinery behind
+  `requestMediaDataWhenReadyOnQueue:`. A loop polling `isReadyForMoreMediaData` looks like
+  it works — the picture alone will write to the end of a film that way — and then wedges
+  permanently the moment a second input is added. Video and audio therefore have a queue
+  each, and the writer interleaves them; a thread waiting on two semaphores closes the
+  file. And each frame is **copied** into one of the encoder's own buffers, because the
+  compositor publishes into a single pixel buffer it draws the next frame straight over,
+  and an encoder holds what it is handed until it has finished with it.
+- **A bitrate is written twice.** `vd_export_default_bitrate` and `defaultVideoBitrate` in
+  `app/lib/engine/export_plan.dart` are one function in two languages with one table
+  asserted in both test suites — the `vd_time.c`/`time.dart` arrangement, and here for the
+  reason the audio envelopes have it: the encoder writes at this rate and the app *draws*
+  it, under the preset picker. A sentence promising 6.2 Mbps over a file written at 3.7 is
+  worse than no sentence. The estimated size is **not** mirrored: nothing in the engine
+  needs it, so it lives in Dart alone.
 - **The compositor is pinned by golden frames.** `engine/tests/golden/*.png` are whole
   composited frames compared pixel for pixel, so any change to how the picture is drawn
   turns `vd_golden_test` red — including changes that are correct. That is the point:

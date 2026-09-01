@@ -16,6 +16,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
+> **M4 has started, and its Export section is done bar the parity goldens: the editor
+> writes MP4s.** ⌘E, four sizes, H.264 or HEVC, a bar that moves, and a Stop that leaves
+> nothing behind.
+>
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
 > make them all arrive, join one shot to the next, grade the colour of any of them, put a
@@ -115,6 +119,22 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > both are right and no engine can tell which one this is. Measured in the running app:
 > a half-speed clip played for three seconds with **0 underruns and 0 late frames**, the
 > source window flat at 2.00s across every rate, and decoders flat at 5.
+>
+> And it can now **export**. The whole feature is one sentence: preview and export differ
+> in the clock and in nothing else. Playback works out what time it is and renders that;
+> an export counts frames and asks for those, through the same two functions — the same
+> clip list, the same decoders, the same compositor, the same envelopes and filters, with
+> a position handed in instead of read off a clock. That is what "one compositor" was
+> buying since M0, and `vd_export` spending 500 lines on AVFoundation and none on drawing
+> anything is where it got spent. The output size is the *timeline's*, so a 4K export of a
+> 1080p edit is one number changing and no re-layout of anything — which is what every
+> caption measured in fractions was for. MP4 with the index at the front, HEVC tagged
+> `hvc1` rather than `hev1`, AAC-LC at 48 kHz, and a cancelled export that leaves no file,
+> because half a video plays and looks finished and is missing the ending nobody checks.
+> Measured in the running app, on the self-test project with a caption, a shape, a sticker
+> and a transition on it: **257 frames of 1920x1080 in 2.55s — 3.4x real time in a debug
+> build** — and the preview still rendering afterwards, which is the part no offline test
+> can reach.
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -1453,10 +1473,100 @@ look, one slow-mo moment) entirely in vdodtor.
 ## M4 — "It ships" (export, gating, packaging)
 
 ### Export
-- [ ] Export path through the same compositor, frame-counter clock → VideoToolbox encode
-- [ ] MP4 faststart; H.264 + HEVC (muxed as `hvc1`, not `hev1`); AAC-LC 48 kHz stereo
-- [ ] Presets with estimated output size; disk-space preflight; cancel leaves no partial files
-- [ ] Background export with progress
+- [x] Export path through the same compositor, frame-counter clock → VideoToolbox encode
+- [x] MP4 faststart; H.264 + HEVC (muxed as `hvc1`, not `hev1`); AAC-LC 48 kHz stereo
+- [x] Presets with estimated output size; disk-space preflight; cancel leaves no partial files
+- [x] Background export with progress
+      **The whole feature is one sentence: preview and export differ in the clock
+      and in nothing else.** Playback works out what time it is — from the audio
+      device, or from the wall when there is no sound — and renders that; an
+      export counts frames and asks for those. Both arrive at the same two
+      functions, `vd_engine_render_at` and `vd_audio_renderer_render_at`, which
+      are the clip list, the decoders, the compositor, the envelopes and the
+      filters that were already there, with a position handed in instead of
+      read off a clock. Nothing below them can tell which called it. That is
+      what the M0 note about "one compositor" was buying, and this is where it
+      gets spent: **`vd_export.mm` is 520 lines of encoder and clock, and not
+      one of them draws a pixel.**
+      Two *instances*, though, not two implementations. The export makes its own
+      headless `VdEngine` — no audio device, its own decoders — because it
+      renders at its own size and must not drag the playhead around under
+      somebody who is still editing. And the output size is the **timeline's**
+      own `width`/`height` rather than a field beside it: nothing in a render
+      list is measured in pixels, so exporting a 1080p edit at 4K is one number
+      changing and no re-layout of anything. There is deliberately no second
+      place to write a resolution down.
+      The encoder is AVFoundation, which is VideoToolbox's hardware H.264 and
+      HEVC behind a muxer the rest of the world can open. FFmpeg is on the way
+      *in* and Apple's is on the way out, and that is not an inconsistency: the
+      vendored FFmpeg is LGPL and must stay that way, and an H.264 encoder is
+      exactly the part of it that would not be.
+      Three decisions inside it are worth the ink. **The encoder pulls; it is
+      not pushed at.** An input that has had enough stops being ready, and what
+      makes it ready again is the machinery behind
+      `requestMediaDataWhenReadyOnQueue:`. A loop polling
+      `isReadyForMoreMediaData` looks like it works — the picture alone writes
+      to the end of a film that way — and then wedges permanently the first time
+      a second input is added, which is exactly what happened here and cost an
+      afternoon. Video and audio get a queue each and the writer interleaves
+      them. **Every frame is copied** into one of the encoder's own buffers,
+      because the compositor publishes into a single pixel buffer it draws the
+      next frame straight over, and an encoder holds what it is handed until it
+      has finished with it; appending the compositor's own buffer would have
+      VideoToolbox reading frame 41 out of memory frame 42 was being written
+      into, which would present as occasional tearing under load and look like a
+      driver problem for a week. And **the sound is clipped to 16 bits here**
+      rather than handed over as float: summing lanes can leave a sample past
+      ±1, and deciding what happens to it in one place means the clipping is the
+      same clipping every time and the one a meter would have shown.
+      The output is tagged Rec.709 explicitly, because the compositor works in
+      709 whatever the sources were coded in and an untagged SD-sized export is
+      read back as 601 by half the players in the world. HEVC comes out as
+      `hvc1` and not `hev1` — the same bitstream with the parameter sets
+      somewhere else, and only the first opens in QuickTime, Safari and most
+      hardware players, so a file tagged `hev1` is one that works everywhere the
+      developer tested and nowhere the user needs it. The test asserts on the
+      bytes of the file for both that and faststart, which is `moov` before
+      `mdat`.
+      **A cancelled or failed export leaves no file.** Half a video plays, looks
+      finished, and is missing its ending, which is the part nobody checks — so
+      the partial file is removed rather than left to be found, and destroying a
+      running export cancels it first. The sheet in front of it offers four
+      sizes (the project's own, 720p, 1080p, 4K — sized by the **short** side, so
+      a 9:16 project at "1080p" is 1080 across and not 1080 tall), two codecs,
+      and a switch for the sound, and says in one line what the four of them add
+      up to: dimensions, bitrate, frame count and about how many bytes. The
+      bitrate under that picker is the bitrate the encoder writes at, because
+      `vd_export_default_bitrate` and `defaultVideoBitrate` are one function in
+      two languages with one table asserted in both suites — the
+      `vd_time.c`/`time.dart` arrangement, for the reason the audio envelopes
+      have it. The disk is checked *after* the save panel and not before, since
+      the free space that matters is on the volume the user picked.
+      Measured in `vd_export_test.c`: a two-second timeline comes back out of
+      `vd_probe` as 320x240 h264 + aac at 48 kHz stereo, 60 frames, `moov`
+      before `mdat`; the HEVC pass finds `hvc1` and no `hev1`; a flat green
+      fixture decodes back to the luma level that colour has in Rec.709, which
+      is the parity claim made on pixels rather than on prose; a clip at gain 0
+      comes back silent and the same clip at gain 1 does not, which is what says
+      the *mixer* filled the file rather than a bypass around it; and a cancelled
+      export leaves nothing on disk.
+      And measured in the running app, on the self-test project with everything
+      the M3 passes put on it — footage, a caption with a typewriter on it, a
+      shape, a looping sticker on an overlay lane and a transition across a cut:
+      **257 frames of 1920x1080 written in 2.55s, 3.4x faster than real time**,
+      in a *debug* build where the engine itself is compiled at -O0. The file
+      reads back through `vd_probe` as 1920x1080 h264 + aac, 8.57s — the length
+      the timeline is. The preview engine was up the whole time and still
+      renders afterwards with its five decoders open, which is the part no
+      offline test can reach: an export and a preview are two engines, two
+      compositors and two sets of decoders over one set of files.
+      One number is worth reading carefully. The estimate said 7.0 MB and the
+      file is 4.0 MB, because the estimate is a *target* bitrate times a length
+      and VideoToolbox's average-bitrate control spends well under target on
+      easy content — and the self-test project is flat colours and captions,
+      which is about as easy as content gets. That is the direction the number
+      should be wrong in: both its readers are a disk check and a warning, and
+      both would rather be told 7 and get 4 than the other way round.
 - [ ] Preview/export parity: golden-frame tests through both drivers in CI
 
 ### Free / Pro

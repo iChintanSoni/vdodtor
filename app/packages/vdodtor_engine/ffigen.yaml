@@ -21,6 +21,7 @@ headers:
     - '../../../engine/include/vdodtor/vd_decoder.h'
     - '../../../engine/include/vdodtor/vd_compositor.h'
     - '../../../engine/include/vdodtor/vd_engine.h'
+    - '../../../engine/include/vdodtor/vd_export.h'
     - '../../../engine/include/vdodtor/vd_text.h'
     - '../../../engine/include/vdodtor/vd_shape.h'
     - '../../../engine/include/vdodtor/vd_sticker.h'

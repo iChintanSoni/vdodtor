@@ -110,8 +110,8 @@ drives it through.
   ]
 
   s.frameworks = 'Metal', 'CoreVideo', 'CoreMedia', 'VideoToolbox',
-                 'AudioToolbox', 'QuartzCore', 'CoreGraphics', 'AppKit',
-                 'UniformTypeIdentifiers'
+                 'AVFoundation', 'AudioToolbox', 'QuartzCore', 'CoreGraphics',
+                 'AppKit', 'UniformTypeIdentifiers'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

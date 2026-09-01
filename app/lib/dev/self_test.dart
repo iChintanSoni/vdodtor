@@ -7,6 +7,7 @@ import 'package:vdodtor_engine/vdodtor_engine.dart';
 import '../app/workspace.dart';
 import '../commands/document_store.dart';
 import '../commands/edits.dart';
+import '../engine/export_plan.dart';
 import '../engine/media_probe.dart';
 import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
@@ -53,6 +54,91 @@ Future<void> openSelfTestProject(Workspace workspace) async {
     aspect: ProjectAspect.landscape16x9,
     frameRate: FrameRates.fps30,
   );
+}
+
+/// The whole edit, written to a file, while the preview is still open.
+///
+/// `vd_export_test.c` already pins what an export *is* — that the file opens,
+/// that its index is at the front, that HEVC is tagged `hvc1`, that the picture
+/// is the one the compositor drew and the sound is the one the mixer made. All
+/// of that runs on a 320x240 fixture in a second.
+///
+/// Two things it cannot answer. How fast this actually is on a real machine at
+/// the project's real size, with real footage, captions, shapes, a sticker and
+/// a transition in it — the ratio at the end of this is the only honest answer
+/// to "how long will my export take". And whether an export and a preview can
+/// be alive at once: they are two engines, two compositors and two sets of
+/// decoders over the same files, and the failure mode if they cannot is the
+/// export finishing and the preview having quietly stopped.
+Future<void> runExportSelfTest(PreviewEngine engine, DocumentStore store) async {
+  final project = store.project;
+  if (project.duration.raw <= 0) {
+    stdout.writeln('[selftest] export: nothing on the timeline');
+    return;
+  }
+
+  final plan = ExportPlan.of(project);
+  final path = '${Directory.systemTemp.path}/vdodtor_selftest_export.mp4';
+  final file = File(path);
+  if (file.existsSync()) file.deleteSync();
+
+  stdout.writeln('[selftest] export: '
+      '${plan.outputFormat.width}x${plan.outputFormat.height}, '
+      '${plan.frameCount} frames, '
+      '${formatBitrate(plan.videoBitrate)}, '
+      'about ${formatBytes(plan.estimatedBytes)}');
+
+  final before = engine.stats;
+  final clock = Stopwatch()..start();
+  final exporter = Exporter.start(
+    plan.timelineFor(project),
+    path,
+    settings: plan.settings,
+  );
+
+  // Polled rather than awaited: the point is that the app's own event loop
+  // keeps turning while a native thread writes a film.
+  while (exporter.progress.isRunning && clock.elapsed.inMinutes < 5) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  clock.stop();
+  final progress = exporter.progress;
+  exporter.dispose();
+
+  final seconds = clock.elapsedMilliseconds / 1000;
+  final projectSeconds = project.duration.raw / Timebase.project.ticksPerSecond;
+  stdout.writeln('[selftest] export: ${progress.state.name} — '
+      '${progress.framesWritten}/${progress.framesTotal} frames in '
+      '${seconds.toStringAsFixed(2)}s '
+      '(${(projectSeconds / (seconds == 0 ? 1 : seconds)).toStringAsFixed(1)}x '
+      'realtime)');
+
+  if (progress.state != ExportState.done) {
+    stdout.writeln('[selftest] export: failed — ${exporter.failureMessage}');
+    return;
+  }
+
+  // Read back rather than trusted. The engine wrote it; the probe is a
+  // different piece of code opening it as any other player would.
+  final size = file.existsSync() ? file.lengthSync() : 0;
+  final probe = VdodtorEngine.probeFile(path);
+  stdout.writeln('[selftest] export: ${formatBytes(size)} on disk '
+      '(estimated ${formatBytes(plan.estimatedBytes)}) — '
+      '${probe.width}x${probe.height} ${probe.videoCodec}'
+      '${probe.hasAudio ? " + ${probe.audioCodec}" : ", silent"}, '
+      '${(probe.durationTicks / Timebase.project.ticksPerSecond)
+          .toStringAsFixed(2)}s');
+  stdout.writeln('[selftest] export: written to $path');
+
+  // The preview was up the whole time. If two engines over one set of files
+  // were a problem, this is where it would show: a texture that stopped
+  // publishing, or a decoder that failed under a second reader.
+  engine.seek(0);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  final after = engine.stats;
+  stdout.writeln('[selftest] export: preview still alive — '
+      '${after.framesPresented - before.framesPresented} frames presented '
+      'across the export, ${after.openDecoders} decoders open');
 }
 
 /// Checks the preview pipeline the way M0 insisted on checking it: by looking

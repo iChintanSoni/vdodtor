@@ -28,6 +28,8 @@ export 'src/engine.dart'
         FitMode,
         PlaybackState,
         PreviewEngine;
+export 'src/export.dart'
+    show ExportCodec, ExportProgress, ExportSettings, ExportState, Exporter;
 export 'src/media_access.dart'
     show GrantedFile, MediaAccess, MediaDrop, ResolvedFile;
 export 'src/native.dart' show EngineException;

@@ -296,6 +296,19 @@ VD_EXPORT void vd_engine_seek(VdEngine* engine, VdTick position);
 // For tests and for the first frame after a timeline change.
 VD_EXPORT int32_t vd_engine_render_now(VdEngine* engine);
 
+// Renders exactly `position`, synchronously, on the calling thread, and leaves
+// the playhead where it was.
+//
+// This is the export's clock, and it is the whole of the difference between
+// preview and export on the picture side. Playback works out what time it is
+// — from the audio device, or from the wall when there is no sound — and asks
+// for that; an export counts frames and asks for those. Everything downstream
+// is the same code: the same clip list, the same decoders, the same
+// compositor. Nothing below this line can tell which of the two called it,
+// which is what makes the frame on screen a promise about the frame in the
+// file. See vd_export.h.
+VD_EXPORT int32_t vd_engine_render_at(VdEngine* engine, VdTick position);
+
 VD_EXPORT VdTick vd_engine_position(VdEngine* engine);
 VD_EXPORT VdTick vd_engine_duration(VdEngine* engine);
 VD_EXPORT int32_t vd_engine_state(VdEngine* engine);
