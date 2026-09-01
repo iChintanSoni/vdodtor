@@ -19,6 +19,7 @@
 #include "vdodtor/vd_anim.h"
 #include "vdodtor/vd_color.h"
 #include "vdodtor/vd_compositor.h"
+#include "vdodtor/vd_eq.h"
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_sticker.h"
@@ -39,6 +40,36 @@ typedef enum {
   VD_STATE_PAUSED = 2,
   VD_STATE_ENDED = 3,
 } VdPlaybackState;
+
+// The shape a fade ramps in. Four of them, each with a job:
+//
+//   VD_FADE_LINEAR       a straight line in amplitude. The handle position
+//                        means what it looks like it means, and it is what
+//                        every project written before this existed has.
+//   VD_FADE_SMOOTH       a raised cosine: no corner at either end, which is
+//                        what a fade over music or a held shot wants.
+//   VD_FADE_EQUAL_POWER  a quarter of a sine, which holds *power* constant.
+//                        Two clips overlapping on two lanes cross through it
+//                        without the 3 dB dip a pair of linear ramps leaves in
+//                        the middle — the one shape that is about a crossfade
+//                        rather than about a fade.
+//   VD_FADE_EXPONENTIAL  t squared: starts almost silent and arrives late,
+//                        which is the shape a long musical fade-in wants.
+//
+// One curve per clip rather than one per fade: two shapes on one clip is a
+// distinction nobody makes, and it would double the field, the picker, the
+// file format and the table for nothing.
+//
+// Mirrored by `FadeCurve` in app/lib/model/clip.dart and `EngineFadeCurve` in
+// the plugin. The index crosses the FFI boundary, so append only. Zero is
+// linear, which is what makes this a field a caller may leave at whatever a
+// memset gave it.
+typedef enum {
+  VD_FADE_LINEAR = 0,
+  VD_FADE_SMOOTH = 1,
+  VD_FADE_EQUAL_POWER = 2,
+  VD_FADE_EXPONENTIAL = 3,
+} VdFadeCurve;
 
 // One point on a clip's volume line.
 //
@@ -181,6 +212,17 @@ typedef struct {
   // `fade_out` at the tail. Ticks, like every other length that crosses here.
   VdTick fade_in;
   VdTick fade_out;
+
+  // The shape both of those ramps take. Zero is linear, which is the shape
+  // every fade had before there was a choice — so an existing project sounds
+  // bit for bit as it did. See VdFadeCurve.
+  VdFadeCurve fade_curve;
+
+  // What this clip sounds like: one of a short list of corrections and one
+  // effect, or VD_EQ_NONE for the clips nobody touched, which is almost all of
+  // them. A name rather than a set of bands, for the reason `look` is a name
+  // rather than a lattice — see vd_eq.h.
+  VdEqPreset eq;
 
   // The volume line: gain over the source, sorted by `source_time`, and a
   // multiplier on `gain` rather than a replacement for it. NULL and 0 mean a

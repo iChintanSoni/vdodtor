@@ -95,6 +95,12 @@ EngineTimeline engineTimelineFor(Project project) {
         // interpolate between.
         fadeInTicks: clip.audio.fadeIn.raw,
         fadeOutTicks: clip.audio.fadeOut.raw,
+        // The shape, not the shaped values: like the lengths above, the mixer
+        // has to evaluate this per audio frame.
+        fadeCurve: EngineFadeCurve.values[clip.audio.fadeCurve.index],
+        // And the preset's name, resolved into coefficients on the other side
+        // — nothing here knows what a "voice" is.
+        eq: EngineEqPreset.values[clip.audio.eq.index],
         volumePoints: [
           for (final p in clip.audio.points)
             EngineVolumePoint(p.sourceTime.raw, p.value),

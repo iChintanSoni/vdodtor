@@ -20,7 +20,7 @@ set(VD_FONT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../app/assets/fonts")
 # with and the app does not bundle is a look nothing checks.
 set(VD_LUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../app/assets/luts")
 
-foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test vd_peaks_test vd_text_test vd_shape_test vd_sticker_test vd_anim_test vd_transition_test vd_color_test vd_lut_test vd_stretch_test)
+foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test vd_peaks_test vd_text_test vd_shape_test vd_sticker_test vd_anim_test vd_transition_test vd_color_test vd_lut_test vd_stretch_test vd_eq_test)
   add_executable(${test} ${test}.c)
   target_link_libraries(${test} PRIVATE vdodtor_engine)
   target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

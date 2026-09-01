@@ -385,6 +385,11 @@ static void test_renderer_finds_the_audio(void) {
 
 // Waits for the decode thread to get ahead, so a test is measuring the mix
 // rather than measuring a cold start.
+//
+// `frames` has to be something the ring can actually hold — less than
+// VD_AUDIO_RING_FRAMES, and a chunk less than that, because the producer stops
+// once there is no room for a whole chunk. Ask for more and this becomes a
+// fixed one-second sleep that a stalled pipeline is indistinguishable from.
 static void wait_for_buffer(VdAudioRenderer* r, int32_t frames) {
   for (int i = 0; i < 500; i++) {
     VdAudioStats stats;
@@ -433,39 +438,66 @@ static void test_the_fade_envelope_matches_the_document(void) {
   const VdTick fade_in = 200;
   const VdTick fade_out = 400;
 
+  // One row per offset, one column per curve, in the order VdFadeCurve
+  // declares them — so a curve inserted in the middle of the enum reads the
+  // wrong column and this test says so, which is a second reason for the
+  // table beyond the numbers in it.
   const struct {
     VdTick offset;
-    float gain;
+    float gain[4];  // linear, smooth, equal power, exponential
   } table[] = {
-      {-1, 0.0f},       // before the clip
-      {0, 0.0f},        // silent at the very start of a fade in
-      {100, 0.5f},      // halfway up a 200-tick fade
-      {200, 1.0f},      // fade in is over
-      {500, 1.0f},      // the middle is untouched
-      {600, 1.0f},      // exactly where the fade out begins
-      {700, 0.75f},     // 300 of 400 remaining
-      {900, 0.25f},
-      {999, 0.0025f},   // one tick from the end, of a 400 fade
-      {1000, 0.0f},     // past the end
+      {-1, {0.0f, 0.0f, 0.0f, 0.0f}},          // before the clip
+      {0, {0.0f, 0.0f, 0.0f, 0.0f}},           // the very start of a fade in
+      {50, {0.25f, 0.146447f, 0.382683f, 0.0625f}},   // a quarter of the way up
+      {100, {0.5f, 0.5f, 0.707107f, 0.25f}},          // halfway up
+      {200, {1.0f, 1.0f, 1.0f, 1.0f}},         // fade in is over
+      {500, {1.0f, 1.0f, 1.0f, 1.0f}},         // the middle is untouched
+      {600, {1.0f, 1.0f, 1.0f, 1.0f}},         // where the fade out begins
+      {700, {0.75f, 0.853553f, 0.923880f, 0.5625f}},  // 300 of 400 remaining
+      {900, {0.25f, 0.146447f, 0.382683f, 0.0625f}},  // 100 of 400
+      // One tick from the end of a 400 fade: every curve is on the floor, and
+      // the point of the row is that none of them has reached it early.
+      {999, {0.0025f, 0.0000154f, 0.003927f, 0.00000625f}},
+      {1000, {0.0f, 0.0f, 0.0f, 0.0f}},        // past the end
   };
 
+  const char* names[] = {"linear", "smooth", "equal power", "exponential"};
+  const VdFadeCurve curves[] = {VD_FADE_LINEAR, VD_FADE_SMOOTH,
+                                VD_FADE_EQUAL_POWER, VD_FADE_EXPONENTIAL};
+
   for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
-    const float got =
-        vd_audio_fade_gain(table[i].offset, duration, fade_in, fade_out);
-    vd_checks++;
-    if (fabsf(got - table[i].gain) > 0.0005f) {
-      vd_failures++;
-      fprintf(stderr,
-              "FAIL fade gain at offset %lld\n  expected %.4f\n  actual   %.4f\n",
-              (long long)table[i].offset, table[i].gain, got);
+    for (size_t c = 0; c < 4; c++) {
+      const float got = vd_audio_fade_gain(table[i].offset, duration, fade_in,
+                                           fade_out, curves[c]);
+      vd_checks++;
+      if (fabsf(got - table[i].gain[c]) > 0.0005f) {
+        vd_failures++;
+        fprintf(stderr,
+                "FAIL %s fade gain at offset %lld\n  expected %.6f\n"
+                "  actual   %.6f\n",
+                names[c], (long long)table[i].offset, table[i].gain[c], got);
+      }
     }
   }
 
+  // Every curve starts at silence and ends at full, whatever it does between.
+  // A fade that arrived at 0.99 would click at the moment it stopped.
+  for (size_t c = 0; c < 4; c++) {
+    VD_CHECK(vd_audio_fade_gain(0, duration, fade_in, 0, curves[c]) == 0.0f);
+    VD_CHECK(vd_audio_fade_gain(fade_in, duration, fade_in, 0, curves[c]) ==
+             1.0f);
+  }
+
+  // A curve from a newer version of the document is a fade, in the shape this
+  // build does know — not silence, and not a crash.
+  VD_CHECK(vd_audio_fade_gain(100, duration, fade_in, fade_out,
+                              (VdFadeCurve)77) == 0.5f);
+
   // No fades at all is a flat 1, not a ramp of length zero that divides by it.
   for (VdTick at = 0; at < duration; at += 250) {
-    VD_CHECK(vd_audio_fade_gain(at, duration, 0, 0) == 1.0f);
+    VD_CHECK(vd_audio_fade_gain(at, duration, 0, 0, VD_FADE_LINEAR) == 1.0f);
   }
-  VD_CHECK(vd_audio_fade_gain(0, 0, 0, 0) == 0.0f);
+  VD_CHECK(vd_audio_fade_gain(0, 0, 0, 0, VD_FADE_LINEAR) == 0.0f);
 }
 
 // Pulls 250 ms and reports how loud it was.
@@ -528,7 +560,7 @@ static void test_a_fade_in_actually_ramps(void) {
   clip.fade_in = VD_TICKS_PER_SECOND;
   vd_audio_renderer_set_timeline(r, &clip, 1);
   vd_audio_renderer_start(r, 0);
-  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE);
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 3);
 
   // Four consecutive quarter-seconds. Each must be louder than the one before
   // it, which no constant gain can be — and the last is inside the fade's
@@ -565,6 +597,140 @@ static void test_a_fade_in_actually_ramps(void) {
   }
 
   vd_audio_renderer_destroy(r);
+}
+
+// The curve reaches the mixer, and it is the one the document asked for.
+//
+// The table above pins what each shape *is*; this pins that a clip carrying
+// one gets it. Measured over the first quarter of a one-second fade, where the
+// four curves are furthest apart: linear averages about an eighth of full
+// scale there and t-squared about a fortieth, so a curve that never crossed
+// the boundary would show up as the two readings being the same.
+static double level_of_first_quarter(VdFadeCurve curve) {
+  VdAudioRenderer* r = vd_audio_renderer_create(NULL);
+  if (!r) return -1;
+
+  VdTimelineClip clip = audio_clip(0, 2 * VD_TICKS_PER_SECOND);
+  clip.fade_in = VD_TICKS_PER_SECOND;
+  clip.fade_curve = curve;
+  vd_audio_renderer_set_timeline(r, &clip, 1);
+  vd_audio_renderer_start(r, 0);
+  // A third of a second, which is more than the quarter this pulls and less
+  // than the half the ring holds. Asking for the capacity — or more — would
+  // never be satisfied, so `wait_for_buffer` would burn its whole budget every
+  // time and a genuinely stalled pipeline would look exactly like a healthy
+  // one taking a second to warm up.
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 3);
+
+  const double level = level_of(r);
+  vd_audio_renderer_destroy(r);
+  return level;
+}
+
+static void test_the_fade_curve_reaches_the_mixer(void) {
+  const double linear = level_of_first_quarter(VD_FADE_LINEAR);
+  const double exponential = level_of_first_quarter(VD_FADE_EXPONENTIAL);
+  const double equal_power = level_of_first_quarter(VD_FADE_EQUAL_POWER);
+
+  // A quarter-second of a rising ramp, so a fraction of what the clip is
+  // worth at full level — the ratios below are the assertions, and this is
+  // only here so a silent pipeline fails as itself rather than as a ratio.
+  VD_CHECK(linear > 0.002);
+
+  // Squared, so the first quarter is far quieter than a straight line.
+  vd_checks++;
+  if (!(exponential < linear * 0.5)) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL an exponential fade was not quieter early: %.4f against "
+            "%.4f linear\n",
+            exponential, linear);
+  }
+
+  // And a quarter of a sine is already well up, which is what makes it the
+  // one that holds power constant across a crossfade.
+  vd_checks++;
+  if (!(equal_power > linear * 1.2)) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL an equal-power fade was not louder early: %.4f against "
+            "%.4f linear\n",
+            equal_power, linear);
+  }
+}
+
+// --- the equaliser ---------------------------------------------------------
+
+// What a preset does to a real file through the real mixer.
+//
+// `vd_eq_test.c` owns the decibels; what only this can show is the wiring —
+// that a preset crossed the boundary, that a filter was built for it, and that
+// it ran on the clip's frames rather than on nothing.
+//
+// The 220 Hz fixture rather than the 440 Hz one, because the telephone preset
+// is 10 dB down at 220 and less than 2 dB down at 440: an assertion that has
+// to survive a resampler and a decoder wants a margin it can see.
+static double level_with_eq(VdEqPreset preset) {
+  VdAudioRenderer* r = vd_audio_renderer_create(NULL);
+  if (!r) return -1;
+
+  VdTimelineClip clip = vd_timeline_clip_default();
+  clip.path = fixture("audio_only.m4a");  // 220 Hz sine, mono, 44.1 kHz
+  clip.duration = 2 * VD_TICKS_PER_SECOND;
+  clip.eq = preset;
+  vd_audio_renderer_set_timeline(r, &clip, 1);
+  vd_audio_renderer_start(r, 0);
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 3);
+
+  // Past the filter's own settling, which is a few dozen samples, and past the
+  // decoder's preroll.
+  level_of(r);
+  const double level = level_of(r);
+  vd_audio_renderer_destroy(r);
+  return level;
+}
+
+static void test_an_eq_preset_reaches_what_comes_out(void) {
+  const double flat = level_with_eq(VD_EQ_NONE);
+  VD_CHECK(flat > 0.01);
+
+  // The telephone preset is 10.6 dB down at 220 Hz, which is a ratio of 0.29.
+  const double filtered = level_with_eq(VD_EQ_TELEPHONE);
+  const double ratio = flat > 0 ? filtered / flat : 0;
+  vd_checks++;
+  if (ratio < 0.2 || ratio > 0.42) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL the telephone preset left %.3f of a 220 Hz tone, expected "
+            "about 0.29\n",
+            ratio);
+  }
+
+  // And a preset that lifts where the tone is, lifts it. Two directions, so a
+  // filter wired in backwards cannot pass both.
+  const double lifted = level_with_eq(VD_EQ_BASS);
+  vd_checks++;
+  if (!(lifted > flat)) {
+    vd_failures++;
+    fprintf(stderr, "FAIL the bass preset did not lift 220 Hz: %.4f against "
+                    "%.4f flat\n",
+            lifted, flat);
+  }
+}
+
+// A clip nobody equalised must take the path it always took — no filter built,
+// nothing to reset, and the same samples out as in.
+static void test_no_preset_costs_nothing(void) {
+  const double a = level_with_eq(VD_EQ_NONE);
+  const double b = level_with_eq(VD_EQ_NONE);
+  VD_CHECK(a > 0.01);
+  vd_checks++;
+  if (fabs(a - b) > 1e-6) {
+    vd_failures++;
+    fprintf(stderr, "FAIL an unfiltered clip was not repeatable: %.6f then "
+                    "%.6f\n",
+            a, b);
+  }
 }
 
 // The same table as `_automationTable` in
@@ -985,6 +1151,9 @@ int main(void) {
   test_gain_scales_what_comes_out();
   test_a_muted_clip_is_silent_and_not_decoded();
   test_a_fade_in_actually_ramps();
+  test_the_fade_curve_reaches_the_mixer();
+  test_an_eq_preset_reaches_what_comes_out();
+  test_no_preset_costs_nothing();
   test_the_volume_line_matches_the_document();
   test_the_volume_line_is_measured_in_the_source();
   test_the_volume_line_ducks_what_comes_out();

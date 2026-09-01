@@ -1875,6 +1875,19 @@ class _AudioControls extends StatelessWidget {
           },
         ),
         const SizedBox(height: 6),
+        // Above the fader, because it is a correction and the fader is a
+        // balance: you make a voice sound like a voice and *then* decide how
+        // loud it sits against everything else. The other order has you
+        // setting a level twice.
+        _EqPicker(
+          preset: a.eq,
+          onChanged: (p) {
+            onCommit();
+            onChanged(a.copyWith(eq: p));
+            onCommit();
+          },
+        ),
+        const SizedBox(height: 6),
         _Slider(
           label: 'Volume',
           value: a.volume,
@@ -1905,6 +1918,18 @@ class _AudioControls extends StatelessWidget {
             onChanged: (v) => onChanged(a.copyWith(fadeOut: Tick(v.round()))),
             onCommit: onCommit,
           ),
+          // Only once there is a fade to shape. A curve on a clip with no
+          // fades is a control that silently does nothing, which is the one
+          // kind of control that teaches people not to trust the panel.
+          if (a.hasFade)
+            _FadeCurvePicker(
+              curve: a.fadeCurve,
+              onChanged: (c) {
+                onCommit();
+                onChanged(a.copyWith(fadeCurve: c));
+                onCommit();
+              },
+            ),
         ],
         _VolumeLineControls(
           points: a.points.length,
@@ -1919,6 +1944,109 @@ class _AudioControls extends StatelessWidget {
       ],
     );
   }
+}
+
+/// What the clip sounds like.
+///
+/// A dropdown of six rather than a row of buttons, unlike the fit and the
+/// shape pickers: those are visual choices where seeing all the options at
+/// once *is* the choice, and this is a list of names where it would be six
+/// words fighting for a 200-pixel rail.
+class _EqPicker extends StatelessWidget {
+  const _EqPicker({required this.preset, required this.onChanged});
+
+  final EqPreset preset;
+  final ValueChanged<EqPreset> onChanged;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          const SizedBox(
+            width: 26,
+            child: Text('EQ',
+                style: TextStyle(fontSize: 11, color: VdColors.text)),
+          ),
+          Expanded(
+            child: DropdownButtonFormField<EqPreset>(
+              initialValue: preset,
+              isDense: true,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 12, color: VdColors.text),
+              items: [
+                for (final option in EqPreset.values)
+                  DropdownMenuItem(
+                    value: option,
+                    child: Text(option.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12)),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value != null) onChanged(value);
+              },
+            ),
+          ),
+        ],
+      );
+}
+
+/// The shape both of a clip's fades ramp in.
+///
+/// One picker for both, because the document keeps one curve for both — see
+/// [ClipAudio.fadeCurve].
+class _FadeCurvePicker extends StatelessWidget {
+  const _FadeCurvePicker({required this.curve, required this.onChanged});
+
+  final FadeCurve curve;
+  final ValueChanged<FadeCurve> onChanged;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 42,
+              child: Text('Shape',
+                  style: TextStyle(fontSize: 11, color: VdColors.text)),
+            ),
+            Expanded(
+              child: DropdownButtonFormField<FadeCurve>(
+                initialValue: curve,
+                isDense: true,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  border: OutlineInputBorder(),
+                ),
+                style: const TextStyle(fontSize: 12, color: VdColors.text),
+                items: [
+                  for (final option in FadeCurve.values)
+                    DropdownMenuItem(
+                      value: option,
+                      child: Text(option.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12)),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onChanged(value);
+                },
+              ),
+            ),
+          ],
+        ),
+      );
 }
 
 /// The volume line, from the inspector's side.

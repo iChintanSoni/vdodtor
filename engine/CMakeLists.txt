@@ -87,6 +87,7 @@ add_library(vdodtor_engine STATIC
   src/vd_audio_ring.c
   src/vd_audio_renderer.c
   src/vd_stretch.c
+  src/vd_eq.c
   src/vd_audio_device.c
   src/vd_thumbnail.c
   src/vd_peaks.c

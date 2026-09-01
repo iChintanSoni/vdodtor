@@ -14,6 +14,7 @@ headers:
     - '../../../engine/include/vdodtor/vd_time.h'
     - '../../../engine/include/vdodtor/vd_anim.h'
     - '../../../engine/include/vdodtor/vd_color.h'
+    - '../../../engine/include/vdodtor/vd_eq.h'
     - '../../../engine/include/vdodtor/vd_lut.h'
     - '../../../engine/include/vdodtor/vd_transition.h'
     - '../../../engine/include/vdodtor/vd_probe.h'

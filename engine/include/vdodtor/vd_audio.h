@@ -88,19 +88,21 @@ VD_EXPORT void vd_audio_ring_clear(VdAudioRing* ring);
 // --- the fade envelope -----------------------------------------------------
 
 // The multiplier a clip's sound gets `offset` ticks into a clip `duration`
-// long, given its fade lengths. 0 outside the clip, 0 at each edge a fade
-// reaches, 1 everywhere the fades do not touch.
+// long, given its fade lengths and the shape they ramp in. 0 outside the clip,
+// 0 at each edge a fade reaches, 1 everywhere the fades do not touch.
 //
 // This is the same function as `ClipAudio.fadeShapeAt` in
-// `app/lib/model/clip.dart`, and the two test the same table — change one and
-// you must change the other. It is here rather than buried in the mixer
-// because a fade the document draws and a fade the device plays being the same
-// shape is not something to leave to two people reading the same prose.
+// `app/lib/model/clip.dart`, and the two test the same table — every curve of
+// it. Change one and you must change the other. It is here rather than buried
+// in the mixer because a fade the document draws and a fade the device plays
+// being the same shape is not something to leave to two people reading the
+// same prose.
 //
-// The ramps are linear in amplitude: the curve where the handle position means
-// what it looks like it means.
+// `curve` shapes both ramps; see VdFadeCurve. VD_FADE_LINEAR is what a zeroed
+// field gives and what every fade was before there was a choice.
 VD_EXPORT float vd_audio_fade_gain(VdTick offset, VdTick duration,
-                                   VdTick fade_in, VdTick fade_out);
+                                   VdTick fade_in, VdTick fade_out,
+                                   VdFadeCurve curve);
 
 // --- the volume line -------------------------------------------------------
 

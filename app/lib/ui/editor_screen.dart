@@ -173,6 +173,12 @@ class _EditorScreenState extends State<EditorScreen> {
         // puts the clip back at its own speed on the way out, to within the
         // tick a retime rounds to.
         await runSpeedSelfTest(engine, _store);
+        // After the speed pass, because it is the other half of the same
+        // question — what a clip does to its own sound — and because it plays
+        // for three seconds, which is only worth doing once the lane has
+        // stopped moving under it. It puts the clip's sound back on the way
+        // out, duck and all.
+        await runAudioEffectsSelfTest(engine, _store);
         // Last, and it puts the timeline back the way it found it: a
         // transition is the one pass that changes what a *cut* looks like, so
         // leaving one on would change every frame the play pass dumps.

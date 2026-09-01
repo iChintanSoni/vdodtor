@@ -277,6 +277,113 @@ class VdEngineBindings {
         void Function(ffi.Pointer<VdColorTransform>, ffi.Pointer<ffi.Float>)
       >();
 
+  /// Returns NULL for VD_EQ_NONE, which is not a failure: a clip nobody equalised
+  /// keeps no filter at all, and the mixer's common path stays the path it was.
+  /// Callers must therefore decide on the *preset* and not on the pointer — see
+  /// vd_audio_renderer.c, where getting that backwards would make a failed
+  /// allocation indistinguishable from "nothing asked for".
+  ///
+  /// Also NULL on a bad argument or a failed allocation.
+  ffi.Pointer<VdEq> vd_eq_create(
+    VdEqPreset preset,
+    int sample_rate,
+    int channels,
+  ) {
+    return _vd_eq_create(preset.value, sample_rate, channels);
+  }
+
+  late final _vd_eq_createPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdEq> Function(ffi.UnsignedInt, ffi.Int32, ffi.Int32)
+        >
+      >('vd_eq_create');
+  late final _vd_eq_create = _vd_eq_createPtr
+      .asFunction<ffi.Pointer<VdEq> Function(int, int, int)>();
+
+  void vd_eq_destroy(ffi.Pointer<VdEq> eq) {
+    return _vd_eq_destroy(eq);
+  }
+
+  late final _vd_eq_destroyPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEq>)>>(
+        'vd_eq_destroy',
+      );
+  late final _vd_eq_destroy = _vd_eq_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdEq>)>();
+
+  /// True when this filter was built for exactly this preset, so a caller holding
+  /// one across an edit knows whether it may keep it.
+  bool vd_eq_matches(ffi.Pointer<VdEq> eq, VdEqPreset preset) {
+    return _vd_eq_matches(eq, preset.value);
+  }
+
+  late final _vd_eq_matchesPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Bool Function(ffi.Pointer<VdEq>, ffi.UnsignedInt)
+        >
+      >('vd_eq_matches');
+  late final _vd_eq_matches = _vd_eq_matchesPtr
+      .asFunction<bool Function(ffi.Pointer<VdEq>, int)>();
+
+  /// Forgets everything the filter is carrying. Called on a seek: a biquad's
+  /// state is the last two samples it saw, and material from before a seek
+  /// ringing into the material after it is a click at exactly the moment the
+  /// listener is paying attention.
+  void vd_eq_reset(ffi.Pointer<VdEq> eq) {
+    return _vd_eq_reset(eq);
+  }
+
+  late final _vd_eq_resetPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdEq>)>>(
+        'vd_eq_reset',
+      );
+  late final _vd_eq_reset = _vd_eq_resetPtr
+      .asFunction<void Function(ffi.Pointer<VdEq>)>();
+
+  /// Filters `frames` of interleaved audio in place.
+  void vd_eq_process(
+    ffi.Pointer<VdEq> eq,
+    ffi.Pointer<ffi.Float> frames,
+    int frames_count,
+  ) {
+    return _vd_eq_process(eq, frames, frames_count);
+  }
+
+  late final _vd_eq_processPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdEq>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_eq_process');
+  late final _vd_eq_process = _vd_eq_processPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdEq>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  /// How many decibels this preset does to a steady tone at `hz`, worked out from
+  /// the coefficients rather than by pushing a signal through.
+  ///
+  /// For tests, and for nothing else: an assertion that reads a response off the
+  /// filter it is testing would agree with it whatever either of them did, so the
+  /// signal tests are the real ones. This is here to say *which* frequencies are
+  /// worth pushing a signal at.
+  double vd_eq_response_db(ffi.Pointer<VdEq> eq, double hz) {
+    return _vd_eq_response_db(eq, hz);
+  }
+
+  late final _vd_eq_response_dbPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Double Function(ffi.Pointer<VdEq>, ffi.Double)>
+      >('vd_eq_response_db');
+  late final _vd_eq_response_db = _vd_eq_response_dbPtr
+      .asFunction<double Function(ffi.Pointer<VdEq>, double)>();
+
   /// Reads a `.cube` from memory. `text` need not be NUL terminated; `length` is
   /// what is read.
   ///
@@ -2074,32 +2181,42 @@ class VdEngineBindings {
       .asFunction<void Function(ffi.Pointer<VdAudioRing>)>();
 
   /// The multiplier a clip's sound gets `offset` ticks into a clip `duration`
-  /// long, given its fade lengths. 0 outside the clip, 0 at each edge a fade
-  /// reaches, 1 everywhere the fades do not touch.
+  /// long, given its fade lengths and the shape they ramp in. 0 outside the clip,
+  /// 0 at each edge a fade reaches, 1 everywhere the fades do not touch.
   ///
   /// This is the same function as `ClipAudio.fadeShapeAt` in
-  /// `app/lib/model/clip.dart`, and the two test the same table — change one and
-  /// you must change the other. It is here rather than buried in the mixer
-  /// because a fade the document draws and a fade the device plays being the same
-  /// shape is not something to leave to two people reading the same prose.
+  /// `app/lib/model/clip.dart`, and the two test the same table — every curve of
+  /// it. Change one and you must change the other. It is here rather than buried
+  /// in the mixer because a fade the document draws and a fade the device plays
+  /// being the same shape is not something to leave to two people reading the
+  /// same prose.
   ///
-  /// The ramps are linear in amplitude: the curve where the handle position means
-  /// what it looks like it means.
+  /// `curve` shapes both ramps; see VdFadeCurve. VD_FADE_LINEAR is what a zeroed
+  /// field gives and what every fade was before there was a choice.
   double vd_audio_fade_gain(
-    int offset,
-    int duration,
-    int fade_in,
-    int fade_out,
+    DartVdTick offset,
+    DartVdTick duration,
+    DartVdTick fade_in,
+    DartVdTick fade_out,
+    VdFadeCurve curve,
   ) {
-    return _vd_audio_fade_gain(offset, duration, fade_in, fade_out);
+    return _vd_audio_fade_gain(
+      offset,
+      duration,
+      fade_in,
+      fade_out,
+      curve.value,
+    );
   }
 
   late final _vd_audio_fade_gainPtr =
       _lookup<
-        ffi.NativeFunction<ffi.Float Function(VdTick, VdTick, VdTick, VdTick)>
+        ffi.NativeFunction<
+          ffi.Float Function(VdTick, VdTick, VdTick, VdTick, ffi.UnsignedInt)
+        >
       >('vd_audio_fade_gain');
   late final _vd_audio_fade_gain = _vd_audio_fade_gainPtr
-      .asFunction<double Function(int, int, int, int)>();
+      .asFunction<double Function(int, int, int, int, int)>();
 
   /// The multiplier a clip's sound gets at `source_time`, given its volume line.
   /// 1 when there is no line; held flat at the first point's value before it and
@@ -2601,6 +2718,36 @@ final class VdColorTransform extends ffi.Struct {
   @ffi.Array.multi([3])
   external ffi.Array<ffi.Float> offset;
 }
+
+/// The presets, in the order the document knows them.
+///
+/// Mirrored by `EqPreset` in app/lib/model/clip.dart and `EngineEqPreset` in
+/// the plugin. The index is what crosses the FFI boundary, so this list may be
+/// appended to and never reordered — an entry inserted in the middle would
+/// silently re-EQ every clip in every project on disk.
+enum VdEqPreset {
+  VD_EQ_NONE(0),
+  VD_EQ_VOICE(1),
+  VD_EQ_MUSIC(2),
+  VD_EQ_BASS(3),
+  VD_EQ_BRIGHT(4),
+  VD_EQ_TELEPHONE(5);
+
+  final int value;
+  const VdEqPreset(this.value);
+
+  static VdEqPreset fromValue(int value) => switch (value) {
+    0 => VD_EQ_NONE,
+    1 => VD_EQ_VOICE,
+    2 => VD_EQ_MUSIC,
+    3 => VD_EQ_BASS,
+    4 => VD_EQ_BRIGHT,
+    5 => VD_EQ_TELEPHONE,
+    _ => throw ArgumentError('Unknown value for VdEqPreset: $value'),
+  };
+}
+
+final class VdEq extends ffi.Opaque {}
 
 final class VdLut extends ffi.Opaque {}
 
@@ -3381,6 +3528,47 @@ enum VdPlaybackState {
   };
 }
 
+/// The shape a fade ramps in. Four of them, each with a job:
+///
+/// VD_FADE_LINEAR       a straight line in amplitude. The handle position
+/// means what it looks like it means, and it is what
+/// every project written before this existed has.
+/// VD_FADE_SMOOTH       a raised cosine: no corner at either end, which is
+/// what a fade over music or a held shot wants.
+/// VD_FADE_EQUAL_POWER  a quarter of a sine, which holds *power* constant.
+/// Two clips overlapping on two lanes cross through it
+/// without the 3 dB dip a pair of linear ramps leaves in
+/// the middle — the one shape that is about a crossfade
+/// rather than about a fade.
+/// VD_FADE_EXPONENTIAL  t squared: starts almost silent and arrives late,
+/// which is the shape a long musical fade-in wants.
+///
+/// One curve per clip rather than one per fade: two shapes on one clip is a
+/// distinction nobody makes, and it would double the field, the picker, the
+/// file format and the table for nothing.
+///
+/// Mirrored by `FadeCurve` in app/lib/model/clip.dart and `EngineFadeCurve` in
+/// the plugin. The index crosses the FFI boundary, so append only. Zero is
+/// linear, which is what makes this a field a caller may leave at whatever a
+/// memset gave it.
+enum VdFadeCurve {
+  VD_FADE_LINEAR(0),
+  VD_FADE_SMOOTH(1),
+  VD_FADE_EQUAL_POWER(2),
+  VD_FADE_EXPONENTIAL(3);
+
+  final int value;
+  const VdFadeCurve(this.value);
+
+  static VdFadeCurve fromValue(int value) => switch (value) {
+    0 => VD_FADE_LINEAR,
+    1 => VD_FADE_SMOOTH,
+    2 => VD_FADE_EQUAL_POWER,
+    3 => VD_FADE_EXPONENTIAL,
+    _ => throw ArgumentError('Unknown value for VdFadeCurve: $value'),
+  };
+}
+
 /// One point on a clip's volume line.
 ///
 /// `source_time` is in the source's own time — the same coordinate as
@@ -3548,6 +3736,23 @@ final class VdTimelineClip extends ffi.Struct {
 
   @VdTick()
   external int fade_out;
+
+  /// The shape both of those ramps take. Zero is linear, which is the shape
+  /// every fade had before there was a choice — so an existing project sounds
+  /// bit for bit as it did. See VdFadeCurve.
+  @ffi.UnsignedInt()
+  external int fade_curveAsInt;
+
+  VdFadeCurve get fade_curve => VdFadeCurve.fromValue(fade_curveAsInt);
+
+  /// What this clip sounds like: one of a short list of corrections and one
+  /// effect, or VD_EQ_NONE for the clips nobody touched, which is almost all of
+  /// them. A name rather than a set of bands, for the reason `look` is a name
+  /// rather than a lattice — see vd_eq.h.
+  @ffi.UnsignedInt()
+  external int eqAsInt;
+
+  VdEqPreset get eq => VdEqPreset.fromValue(eqAsInt);
 
   /// The volume line: gain over the source, sorted by `source_time`, and a
   /// multiplier on `gain` rather than a replacement for it. NULL and 0 mean a
@@ -3786,6 +3991,8 @@ const double VD_LUMA_R = 0.2125999927520752;
 const double VD_LUMA_G = 0.7152000069618225;
 
 const double VD_LUMA_B = 0.0722000002861023;
+
+const int VD_EQ_MAX_CHANNELS = 2;
 
 const int VD_LUT_MAX_3D_SIZE = 64;
 

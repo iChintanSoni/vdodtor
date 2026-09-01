@@ -180,6 +180,11 @@ Map<String, Object?> _audioToJson(ClipAudio a) => {
       if (a.volume != 1) 'volume': a.volume,
       if (a.fadeIn.raw != 0) 'fadeIn': a.fadeIn.raw,
       if (a.fadeOut.raw != 0) 'fadeOut': a.fadeOut.raw,
+      // Whatever the document holds, so the file and the document cannot
+      // disagree. A curve with no fade to shape never gets this far — see
+      // ClipAudio.clampedTo, which every path that sets a fade runs through.
+      if (!a.fadeCurve.isLinear) 'fadeCurve': a.fadeCurve.name,
+      if (!a.eq.isNone) 'eq': a.eq.name,
       if (a.muted) 'muted': true,
       // Objects rather than pairs: the encoder indents either way, so the
       // compact form buys nothing and costs the reader the labels.
@@ -341,6 +346,13 @@ ClipAudio _audioFromJson(Map<String, Object?> json, String where) => ClipAudio(
       volume: _double(json, 'volume', 1),
       fadeIn: Tick(_intOr(json, 'fadeIn', '$where.fadeIn', 0)),
       fadeOut: Tick(_intOr(json, 'fadeOut', '$where.fadeOut', 0)),
+      // A curve or a preset this version has never heard of opens as the one
+      // it does know — a plain ramp, and no filter. The same bargain an
+      // animation preset takes, and for the same reason: the clip is audible
+      // for the same length of time either way, so there is nothing here to
+      // guess wrongly.
+      fadeCurve: _enumOr(FadeCurve.values, json, 'fadeCurve', FadeCurve.linear),
+      eq: _enumOr(EqPreset.values, json, 'eq', EqPreset.none),
       muted: _bool(json, 'muted', false),
       points: _volumePointsFromJson(json, '$where.volumePoints'),
     );
