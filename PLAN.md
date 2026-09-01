@@ -1302,11 +1302,17 @@ start to finish without touching another editor; undo works through the whole se
       it. The alternative — storing the source window and deriving the length —
       is the same information and a worse trade, because then every question
       about the timeline has to divide first.
-      Because it *is* a change of length, it is bounded like a trim: a frame at
-      least, no more source than the file has, and on a free-form lane no
-      further than the next clip. On the magnetic lane there is no ceiling to
-      hit — the neighbours move — which is what makes slowing a shot down on
-      the main track the obvious thing rather than a fight.
+      Because it *is* a change of length, it is bounded like a trim: no more
+      source than the file has, and on a free-form lane no further than the
+      next clip. On the magnetic lane there is no ceiling to hit — the
+      neighbours move — which is what makes slowing a shot down on the main
+      track the obvious thing rather than a fight. The floor of one frame is
+      the exception and bends the other way: growing the length back up at the
+      rate asked for would widen the window, so the **rate** gives way instead
+      and a clip with a frame of source in it has nothing left to play faster.
+      A sticker is the other exception — its own length is one loop rather than
+      a limit, so there is no window to hold still and retiming one changes how
+      fast the loop runs and nothing about how long it is on for.
       **Frame duplication is not a feature here; it is what asking already
       does.** A frame is on screen until the next frame starts, so a source
       time that has not left the current frame's interval comes straight back

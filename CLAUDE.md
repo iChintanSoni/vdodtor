@@ -132,9 +132,14 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   `Clip.sourceDuration` = `duration * rate`, is derived and never stored: that is what
   makes a clip taken to 4x and back to 1x the clip it started as rather than a sixteenth
   of it, because what a retime holds still is the window. Changing the rate is therefore
-  a change of *length*, which is why `SetClipSpeed` is bounded like a trim — a frame at
-  least, no more source than the file has, and on a free-form lane no further than the
-  next clip — and why the magnetic lane repacks around it. `Clip.speed` and
+  a change of *length*, which is why `SetClipSpeed` is bounded like a trim — no more
+  source than the file has, and on a free-form lane no further than the next clip — and
+  why the magnetic lane repacks around it. The floor of one frame is the exception and
+  bends the other way: growing the length back up at the rate asked for would *widen* the
+  window, so it is the **rate** that gives way instead, and a clip with a frame of source
+  in it has nothing left to play faster. A source with no length of its own — a sticker,
+  a still — has no window to hold still at all, so retiming one changes the rate and
+  leaves the clip exactly as long as it was: what speeds up is the loop. `Clip.speed` and
   `VdTimelineClip::speed` carry the rate and never the window: the engine multiplies, in
   `source_time_at` in **both** `vd_engine.c` and `vd_audio_renderer.c`, and those two
   agreeing with `Clip.sourceTimeAt` is the point — a frame and the sound under it

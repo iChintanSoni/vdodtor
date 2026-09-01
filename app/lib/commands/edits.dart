@@ -376,11 +376,16 @@ final class SetClipAnimation extends EditCommand {
 /// why the same clip taken from 1x to 4x and back is the clip it started as
 /// rather than a sixteenth of it.
 ///
-/// Because it is a change of length it is bounded like a trim: at least one
-/// frame, no more source than the file has, and on a free-form lane no further
-/// than the next clip. On a magnetic lane there is no ceiling to hit — the
-/// neighbours move — which is what makes slowing a shot down on the main track
-/// feel like the obvious thing rather than a fight.
+/// Because it is a change of length it is bounded like a trim: no more source
+/// than the file has, and on a free-form lane no further than the next clip.
+/// On a magnetic lane there is no ceiling to hit — the neighbours move — which
+/// is what makes slowing a shot down on the main track feel like the obvious
+/// thing rather than a fight. The floor of one frame is the exception, and it
+/// gives way in the other direction: see [apply].
+///
+/// A source with no length of its own — a sticker, a still — is retimed
+/// without changing the clip's length at all, because there is no window to
+/// hold still. What speeds up is the loop.
 ///
 /// A caption or a shape is refused rather than quietly retimed. There is no
 /// source behind one, so a rate would be a number that means nothing and a
@@ -405,19 +410,33 @@ final class SetClipSpeed extends EditCommand {
           'source to play at another speed');
     }
 
-    final next = speed.clamped();
-    if (clip.speed == next) return project;
+    final requested = speed.clamped();
+    if (clip.speed == requested) return project;
+
+    final asset = project.assetFor(clip);
+    // A source with no length of its own has no window to hold still. A
+    // sticker's own length is one loop rather than a limit, so what a rate
+    // changes about it is how fast the loop runs — and stretching a three
+    // second overlay to thirty because somebody slowed it down would be an
+    // edit nobody asked for. Same for a still, which has nothing that runs.
+    if (asset != null && asset.probe.kind.isEndless) {
+      return project.replaceTrack(track.withClips([
+        for (final c in track.clips)
+          c.id == clipId ? c.copyWith(speed: requested) : c,
+      ]));
+    }
 
     // The window on the source is what a retime holds still. Rounding to a
     // whole tick each time means a rate taken up and back down is not exactly
     // where it started — a drag applies from the document as it stood when the
     // gesture began, so within one drag it is, and between two it is a tick.
-    var wanted = (clip.sourceDuration.raw / next.rate).round();
+    final window = clip.sourceDuration.raw;
     final minimum = project.ticksPerFrame;
-    if (wanted < minimum) wanted = minimum;
+    var wanted = (window / requested.rate).round();
 
-    final limit = maxDurationFor(clip.retimedTo(next, Tick(wanted)),
-        project.assetFor(clip));
+    // Bounded above the way a trim's tail is, and with the same consequence:
+    // the rate stands and the clip shows fewer frames than it did.
+    final limit = maxDurationFor(clip.retimedTo(requested, Tick(wanted)), asset);
     if (limit.raw > 0 && wanted > limit.raw) wanted = limit.raw;
     if (!track.isMagnetic) {
       final ceiling = _startOfNext(track, clip);
@@ -425,9 +444,27 @@ final class SetClipSpeed extends EditCommand {
         wanted = ceiling - clip.start.raw;
       }
     }
-    if (wanted < minimum) wanted = minimum;
 
-    final retimed = clip.retimedTo(next, Tick(wanted));
+    // Bounded below the *other* way round, and this is the one worth the ink.
+    // Growing the length back up to a frame at the rate asked for would widen
+    // the window instead: the clip would start showing frames it never had,
+    // the round trip through 4× would not land where it started, and a clip at
+    // the end of its file would run past it. So here it is the rate that gives
+    // way — a clip with a frame of source in it has nothing left to play
+    // faster, and saying so is better than inventing the frames to do it with.
+    var resolved = requested;
+    if (wanted < minimum) {
+      wanted = minimum;
+      resolved = requested
+          .copyWith(
+              rate: (window / wanted)
+                  .clamp(ClipSpeed.minRate, ClipSpeed.maxRate))
+          .clamped();
+    }
+
+    if (resolved == clip.speed && wanted == clip.duration.raw) return project;
+
+    final retimed = clip.retimedTo(resolved, Tick(wanted));
     final replaced = [
       for (final c in track.clips) c.id == clipId ? retimed : c,
     ];

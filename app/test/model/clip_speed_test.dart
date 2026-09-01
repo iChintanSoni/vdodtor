@@ -291,17 +291,66 @@ void main() {
       expect(clip.duration, secs(2.5));
     });
 
-    test('a clip never retimes out of existence', () {
+    test('at one frame the rate gives way, not the window', () {
+      // Two frames asked to play ten times faster would be a fifth of a frame.
+      // The length cannot go below one, and the tempting fix — keep the rate
+      // and grow the length back — widens the *window*: the clip would start
+      // showing frames it never had, a clip at the end of its file would run
+      // past it, and 10x and back would not land where it started. So the
+      // rate is what bends.
+      final store = DocumentStore(projectWithOneClip());
+      final frame = store.project.ticksPerFrame;
+      store.run(TrimClip('a', end: Tick(2 * frame)));
+      store.endGesture();
+
+      store.run(const SetClipSpeed('a', ClipSpeed(rate: 10)));
+      final clip = store.project.clipById('a')!;
+      expect(clip.duration.raw, frame);
+      expect(clip.speed.rate, 2, reason: 'two frames of source in one');
+      expect(clip.sourceDuration.raw, 2 * frame,
+          reason: 'the window is exactly what it was');
+    });
+
+    test('a clip with one frame in it has nothing to play faster', () {
       final store = DocumentStore(projectWithOneClip());
       final frame = store.project.ticksPerFrame;
       store.run(TrimClip('a', end: Tick(frame)));
       store.endGesture();
-      expect(store.project.clipById('a')!.duration.raw, frame);
 
-      // One frame at ten times is a tenth of a frame, which is not a clip.
+      // A rate of 1 is the only one that fits, so this changes nothing at all
+      // — and an edit that changes nothing is correctly no edit.
       store.run(const SetClipSpeed('a', ClipSpeed(rate: 10)));
       expect(store.project.clipById('a')!.duration.raw, frame);
-      expect(store.project.clipById('a')!.speed.rate, 10);
+      expect(store.project.clipById('a')!.speed, ClipSpeed.normal);
+      expect(store.undoLabels, ['Trim clip']);
+    });
+
+    test('a sticker is retimed without changing how long it is on for', () {
+      // Its own length is one loop rather than a limit, so there is no window
+      // to hold still: what a rate changes is how fast the loop runs. A three
+      // second overlay becoming thirty because somebody slowed it down would
+      // be an edit nobody asked for.
+      var project = withOverlayTrack(emptyProject())
+          .addMedia(stickerAsset('gif', seconds: 1));
+      project = project.updateTrack(
+        overlayTrackId,
+        (t) => t.withClips([
+          clipOf('s', 'gif', start: secs(1), duration: secs(3)),
+        ]),
+      );
+      final store = DocumentStore(project);
+      store.run(const SetClipSpeed('s', ClipSpeed(rate: 0.1)));
+
+      final clip = store.project.clipById('s')!;
+      expect(clip.duration, secs(3));
+      expect(clip.start, secs(1));
+      expect(clip.speed.rate, 0.1);
+      // And the engine is told the rate, which is what makes the loop slow.
+      expect(engineTimelineFor(store.project)
+              .clips
+              .firstWhere((c) => c.sticker)
+              .speed,
+          0.1);
     });
 
     test('a caption has no source to retime', () {

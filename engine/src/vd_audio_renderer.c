@@ -49,7 +49,15 @@ typedef struct {
   // Turns `speed` into sound. NULL for a clip nobody retimed, which is what
   // keeps the common path exactly the path it was before speed existed — the
   // source is read straight into the mix with nothing in between.
+  //
+  // `stretch_failed` is what tells that apart from a stretcher that could not
+  // be built: a retimed clip whose stretcher is missing must go *silent*, not
+  // quietly play at 1x while the picture runs at the rate it was given. The
+  // drift that would cause grows by a whole chunk every chunk and there is
+  // nothing on screen to say so. It is also why one failure is remembered
+  // rather than retried every 21 milliseconds, like `open_failed` beside it.
   VdStretch* stretch;
+  bool stretch_failed;
 
   // Where the clip expects the next chunk to start, *on the timeline*, so a
   // sequential decode does not re-seek every chunk.
@@ -193,13 +201,14 @@ static VdTick source_time_at(const VdAudioClip* clip, VdTick position) {
   return clip->source_in + (VdTick)llround((double)offset * clip->speed);
 }
 
-// Caller holds the lock. NULL for a clip playing at its own speed, which is
-// not a failure — see VdAudioClip::stretch.
+// Caller holds the lock. Called only for a retimed clip, so NULL here means
+// the stretcher could not be built — see VdAudioClip::stretch.
 static VdStretch* stretch_for(VdAudioClip* clip) {
-  if (clip->speed == 1.0) return NULL;
   if (clip->stretch) return clip->stretch;
+  if (clip->stretch_failed) return NULL;
   clip->stretch = vd_stretch_create(VD_AUDIO_SAMPLE_RATE, VD_AUDIO_CHANNELS,
                                     clip->speed, clip->pitch_shift);
+  if (!clip->stretch) clip->stretch_failed = true;
   return clip->stretch;
 }
 
@@ -210,10 +219,16 @@ static VdStretch* stretch_for(VdAudioClip* clip) {
 // one chunk and at 0.1x it is one read for ten chunks, and both come out of
 // the same loop. A short return means the source ended, which the caller
 // leaves as silence.
+//
+// The fast path is chosen on the *speed*, not on whether there is a stretcher.
+// Those are different questions, and answering the second would make a clip
+// whose stretcher would not allocate play its sound at 1x under a picture
+// running at 4x — silently, and further out of step every chunk.
 static int32_t read_clip(VdAudioRenderer* r, VdAudioClip* clip,
                          VdAudioSource* source, float* out, int32_t frames) {
+  if (clip->speed == 1.0) return vd_audio_source_read(source, out, frames);
   VdStretch* stretch = stretch_for(clip);
-  if (!stretch) return vd_audio_source_read(source, out, frames);
+  if (!stretch) return 0;  // silent, rather than out of step
 
   int32_t done = 0;
   while (done < frames) {
