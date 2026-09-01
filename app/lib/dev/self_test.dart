@@ -1098,6 +1098,138 @@ Future<void> runLookSelfTest(
   stdout.writeln('[selftest] looks: frames in ${out.path}');
 }
 
+/// The two things a clip can do to its own sound beyond its level: the shape
+/// its fades ramp in, and the filter it runs through.
+///
+/// The engine's own tests pin both against numbers — `vd_audio_test.c` asserts
+/// the same fade table this prints, curve for curve, and `vd_eq_test.c` pushes
+/// sine waves through every preset and reads the decibels off. What neither
+/// can show is the part that only exists up here: that a curve chosen in the
+/// inspector survives into the render list as a *shape* rather than as a
+/// number, that a preset survives as a name, and that the envelope the
+/// timeline draws is the one the mixer plays.
+///
+/// So this prints the envelope a tenth of a second at a time, once per curve,
+/// straight out of `Clip.gainAt` — the function the waveform painter uses. Four
+/// rows that all start at 0 and end at 1 and get there differently is a check
+/// anybody can make at a glance.
+///
+/// It puts the clip's sound back the way it found it, so the play pass at the
+/// end is playing the timeline the passes before it left.
+Future<void> runAudioEffectsSelfTest(
+    PreviewEngine engine, DocumentStore store) async {
+  final target = _clipToDuck(store.project);
+  if (target == null) {
+    stdout.writeln('[selftest] audio: nothing with sound to shape');
+    return;
+  }
+  final (:trackId, :clip) = target;
+  final asset = store.project.assetFor(clip)!;
+  final original = clip.audio;
+
+  // A fade over the first and last second of the clip, which is long enough
+  // for the four curves to be visibly different a tenth of a second apart.
+  //
+  // Without the volume line the pass before this one drew, and only for the
+  // printing: `gainAt` multiplies the fade by the duck, so a table read
+  // through one would be four curves with a descending ramp folded into all of
+  // them. The duck goes back on at the end with everything else.
+  final second = Tick(Timebase.project.ticksPerSecond);
+  final fades =
+      original.withoutAutomation.copyWith(fadeIn: second, fadeOut: second);
+  final tenth = Timebase.project.ticksPerSecond ~/ 10;
+  final columns = (second.raw / tenth).floor();
+
+  stdout.writeln('[selftest] audio: ${asset.displayName} on $trackId, '
+      '${(clip.duration.raw / 120000).toStringAsFixed(2)}s, '
+      '1s fades');
+
+  for (final curve in FadeCurve.values) {
+    store.endGesture();
+    store.run(SetClipAudio(clip.id, fades.copyWith(fadeCurve: curve)));
+    store.endGesture();
+
+    final shaped = store.project.clipById(clip.id)!;
+    // Through `gainAt` rather than through `fadeShapeAt`, deliberately: that
+    // is the function the waveform painter calls, so this is the envelope the
+    // timeline actually draws and not a second opinion about it.
+    final gains = [
+      for (var i = 0; i < columns; i++)
+        shaped.gainAt(Tick(i * tenth)).toStringAsFixed(2),
+    ];
+    final sent = engineTimelineFor(store.project)
+        .clips
+        .where((c) => c.path == asset.path)
+        .toList();
+    stdout.writeln('[selftest] audio: ${curve.label.padRight(11)} '
+        '${gains.join(" ")}  — engine gets '
+        '${sent.isEmpty ? "-" : sent.first.fadeCurve.name}');
+  }
+
+  // And the filter. What crosses is the preset's *name*: nothing up here knows
+  // what a "voice" is, which is the same bargain a look takes.
+  for (final preset in EqPreset.values) {
+    store.endGesture();
+    store.run(SetClipAudio(
+        clip.id, fades.copyWith(fadeCurve: FadeCurve.smooth, eq: preset)));
+    store.endGesture();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    final sent = engineTimelineFor(store.project)
+        .clips
+        .where((c) => c.path == asset.path)
+        .toList();
+    stdout.writeln('[selftest] audio: eq ${preset.label.padRight(10)} '
+        'engine gets ${sent.isEmpty ? "-" : sent.first.eq.name}');
+  }
+
+  // The part no offline test can reach: a cascade of biquads running under a
+  // real deadline. Every underrun here is audible, and a filter that cannot
+  // keep up shows up nowhere else.
+  store.endGesture();
+  store.run(SetClipAudio(
+      clip.id,
+      fades.copyWith(fadeCurve: FadeCurve.equalPower, eq: EqPreset.voice)));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+
+  engine.seek(clip.start.raw);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  final before = engine.stats;
+  final clock = Stopwatch()..start();
+  engine.play();
+  await Future<void>.delayed(const Duration(seconds: 3));
+  final playing = engine.stats;
+  clock.stop();
+  engine.pause();
+
+  stdout.writeln('[selftest] audio: played 3s of a filtered, faded clip — '
+      'underruns ${playing.audioUnderruns - before.audioUnderruns}, '
+      'buffered ${playing.audioBufferedFrames}, '
+      'frames ${playing.framesPresented - before.framesPresented} in '
+      '${(clock.elapsedMilliseconds / 1000).toStringAsFixed(2)}s, '
+      'late ${playing.framesLate - before.framesLate}');
+
+  // Drawn, because the waveform is scaled by the same envelope and a fade the
+  // page shows and the speakers play disagreeing about is the whole thing the
+  // shared table exists to prevent.
+  final cache = Directory.systemTemp.createTempSync('vdodtor_audiofx_');
+  final out = '${Directory.systemTemp.path}/vdodtor_fade_curves.png';
+  // Tall enough to reach the audio lane. By the time this pass runs there are
+  // two text lanes, an overlay and the main track above it, and a canvas the
+  // height the volume-line pass uses would cut off the clip this is about.
+  await _drawTimeline(store.project, cache, out, const Size(900, 360),
+      duration: store.project.duration);
+  stdout.writeln('[selftest] audio: timeline drawn to $out');
+
+  store.endGesture();
+  store.run(SetClipAudio(clip.id, original));
+  store.endGesture();
+  stdout.writeln('[selftest] audio: put back — '
+      'eq ${store.project.clipById(clip.id)!.audio.eq.name}, '
+      'curve ${store.project.clipById(clip.id)!.audio.fadeCurve.name}');
+}
+
 /// A clip played at other speeds, watched and listened to.
 ///
 /// The engine's own tests pin both halves of this against numbers:

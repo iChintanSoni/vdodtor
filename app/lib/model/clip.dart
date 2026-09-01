@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 
 import 'media.dart';
@@ -340,6 +342,85 @@ final class VolumePoint {
   String toString() => 'VolumePoint(${sourceTime.raw}, $value)';
 }
 
+/// The shape a fade ramps in.
+///
+/// Four of them, each with a job rather than a taste:
+///
+///  * [linear] is a straight line in amplitude — the handle position means
+///    what it looks like it means, and it is what every fade was before there
+///    was a choice, so it stays the default and every existing project sounds
+///    exactly as it did.
+///  * [smooth] has no corner at either end, which is what a fade over music or
+///    a held shot wants.
+///  * [equalPower] holds *power* constant, so two clips overlapping on two
+///    lanes cross through it without the 3 dB dip a pair of straight lines
+///    leaves in the middle. The one shape here that is about a crossfade
+///    rather than about a fade.
+///  * [exponential] starts almost silent and arrives late, which is the shape
+///    a long musical fade-in wants.
+///
+/// Three enums in one order — this, `EngineFadeCurve` in the plugin and
+/// `VdFadeCurve` in `engine/include/vdodtor/vd_engine.h`. The index is what
+/// crosses the FFI boundary, so this may be appended to and never reordered.
+enum FadeCurve {
+  linear('Linear'),
+  smooth('Smooth'),
+  equalPower('Equal power'),
+  exponential('Exponential');
+
+  const FadeCurve(this.label);
+
+  /// What the picker calls it.
+  final String label;
+
+  bool get isLinear => this == FadeCurve.linear;
+}
+
+/// What a clip sounds like, as a short list of things people ask for.
+///
+/// Presets rather than a parametric equaliser, and that is the whole decision.
+/// Three bands with frequency, gain and Q each is nine numbers, a panel nobody
+/// can read at a glance, and a way to make a recording worse with great
+/// precision. What somebody actually wants is "make this voice sound like a
+/// voice", and that is a preset.
+///
+/// **Nothing here is evaluated in Dart.** What a preset *means* — biquad
+/// coefficients out of the RBJ cookbook — lives in `engine/src/vd_eq.c`, on
+/// the bargain `vd_anim` and `vd_stretch` already have: nothing in the app
+/// draws a response curve, so a second copy of the maths would be a second
+/// thing to keep in step with no reader. The document carries the name and
+/// the engine owns the meaning, exactly as it does for a transition preset.
+///
+/// Three enums in one order, with `EngineEqPreset` and `VdEqPreset`; the index
+/// crosses the boundary, so append only.
+enum EqPreset {
+  none('None'),
+
+  /// Rumble out, room boxiness down, consonants forward. The one that earns
+  /// the feature: it is what makes a voice recorded in a kitchen listenable.
+  voice('Voice'),
+
+  /// A gentle smile at both ends — the polish a bed under a voice-over wants.
+  music('Music'),
+
+  /// More weight, for a track that was mixed thin.
+  bass('Bass'),
+
+  /// More air, for one that was mixed dull.
+  bright('Bright'),
+
+  /// A deliberate effect rather than a correction: the band a phone line
+  /// passes and nothing either side of it.
+  telephone('Telephone');
+
+  const EqPreset(this.label);
+
+  /// What the picker calls it.
+  final String label;
+
+  bool get isNone => this == EqPreset.none;
+}
+
 /// How loud a clip is, and how it gets there.
 ///
 /// The video half of a clip is [ClipTransform]; this is the other half. Both
@@ -359,6 +440,8 @@ final class ClipAudio {
     this.volume = 1,
     this.fadeIn = Tick.zero,
     this.fadeOut = Tick.zero,
+    this.fadeCurve = FadeCurve.linear,
+    this.eq = EqPreset.none,
     this.muted = false,
     this.points = const [],
   });
@@ -376,6 +459,16 @@ final class ClipAudio {
   /// long at the tail. Ticks, like every other length in the document.
   final Tick fadeIn;
   final Tick fadeOut;
+
+  /// The shape both of those ramps take. One curve per clip rather than one
+  /// per fade: two shapes on one clip is a distinction nobody makes, and it
+  /// would double the field, the picker, the file format and the shared table
+  /// for nothing.
+  final FadeCurve fadeCurve;
+
+  /// What the clip sounds like. [EqPreset.none] for almost every clip, and the
+  /// value serialisation leaves out of the file.
+  final EqPreset eq;
 
   /// Silent, without forgetting how loud it was. That distinction is the whole
   /// point of having both this and [volume]: unmuting has to give the level
@@ -421,13 +514,11 @@ final class ClipAudio {
   /// each pair is tested against the same table. Change one and you must
   /// change the other.
   ///
-  /// The ramps are linear in amplitude. Linear is not the most flattering
-  /// curve for a long fade, but it is the one where the handle position means
-  /// what it looks like it means, and a shaped curve is an option to add later
-  /// rather than a default to guess at now.
+  /// The ramps take the shape [fadeCurve] names, and `_rampAt` is the one
+  /// place that knows what each of them means.
   double gainAt(Tick offset, Tick duration,
       {Tick sourceIn = Tick.zero, double speed = 1}) {
-    final shape = fadeShapeAt(offset, duration, fadeIn, fadeOut);
+    final shape = fadeShapeAt(offset, duration, fadeIn, fadeOut, curve: fadeCurve);
     if (shape == 0 || points.isEmpty) return effectiveVolume * shape;
     // The fade above is measured on the timeline and the line below in the
     // source, so a retimed clip moves one of them and not the other: a fade
@@ -539,24 +630,39 @@ final class ClipAudio {
 
   /// The fade envelope alone, without volume or mute. Static because the
   /// engine needs exactly this function and nothing around it.
-  static double fadeShapeAt(
-      Tick offset, Tick duration, Tick fadeIn, Tick fadeOut) {
+  static double fadeShapeAt(Tick offset, Tick duration, Tick fadeIn,
+      Tick fadeOut, {FadeCurve curve = FadeCurve.linear}) {
     if (duration.raw <= 0) return 0;
     if (offset.raw < 0 || offset.raw >= duration.raw) return 0;
 
     var gain = 1.0;
     if (fadeIn.raw > 0 && offset.raw < fadeIn.raw) {
-      gain *= offset.raw / fadeIn.raw;
+      gain *= _rampAt(offset.raw / fadeIn.raw, curve);
     }
     // Measured from the far edge, so the last tick of a clip is as quiet as
     // the first — a fade out that reached zero one tick early would leave an
     // audible click exactly where the fade existed to prevent one.
     final remaining = duration.raw - offset.raw;
     if (fadeOut.raw > 0 && remaining < fadeOut.raw) {
-      gain *= remaining / fadeOut.raw;
+      gain *= _rampAt(remaining / fadeOut.raw, curve);
     }
     return gain;
   }
+
+  /// How far up a ramp is [t] of the way through, 0..1.
+  ///
+  /// Every curve is 0 at 0 and 1 at 1, which is what lets [fadeShapeAt] stay
+  /// the shape it always was: the curve decides what happens in between and
+  /// nothing else about a fade changes.
+  ///
+  /// The same function as `fade_shape` in `engine/src/vd_audio_renderer.c`,
+  /// and the two test the same table — every curve of it.
+  static double _rampAt(double t, FadeCurve curve) => switch (curve) {
+        FadeCurve.linear => t,
+        FadeCurve.smooth => (1 - math.cos(math.pi * t)) / 2,
+        FadeCurve.equalPower => math.sin(t * math.pi / 2),
+        FadeCurve.exponential => t * t,
+      };
 
   /// The same fades, shortened so they fit inside a clip [duration] long.
   ///
@@ -566,28 +672,46 @@ final class ClipAudio {
   /// ordinary way to arrive there, so the clamp lives here rather than in the
   /// setter — every path that shortens a clip goes through it.
   ClipAudio clampedTo(Tick duration) {
-    if (duration.raw <= 0) {
-      return copyWith(fadeIn: Tick.zero, fadeOut: Tick.zero);
-    }
     var inTicks = fadeIn.raw < 0 ? 0 : fadeIn.raw;
     var outTicks = fadeOut.raw < 0 ? 0 : fadeOut.raw;
-    final total = inTicks + outTicks;
-    if (total > duration.raw) {
-      // Shared in the proportion asked for, taken from the lengths as
-      // requested. Clamping each to the whole clip first and proportioning
-      // afterwards would turn a 1:3 request into 3:4 — moving a fade the user
-      // never touched, because the other one was too long.
-      inTicks = (inTicks * duration.raw) ~/ total;
-      outTicks = duration.raw - inTicks;
+    if (duration.raw <= 0) {
+      inTicks = 0;
+      outTicks = 0;
+    } else {
+      final total = inTicks + outTicks;
+      if (total > duration.raw) {
+        // Shared in the proportion asked for, taken from the lengths as
+        // requested. Clamping each to the whole clip first and proportioning
+        // afterwards would turn a 1:3 request into 3:4 — moving a fade the
+        // user never touched, because the other one was too long.
+        inTicks = (inTicks * duration.raw) ~/ total;
+        outTicks = duration.raw - inTicks;
+      }
     }
-    if (inTicks == fadeIn.raw && outTicks == fadeOut.raw) return this;
-    return copyWith(fadeIn: Tick(inTicks), fadeOut: Tick(outTicks));
+
+    // A curve with nothing left to shape goes with the fades. The rule
+    // [ClipAnimation] already follows — a document records what *happens*, not
+    // what was clicked on the way there — and without it a clip whose fades
+    // were dragged back to zero would keep a shape the panel no longer shows,
+    // offer a Reset for it, and lose it silently on the next save.
+    final curve =
+        inTicks == 0 && outTicks == 0 ? FadeCurve.linear : fadeCurve;
+
+    if (inTicks == fadeIn.raw &&
+        outTicks == fadeOut.raw &&
+        curve == fadeCurve) {
+      return this;
+    }
+    return copyWith(
+        fadeIn: Tick(inTicks), fadeOut: Tick(outTicks), fadeCurve: curve);
   }
 
   ClipAudio copyWith({
     double? volume,
     Tick? fadeIn,
     Tick? fadeOut,
+    FadeCurve? fadeCurve,
+    EqPreset? eq,
     bool? muted,
     List<VolumePoint>? points,
   }) =>
@@ -595,6 +719,8 @@ final class ClipAudio {
         volume: volume ?? this.volume,
         fadeIn: fadeIn ?? this.fadeIn,
         fadeOut: fadeOut ?? this.fadeOut,
+        fadeCurve: fadeCurve ?? this.fadeCurve,
+        eq: eq ?? this.eq,
         muted: muted ?? this.muted,
         points: points ?? this.points,
       );
@@ -605,18 +731,22 @@ final class ClipAudio {
       other.volume == volume &&
       other.fadeIn == fadeIn &&
       other.fadeOut == fadeOut &&
+      other.fadeCurve == fadeCurve &&
+      other.eq == eq &&
       other.muted == muted &&
       listEquals(other.points, points);
 
   @override
-  int get hashCode => Object.hash(
-      volume, fadeIn.raw, fadeOut.raw, muted, Object.hashAll(points));
+  int get hashCode => Object.hash(volume, fadeIn.raw, fadeOut.raw, fadeCurve,
+      eq, muted, Object.hashAll(points));
 
   @override
   String toString() => isUnity
       ? 'ClipAudio.unity'
       : 'ClipAudio(volume $volume${muted ? ' muted' : ''} '
           'fade ${fadeIn.raw}/${fadeOut.raw}'
+          '${fadeCurve.isLinear ? '' : ' ${fadeCurve.name}'}'
+          '${eq.isNone ? '' : ' eq ${eq.name}'}'
           '${points.isEmpty ? '' : ' ${points.length} points'})';
 }
 

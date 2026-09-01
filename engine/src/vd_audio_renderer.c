@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "vdodtor/vd_eq.h"
 #include "vdodtor/vd_stretch.h"
 
 // Half a second of lead. Long enough to ride out a decode that stalls behind a
@@ -36,6 +37,8 @@ typedef struct {
   float gain;
   VdTick fade_in;
   VdTick fade_out;
+  VdFadeCurve fade_curve;
+  VdEqPreset eq_preset;
 
   // Owned. Copied out of the render list, because the caller's array is gone
   // the moment set_timeline returns and the decode thread reads this for as
@@ -58,6 +61,13 @@ typedef struct {
   // rather than retried every 21 milliseconds, like `open_failed` beside it.
   VdStretch* stretch;
   bool stretch_failed;
+
+  // What the clip sounds like. NULL for VD_EQ_NONE, which is almost every
+  // clip — and, as with the stretcher, the mixer decides on the *preset* and
+  // not on the pointer, so a filter that would not allocate cannot be mistaken
+  // for nothing having been asked for. See vd_eq.h.
+  VdEq* eq;
+  bool eq_failed;
 
   // Where the clip expects the next chunk to start, *on the timeline*, so a
   // sequential decode does not re-seek every chunk.
@@ -110,6 +120,7 @@ static void free_clips(VdAudioRenderer* r) {
   for (int32_t i = 0; i < r->clip_count; i++) {
     if (r->clips[i].source) vd_audio_source_close(r->clips[i].source);
     vd_stretch_destroy(r->clips[i].stretch);
+    vd_eq_destroy(r->clips[i].eq);
     free(r->clips[i].path);
     free(r->clips[i].points);
   }
@@ -136,21 +147,43 @@ static VdAudioSource* source_for(VdAudioRenderer* r, VdAudioClip* clip) {
 
 // --- the fade envelope -----------------------------------------------------
 
+// How far up a ramp is when it is `t` of the way through, 0..1.
+//
+// Every curve is 0 at 0 and 1 at 1, which is what lets the caller below stay
+// the same shape it always was: the curve decides what happens in between and
+// nothing else about a fade changes.
+static float fade_shape(double t, VdFadeCurve curve) {
+  switch (curve) {
+    case VD_FADE_SMOOTH:
+      return (float)((1.0 - cos(M_PI * t)) / 2.0);
+    case VD_FADE_EQUAL_POWER:
+      return (float)sin(t * M_PI / 2.0);
+    case VD_FADE_EXPONENTIAL:
+      return (float)(t * t);
+    case VD_FADE_LINEAR:
+    default:
+      // Also the answer for a curve from a newer version of the document: a
+      // fade in a shape this build has never heard of is still a fade, and the
+      // clip is still audible for the same length of time.
+      return (float)t;
+  }
+}
+
 float vd_audio_fade_gain(VdTick offset, VdTick duration, VdTick fade_in,
-                         VdTick fade_out) {
+                         VdTick fade_out, VdFadeCurve curve) {
   if (duration <= 0) return 0.0f;
   if (offset < 0 || offset >= duration) return 0.0f;
 
   float gain = 1.0f;
   if (fade_in > 0 && offset < fade_in) {
-    gain *= (float)((double)offset / (double)fade_in);
+    gain *= fade_shape((double)offset / (double)fade_in, curve);
   }
   // Measured from the far edge, so the last tick of a clip is as quiet as the
   // first. A fade out that reached zero a tick early would leave a click
   // exactly where the fade was put to prevent one.
   const VdTick remaining = duration - offset;
   if (fade_out > 0 && remaining < fade_out) {
-    gain *= (float)((double)remaining / (double)fade_out);
+    gain *= fade_shape((double)remaining / (double)fade_out, curve);
   }
   return gain;
 }
@@ -199,6 +232,17 @@ static VdTick source_time_at(const VdAudioClip* clip, VdTick position) {
   const VdTick offset = position - clip->start;
   if (clip->speed == 1.0) return clip->source_in + offset;
   return clip->source_in + (VdTick)llround((double)offset * clip->speed);
+}
+
+// Caller holds the lock. Called only for a clip that asked for an EQ, so NULL
+// here means the filter could not be built — see VdAudioClip::eq.
+static VdEq* eq_for(VdAudioClip* clip) {
+  if (clip->eq) return clip->eq;
+  if (clip->eq_failed) return NULL;
+  clip->eq = vd_eq_create(clip->eq_preset, VD_AUDIO_SAMPLE_RATE,
+                          VD_AUDIO_CHANNELS);
+  if (!clip->eq) clip->eq_failed = true;
+  return clip->eq;
 }
 
 // Caller holds the lock. Called only for a retimed clip, so NULL here means
@@ -280,12 +324,27 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
       // longer next: crossfading across a seek would smear the material
       // before it into the material after.
       if (clip->stretch) vd_stretch_reset(clip->stretch);
+      // And a biquad's state is the last two samples it saw, which after a
+      // seek are from somewhere else entirely — ringing them into what follows
+      // is a click at exactly the moment somebody is listening.
+      if (clip->eq) vd_eq_reset(clip->eq);
       clip->positioned = true;
     }
 
     const int32_t got = read_clip(r, clip, source, r->clip_out, frames);
     clip->expected_position =
         position + vd_scale(frames, VD_TICKS_PER_SECOND, VD_AUDIO_SAMPLE_RATE);
+
+    // Before the envelope rather than after it, and that is the one decision
+    // here. A filter is linear, so gain and EQ commute — but the envelope is a
+    // gain that *changes*, and running a fade into a biquad would have the
+    // filter chasing the ramp instead of the sound. Filtering the clip as it
+    // was recorded and shaping the result afterwards is both the cheaper order
+    // and the one that means what it says.
+    if (got > 0 && clip->eq_preset != VD_EQ_NONE) {
+      VdEq* eq = eq_for(clip);
+      if (eq) vd_eq_process(eq, r->clip_out, got);
+    }
 
     const bool fading = clip->fade_in > 0 || clip->fade_out > 0;
     const bool automated = clip->points && clip->point_count > 0;
@@ -313,7 +372,8 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
                                      VD_AUDIO_SAMPLE_RATE);
         if (fading) {
           gain *= vd_audio_fade_gain(offset + into, clip->duration,
-                                     clip->fade_in, clip->fade_out);
+                                     clip->fade_in, clip->fade_out,
+                                     clip->fade_curve);
         }
         if (automated) {
           // The fade is measured on the timeline and the volume line in the
@@ -466,6 +526,8 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
     next[i].gain = clips[i].gain;
     next[i].fade_in = clips[i].fade_in;
     next[i].fade_out = clips[i].fade_out;
+    next[i].fade_curve = clips[i].fade_curve;
+    next[i].eq_preset = clips[i].eq;
 
     if (clips[i].volume_points && clips[i].volume_point_count > 0) {
       const size_t bytes =
@@ -488,14 +550,21 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
           strcmp(old->path, next[i].path) == 0) {
         next[i].source = old->source;
         old->source = NULL;
-        // And the stretcher with it, when the edit was not the speed itself.
-        // Its buffers are a hundred kilobytes and its windows are the last
-        // forty milliseconds of the clip; rebuilding both because somebody
-        // nudged a fader would be work for nothing.
+        // And the stretcher and the filter with it, when the edit was neither
+        // the speed nor the preset. This saves the *allocation* and nothing
+        // else: every clip is left unpositioned below, so the next chunk
+        // re-seeks and resets both anyway. Worth the lines for the stretcher,
+        // whose buffers are a hundred kilobytes and which a drag on a slider
+        // would otherwise rebuild sixty times a second; the filter comes along
+        // for consistency rather than for the two hundred bytes.
         if (old->stretch && vd_stretch_matches(old->stretch, next[i].speed,
                                                next[i].pitch_shift)) {
           next[i].stretch = old->stretch;
           old->stretch = NULL;
+        }
+        if (old->eq && vd_eq_matches(old->eq, next[i].eq_preset)) {
+          next[i].eq = old->eq;
+          old->eq = NULL;
         }
         break;
       }
@@ -506,6 +575,7 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
   for (int32_t j = 0; j < previous_count; j++) {
     if (previous[j].source) vd_audio_source_close(previous[j].source);
     vd_stretch_destroy(previous[j].stretch);
+    vd_eq_destroy(previous[j].eq);
     free(previous[j].path);
     free(previous[j].points);
   }

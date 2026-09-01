@@ -107,6 +107,19 @@ class EngineColor {
   final double lookStrength;
 }
 
+/// The shape a fade ramps in. Order matches `VdFadeCurve` in vd_engine.h — the
+/// index crosses the FFI boundary as an integer, so these may be appended to
+/// and never reordered.
+enum EngineFadeCurve { linear, smooth, equalPower, exponential }
+
+/// What a clip sounds like. Order matches `VdEqPreset` in vd_eq.h, on the same
+/// terms: append only.
+///
+/// A name rather than a set of bands, exactly as [EngineColor.look] is a name
+/// rather than a lattice — what a preset *means* is the engine's, and nothing
+/// on this side evaluates one.
+enum EngineEqPreset { none, voice, music, bass, bright, telephone }
+
 /// One point on a clip's volume line.
 ///
 /// [sourceTicks] is in the source's own time, the same coordinate as
@@ -356,6 +369,8 @@ class EngineClip {
     this.gain = 1.0,
     this.fadeInTicks = 0,
     this.fadeOutTicks = 0,
+    this.fadeCurve = EngineFadeCurve.linear,
+    this.eq = EngineEqPreset.none,
     this.volumePoints = const [],
   }) : assert(
             (path == null ? 0 : 1) +
@@ -427,6 +442,13 @@ class EngineClip {
 
   final int fadeInTicks;
   final int fadeOutTicks;
+
+  /// The shape both fades ramp in. Linear is what every fade was before there
+  /// was a choice, so it is the default on both sides of the boundary.
+  final EngineFadeCurve fadeCurve;
+
+  /// What the clip sounds like, as a preset the engine owns the meaning of.
+  final EngineEqPreset eq;
 
   /// The volume line, sorted by [EngineVolumePoint.sourceTicks] and empty for
   /// a clip nobody has automated. Copied into native memory on set_timeline,
@@ -663,6 +685,8 @@ class PreviewEngine extends ChangeNotifier {
         entry.gain = clip.gain;
         entry.fade_in = clip.fadeInTicks;
         entry.fade_out = clip.fadeOutTicks;
+        entry.fade_curveAsInt = clip.fadeCurve.index;
+        entry.eqAsInt = clip.eq.index;
 
         // Allocated from the same arena as the paths and freed with them: the
         // engine copies the array before set_timeline returns.

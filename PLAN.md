@@ -16,9 +16,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
-> **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
-> animated stickers over them, make them all arrive, join one shot to the next, grade
-> the colour of any of them, put a look on top, and play any of it faster or slower.** A caption is a clip with no
+> **M3's build items are all done, and its exit criteria are one edit by hand: the editor
+> can put words on the picture, draw shapes beside them, drop animated stickers over them,
+> make them all arrive, join one shot to the next, grade the colour of any of them, put a
+> look on top, play any of it faster or slower, and shape the sound of it.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -89,6 +90,17 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > **height** — both of them, so a circle is round in a 16:9 project and in a 9:16 one.
 > Measured in the running app: three layers, one draw per shape, and **zero** further
 > draws across eight seeks.
+>
+> A clip's sound now has a **shape and a character**: four fade curves — linear,
+> smooth, equal power and exponential — and five EQ presets, from a voice correction
+> to a telephone. The two land on opposite sides of one rule. A fade is *drawn* on the
+> timeline, so its shape is written twice and the table that pins it grew a column per
+> curve; an EQ is not drawn by anything, so the document carries only the preset's name
+> and `vd_eq.c` owns what it means — the arrangement a look already has. Presets rather
+> than a parametric equaliser, because nine numbers is a panel nobody can read and a way
+> to make a recording worse with great precision. Measured in the running app: four
+> envelopes that all start at 0 and reach 1 differently, and three seconds of playback
+> through a three-section biquad cascade with **0 underruns and 0 late frames**.
 >
 > And any clip can now be **retimed**, 0.1x to 10x. A speed is a *rate*, not a length:
 > `Clip.duration` stays the clip's length on the timeline, so nothing about packing,
@@ -1370,7 +1382,68 @@ start to finish without touching another editor; undo works through the whole se
       kept gave **0 underruns and 0 late frames**, 90 frames in 3.04s.
 
 ### Audio effects
-- [ ] EQ presets and fade curves
+- [x] EQ presets and fade curves — two features that share a panel and land on
+      opposite sides of the same rule.
+      **A fade has a shape.** Four ramps, each with a job rather than a taste:
+      **linear** (a straight line in amplitude — the handle position means what
+      it looks like it means, and it is what every fade was before there was a
+      choice, so it stays the default and every existing project sounds bit for
+      bit as it did), **smooth** (a raised cosine, no corner at either end,
+      which is what a fade over music wants), **equal power** (a quarter of a
+      sine, which holds *power* constant so two clips overlapping on two lanes
+      cross without the 3 dB dip a pair of straight lines leaves in the middle
+      — the one shape here that is about a crossfade), and **exponential**
+      (t squared: starts almost silent and arrives late, the shape a long
+      musical fade-in wants). One curve per clip and not one per fade: two
+      shapes on one clip is a distinction nobody makes, and it would double the
+      field, the picker, the file format and the shared table for nothing.
+      Because the timeline *draws* a fade — the waveform is scaled through
+      `Clip.gainAt` — the curve is written twice, and the table that pins it
+      grew a column per curve rather than a second table. A curve inserted in
+      the middle of one of the three enums therefore reads the wrong column and
+      the table says so, which is a second reason for it beyond the numbers.
+      **An EQ is a name.** Presets rather than a parametric equaliser, and that
+      is the whole design: three bands with frequency, gain and Q each is nine
+      numbers, a panel nobody can read at a glance, and — for the people this
+      product is for — a way to make a recording worse with great precision.
+      What they want is "make this voice sound like a voice". Five of them,
+      each built for a job: **voice** (high-pass at 90 Hz, 3 dB out of the room
+      boxiness at 300, 4 dB of presence at 3k — cut first and lift second, so
+      the presence is not amplifying the mud), **music** (a gentle smile),
+      **bass**, **bright**, and **telephone**, which is the one effect. Every
+      one is a cascade of biquads with RBJ coefficients, and the document
+      carries only the *name* — `vd_eq.c` owns the meaning, the arrangement a
+      look and a transition preset already have. So the curve is mirrored in
+      Dart and the EQ is **not**, which is `vd_anim`'s rule applied twice and
+      landing on opposite sides.
+      One ordering decision in the mixer is worth the ink: the filter runs
+      **before** the envelope. A filter is linear so a gain and an EQ commute,
+      but the envelope is a gain that *changes*, and running a fade into a
+      biquad has the filter chasing the ramp instead of the sound.
+      Measured in C: every preset asserted in decibels by pushing sine waves
+      through it — voice is 22 dB down at 25 Hz and +4 at 3 kHz, telephone is
+      24 down at 100 Hz and 28 down at 12 kHz, and bass and bright each move
+      one end and leave the other inside half a decibel. The coefficients and
+      the filter are checked against each other, the two channels are checked
+      for not leaking into one another, and filtering in blocks of 1, 7, 64,
+      1000, 333 and 2691 frames gives the same samples as filtering in one go.
+      Measured in the running app, a tenth of a second per column and read
+      straight out of `Clip.gainAt` — the function the waveform painter calls,
+      so this is the envelope the timeline actually draws:
+
+      | curve | 0.0s to 0.9s of a one-second fade in |
+      |---|---|
+      | Linear | 0.00 0.10 0.20 0.30 0.40 0.50 0.60 0.70 0.80 0.90 |
+      | Smooth | 0.00 0.02 0.10 0.21 0.35 0.50 0.65 0.79 0.90 0.98 |
+      | Equal power | 0.00 0.16 0.31 0.45 0.59 0.71 0.81 0.89 0.95 0.99 |
+      | Exponential | 0.00 0.01 0.04 0.09 0.16 0.25 0.36 0.49 0.64 0.81 |
+
+      Four rows that all start at 0 and end at 1 and get there differently is a
+      check anybody can make at a glance. And the part no offline test can
+      reach, since they all pull the renderer with no device and no deadline:
+      three seconds of playback of a clip running an equal-power fade through
+      the three-section voice cascade gave **0 underruns and 0 late frames**,
+      90 frames in 3.03s.
 
 **Exit criteria:** recreate a typical CapCut-style edit (text callouts, transitions, a filtered
 look, one slow-mo moment) entirely in vdodtor.

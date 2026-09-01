@@ -273,6 +273,87 @@ void main() {
       expect(find.text('SOUND'), findsOneWidget);
     });
 
+    testWidgets('a clip with sound gets an EQ picker, and it sets one',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToControl(tester, find.text('EQ'));
+
+      // Inside the EQ dropdown specifically: "None" is also what an animation
+      // preset with nothing chosen calls itself, and there are two of those.
+      expect(
+        find.descendant(
+          of: find.byType(DropdownButtonFormField<EqPreset>),
+          matching: find.text(EqPreset.none.label),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.byType(DropdownButtonFormField<EqPreset>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(EqPreset.voice.label).last);
+      await tester.pumpAndSettle();
+
+      expect(store.project.clipById('b')!.audio.eq, EqPreset.voice);
+      expect(store.undoLabels, ['Adjust audio']);
+    });
+
+    testWidgets('the fade shape appears only once there is a fade',
+        (tester) async {
+      // A curve on a clip with no fades is a control that silently does
+      // nothing, which is the one kind that teaches people not to trust the
+      // panel.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+      expect(find.text('Shape'), findsNothing);
+
+      store.run(SetClipAudio('b', ClipAudio(fadeIn: secs(1))));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToControl(tester, find.text('Shape'));
+
+      expect(
+        find.descendant(
+          of: find.byType(DropdownButtonFormField<FadeCurve>),
+          matching: find.text(FadeCurve.linear.label),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.byType(DropdownButtonFormField<FadeCurve>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(FadeCurve.equalPower.label).last);
+      await tester.pumpAndSettle();
+
+      expect(store.project.clipById('b')!.audio.fadeCurve,
+          FadeCurve.equalPower);
+      // And the fade it shapes is untouched: a shape is not a length.
+      expect(store.project.clipById('b')!.audio.fadeIn, secs(1));
+    });
+
+    testWidgets('Reset takes the EQ and the shape with it', (tester) async {
+      controller.select('b');
+      store.run(SetClipAudio(
+          'b',
+          ClipAudio(
+              fadeIn: secs(1),
+              fadeCurve: FadeCurve.smooth,
+              eq: EqPreset.telephone)));
+      store.endGesture();
+      await pumpInspector(tester);
+      await scrollToSound(tester);
+
+      await tester.tap(find.descendant(
+        of: find.ancestor(
+          of: find.text('SOUND'),
+          matching: find.byType(Row),
+        ).first,
+        matching: find.text('Reset'),
+      ));
+      await tester.pump();
+
+      expect(store.project.clipById('b')!.audio, ClipAudio.unity);
+    });
+
     testWidgets('the fader reads in decibels, not in multipliers',
         (tester) async {
       // The ear is logarithmic; a fader marked 0.50 tells nobody anything.

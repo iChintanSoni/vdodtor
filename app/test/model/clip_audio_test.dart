@@ -8,6 +8,13 @@ import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/serialization.dart';
 import 'package:vdodtor/model/time.dart';
 import 'package:vdodtor/model/track.dart';
+// The generated bindings, on purpose: they are the C header in Dart form, and
+// checking the hand-written enums against them is what makes this a check on
+// vd_engine.h and vd_eq.h rather than on the file next to it.
+// ignore: implementation_imports
+import 'package:vdodtor_engine/src/bindings.g.dart'
+    show VdEqPreset, VdFadeCurve;
+import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../fixtures.dart';
 
@@ -18,17 +25,24 @@ import '../fixtures.dart';
 /// timeline draws and a fade the speakers play being the same shape is not
 /// something to leave to two people reading the same prose, so it is left to
 /// two people reading the same table.
-const _fadeTable = <({int offset, double gain})>[
-  (offset: -1, gain: 0), // before the clip
-  (offset: 0, gain: 0), // silent at the very start of a fade in
-  (offset: 100, gain: 0.5), // halfway up a 200-tick fade
-  (offset: 200, gain: 1), // fade in is over
-  (offset: 500, gain: 1), // the middle is untouched
-  (offset: 600, gain: 1), // exactly where the fade out begins
-  (offset: 700, gain: 0.75), // 300 of 400 remaining
-  (offset: 900, gain: 0.25),
-  (offset: 999, gain: 0.0025), // one tick from the end, of a 400 fade
-  (offset: 1000, gain: 0), // past the end
+/// One row per offset, one entry per curve, in the order [FadeCurve] declares
+/// them — so a curve inserted in the middle of the enum reads the wrong column
+/// and this table says so, which is a second reason for it beyond the numbers.
+const _fadeTable = <({int offset, List<double> gains})>[
+  // linear, smooth, equal power, exponential
+  (offset: -1, gains: [0, 0, 0, 0]), // before the clip
+  (offset: 0, gains: [0, 0, 0, 0]), // the very start of a fade in
+  (offset: 50, gains: [0.25, 0.146447, 0.382683, 0.0625]), // a quarter up
+  (offset: 100, gains: [0.5, 0.5, 0.707107, 0.25]), // halfway up
+  (offset: 200, gains: [1, 1, 1, 1]), // fade in is over
+  (offset: 500, gains: [1, 1, 1, 1]), // the middle is untouched
+  (offset: 600, gains: [1, 1, 1, 1]), // where the fade out begins
+  (offset: 700, gains: [0.75, 0.853553, 0.923880, 0.5625]), // 300 of 400
+  (offset: 900, gains: [0.25, 0.146447, 0.382683, 0.0625]), // 100 of 400
+  // One tick from the end of a 400 fade: every curve is on the floor, and the
+  // point of the row is that none of them reached it early.
+  (offset: 999, gains: [0.0025, 0.0000154, 0.003927, 0.00000625]),
+  (offset: 1000, gains: [0, 0, 0, 0]), // past the end
 ];
 
 const _fadeDuration = 1000;
@@ -60,6 +74,11 @@ const _automationTable = <({int at, double gain})>[
   (at: 9999, gain: 1), // after them all, held flat — not ramped to unity
 ];
 
+/// An empty project with a music file in the bin, ready for a clip on the
+/// audio lane.
+Project projectWithSound() =>
+    emptyProject().addMedia(audioAsset('song', seconds: 30));
+
 void main() {
   group('the value', () {
     test('a clip nobody touched is at unity', () {
@@ -87,13 +106,63 @@ void main() {
 
     test('the fade envelope matches the table the engine tests', () {
       for (final row in _fadeTable) {
+        for (final curve in FadeCurve.values) {
+          expect(
+            ClipAudio.fadeShapeAt(Tick(row.offset), const Tick(_fadeDuration),
+                const Tick(_fadeIn), const Tick(_fadeOut),
+                curve: curve),
+            closeTo(row.gains[curve.index], 0.0005),
+            reason: 'a ${curve.name} fade at offset ${row.offset}',
+          );
+        }
+      }
+    });
+
+    test('a fade with no curve named is the one every fade used to be', () {
+      // Linear, and the default — so a project written before there was a
+      // choice sounds exactly as it did.
+      expect(ClipAudio.unity.fadeCurve, FadeCurve.linear);
+      for (final row in _fadeTable) {
         expect(
           ClipAudio.fadeShapeAt(Tick(row.offset), const Tick(_fadeDuration),
               const Tick(_fadeIn), const Tick(_fadeOut)),
-          closeTo(row.gain, 0.0005),
-          reason: 'at offset ${row.offset}',
+          closeTo(row.gains[FadeCurve.linear.index], 0.0005),
         );
       }
+    });
+
+    test('every curve starts at silence and ends at full', () {
+      // Whatever a curve does in between, a fade that arrived at 0.99 would
+      // click at exactly the moment it stopped.
+      for (final curve in FadeCurve.values) {
+        expect(
+          ClipAudio.fadeShapeAt(Tick.zero, const Tick(_fadeDuration),
+              const Tick(_fadeIn), Tick.zero,
+              curve: curve),
+          0,
+          reason: curve.name,
+        );
+        expect(
+          ClipAudio.fadeShapeAt(const Tick(_fadeIn), const Tick(_fadeDuration),
+              const Tick(_fadeIn), Tick.zero,
+              curve: curve),
+          1,
+          reason: curve.name,
+        );
+      }
+    });
+
+    test('the curve reaches the gain a clip actually plays at', () {
+      // `gainAt` is what the timeline draws the waveform through, so a curve
+      // the envelope knew about and the clip did not would be a fade that
+      // looked wrong and sounded right.
+      final clip = clipOf('a', 'm1', start: Tick.zero, duration: secs(4))
+          .copyWith(
+        audio: ClipAudio(
+            fadeIn: secs(2), fadeCurve: FadeCurve.exponential),
+      );
+      expect(clip.gainAt(secs(1)), closeTo(0.25, 1e-9));
+      expect(clip.gainAt(secs(2)), closeTo(1, 1e-9));
     });
 
     test('no fades means no envelope at all', () {
@@ -141,6 +210,247 @@ void main() {
       expect(trimmed.duration, secs(1));
       expect(trimmed.audio.fadeIn.raw + trimmed.audio.fadeOut.raw,
           lessThanOrEqualTo(secs(1).raw));
+    });
+  });
+
+  group('curves and presets', () {
+    test('the fade curves are the same list on both sides of the boundary',
+        () {
+      // Three enums, one order, and the index is what crosses — so a curve
+      // inserted in the middle of one of them would silently reshape every
+      // fade in every project on disk. The generated bindings come straight
+      // from vd_engine.h, which makes this a check on the C header.
+      expect(
+        FadeCurve.values.map((c) => c.name).toList(),
+        EngineFadeCurve.values.map((c) => c.name).toList(),
+      );
+      expect(FadeCurve.values.length, VdFadeCurve.values.length);
+      for (var i = 0; i < FadeCurve.values.length; i++) {
+        expect(VdFadeCurve.values[i].value, i,
+            reason: 'the C enum is not densely numbered from zero, so an '
+                'index is not a value');
+      }
+      // Zero is linear on all three, which is what lets a caller that memsets
+      // the struct get the fade every project already had.
+      expect(FadeCurve.values.first, FadeCurve.linear);
+    });
+
+    test('the EQ presets are the same list on both sides of the boundary', () {
+      expect(
+        EqPreset.values.map((p) => p.name).toList(),
+        EngineEqPreset.values.map((p) => p.name).toList(),
+      );
+      expect(EqPreset.values.length, VdEqPreset.values.length);
+      for (var i = 0; i < EqPreset.values.length; i++) {
+        expect(VdEqPreset.values[i].value, i);
+      }
+      expect(EqPreset.values.first, EqPreset.none);
+    });
+
+    test('every entry has something to call itself', () {
+      for (final curve in FadeCurve.values) {
+        expect(curve.label, isNotEmpty);
+      }
+      for (final preset in EqPreset.values) {
+        expect(preset.label, isNotEmpty);
+      }
+      expect(FadeCurve.linear.isLinear, isTrue);
+      expect(FadeCurve.smooth.isLinear, isFalse);
+      expect(EqPreset.none.isNone, isTrue);
+      expect(EqPreset.voice.isNone, isFalse);
+    });
+
+    test('a clip nobody touched has neither', () {
+      expect(ClipAudio.unity.fadeCurve, FadeCurve.linear);
+      expect(ClipAudio.unity.eq, EqPreset.none);
+      expect(ClipAudio.unity.isUnity, isTrue);
+      // And either one on its own is enough to make a clip not-unity, which is
+      // what puts the Reset button on the panel.
+      expect(const ClipAudio(eq: EqPreset.voice).isUnity, isFalse);
+      expect(const ClipAudio(fadeCurve: FadeCurve.smooth).isUnity, isFalse);
+    });
+
+    test('both cross to the engine as what they are', () {
+      final project = projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4)).copyWith(
+            audio: ClipAudio(
+              fadeIn: secs(1),
+              fadeCurve: FadeCurve.equalPower,
+              eq: EqPreset.telephone,
+            ),
+          ),
+        ]),
+      );
+
+      final sent = engineTimelineFor(project).clips.single;
+      expect(sent.fadeCurve, EngineFadeCurve.equalPower);
+      expect(sent.eq, EngineEqPreset.telephone);
+      // The shape and the name, not the shaped values: the mixer evaluates the
+      // fade per audio frame and owns what a preset means.
+      expect(sent.fadeInTicks, secs(1).raw);
+    });
+
+    test('a clip with neither says so', () {
+      final sent = engineTimelineFor(projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips(
+            [clipOf('bed', 'song', start: Tick.zero, duration: secs(4))]),
+      )).clips.single;
+      expect(sent.fadeCurve, EngineFadeCurve.linear);
+      expect(sent.eq, EngineEqPreset.none);
+    });
+
+    test('both round-trip through a project file', () {
+      final project = projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4)).copyWith(
+            audio: ClipAudio(
+              fadeOut: secs(1),
+              fadeCurve: FadeCurve.smooth,
+              eq: EqPreset.voice,
+            ),
+          ),
+        ]),
+      );
+
+      final back = decodeProject(encodeProject(project)).clipById('bed')!;
+      expect(back.audio.fadeCurve, FadeCurve.smooth);
+      expect(back.audio.eq, EqPreset.voice);
+    });
+
+    test('a clip with neither writes neither', () {
+      // A project file should read like the edit that made it, and almost
+      // every clip in it has a plain fade and no filter.
+      final json = encodeProject(projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4))
+              .copyWith(audio: ClipAudio(fadeIn: secs(1))),
+        ]),
+      ));
+      expect(json, isNot(contains('fadeCurve')));
+      expect(json, isNot(contains('"eq"')));
+    });
+
+    test('a curve outlives no fade at all', () {
+      // Dragging a fade back to zero takes the shape with it, so the document
+      // cannot hold a curve the panel no longer shows — which is also what
+      // keeps the file and the document in step, and the Reset button honest.
+      final store = DocumentStore(projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips(
+            [clipOf('bed', 'song', start: Tick.zero, duration: secs(4))]),
+      ));
+      store.run(SetClipAudio('bed',
+          ClipAudio(fadeIn: secs(1), fadeCurve: FadeCurve.exponential)));
+      store.endGesture();
+      expect(store.project.clipById('bed')!.audio.fadeCurve,
+          FadeCurve.exponential);
+
+      store.run(const SetClipAudio(
+          'bed', ClipAudio(fadeCurve: FadeCurve.exponential)));
+      final bare = store.project.clipById('bed')!.audio;
+      expect(bare.fadeCurve, FadeCurve.linear);
+      expect(bare.isUnity, isTrue,
+          reason: 'nothing left to reset, so no Reset button');
+      expect(encodeProject(store.project), isNot(contains('fadeCurve')));
+    });
+
+    test('a trim that takes the fades takes the shape with them', () {
+      final store = DocumentStore(projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips(
+            [clipOf('bed', 'song', start: Tick.zero, duration: secs(4))]),
+      ));
+      store.run(SetClipAudio('bed',
+          ClipAudio(fadeIn: secs(1), fadeCurve: FadeCurve.smooth)));
+      store.endGesture();
+
+      // Every path that shortens a clip runs through `clampedTo`, and a clip
+      // with no length has no fades — so it has no shape either.
+      expect(
+          store.project
+              .clipById('bed')!
+              .audio
+              .clampedTo(Tick.zero)
+              .fadeCurve,
+          FadeCurve.linear);
+    });
+
+    test('what the document holds is what the file gets', () {
+      // The round trip is exact, which a curve written only when there were
+      // fades would have broken the moment somebody dragged one to zero.
+      for (final audio in [
+        const ClipAudio(),
+        const ClipAudio(eq: EqPreset.bright),
+        ClipAudio(fadeIn: secs(1), fadeCurve: FadeCurve.smooth),
+        ClipAudio(
+            fadeOut: secs(1),
+            fadeCurve: FadeCurve.exponential,
+            eq: EqPreset.telephone),
+      ]) {
+        final project = projectWithSound().updateTrack(
+          audioTrackId,
+          (t) => t.withClips([
+            clipOf('bed', 'song', start: Tick.zero, duration: secs(4))
+                .copyWith(audio: audio),
+          ]),
+        );
+        expect(decodeProject(encodeProject(project)).clipById('bed')!.audio,
+            audio,
+            reason: '$audio');
+      }
+    });
+
+    test('a curve or a preset this version never heard of opens as none', () {
+      final project = projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: secs(4)).copyWith(
+            audio: ClipAudio(
+                fadeIn: secs(1),
+                fadeCurve: FadeCurve.smooth,
+                eq: EqPreset.voice),
+          ),
+        ]),
+      );
+      final tampered = encodeProject(project)
+          .replaceAll('"fadeCurve": "smooth"', '"fadeCurve": "sawtooth"')
+          .replaceAll('"eq": "voice"', '"eq": "helicopter"');
+
+      // A fade in a shape this build does not know is still a fade, and a clip
+      // with a filter it cannot build is still audible — a project that will
+      // not open is the larger loss either way.
+      final back = decodeProject(tampered).clipById('bed')!;
+      expect(back.audio.fadeCurve, FadeCurve.linear);
+      expect(back.audio.eq, EqPreset.none);
+      expect(back.audio.fadeIn, secs(1));
+    });
+
+    test('setting either is one undo entry with the rest of the panel', () {
+      final store = DocumentStore(projectWithSound().updateTrack(
+        audioTrackId,
+        (t) => t.withClips(
+            [clipOf('bed', 'song', start: Tick.zero, duration: secs(4))]),
+      ));
+      store.run(
+          SetClipAudio('bed', ClipAudio(fadeIn: secs(1), eq: EqPreset.music)),
+          fromGestureStart: true);
+      store.run(
+          SetClipAudio(
+              'bed',
+              ClipAudio(
+                  fadeIn: secs(1),
+                  eq: EqPreset.music,
+                  fadeCurve: FadeCurve.smooth)),
+          fromGestureStart: true);
+
+      expect(store.project.clipById('bed')!.audio.eq, EqPreset.music);
+      expect(store.project.clipById('bed')!.audio.fadeCurve, FadeCurve.smooth);
+      expect(store.undoLabels, ['Adjust audio']);
     });
   });
 

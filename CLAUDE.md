@@ -40,7 +40,9 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_transition (how one clip becomes the next),
            vd_color (five grading sliders as one matrix),
            vd_lut (the grade that cannot be one: .cube looks),
-           vd_stretch (the sound of a speed: WSOLA, and the tape), vd_probe,
+           vd_stretch (the sound of a speed: WSOLA, and the tape),
+           vd_eq (what a clip sounds like, as a short list of presets),
+           vd_probe,
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
@@ -85,7 +87,29 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
 - **The audio envelopes are written twice and tested once.** `vd_audio_fade_gain` /
   `ClipAudio.fadeShapeAt` and `vd_audio_automation_gain` / `ClipAudio.automationAt` are
   each one function in two languages, and each has one table asserted in both test suites
-  — like `vd_time` and `time.dart`. Change one and you must change the other.
+  — like `vd_time` and `time.dart`. Change one and you must change the other. The fade
+  table has a **column per `FadeCurve`**, in enum order, so a curve inserted in the middle
+  of one of the three enums reads the wrong column and the table says so.
+- **A fade has a shape, and an EQ is a name.** `FadeCurve` is four ramps that are all 0 at
+  0 and 1 at 1 — linear (the default, so every project written before the choice existed
+  sounds bit for bit as it did), smooth, equal power and exponential — and the curve is
+  **one per clip, not one per fade**: two shapes on one clip is a distinction nobody
+  makes. `EqPreset` goes the other way: the document carries only the name and
+  `engine/src/vd_eq.c` owns what it means, the arrangement a look and a transition preset
+  already have. So the curve **is** mirrored in Dart (the timeline draws a fade through
+  `Clip.gainAt`) and the EQ is **not** (nothing draws a response curve) — which is the
+  `vd_anim` rule applied twice and landing on opposite sides. A curve with no fade left to
+  shape is dropped by `ClipAudio.clampedTo`, which every path that sets a fade or shortens
+  a clip runs through: `ClipAnimation`'s rule, that a document records what *happens*
+  rather than what was clicked on the way there — and what keeps the file, the document
+  and the Reset button from disagreeing about a shape the panel no longer shows.
+- **The EQ runs before the envelope, and that is the one ordering decision in the mixer.**
+  A filter is linear, so a gain and an EQ commute — but the envelope is a gain that
+  *changes*, and running a fade into a biquad has the filter chasing the ramp instead of
+  the sound. `mix_at` filters the clip as it was recorded and shapes the result. Both the
+  filter and the stretcher are reset wherever the clip re-seeks: a biquad's state is the
+  last two samples it saw, and ringing them into material from somewhere else is a click
+  at exactly the moment somebody is listening.
 - **A volume point is measured in the source, not in the clip.** `VolumePoint.sourceTime`
   is the coordinate `Clip.sourceIn` is in, so a trim slides the clip's window over the
   curve instead of dragging the curve with it, a split needs no dividing, and points
