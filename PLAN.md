@@ -17,8 +17,8 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > keyboard reaches all of it.**
 >
 > **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
-> animated stickers over them, make them all arrive, join one shot to the next, and grade
-> the colour of any of them.** A caption is a clip with no
+> animated stickers over them, make them all arrive, join one shot to the next, grade
+> the colour of any of them, and put a look on top.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -66,6 +66,19 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > also brighten it. Measured in the running app: eleven grades, layers and
 > decoders both flat, and a fully desaturated shot reads 151 where the luma of
 > its own colour is 151.1 — with the sticker on the lane above it untouched.
+>
+> And on top of the sliders, a **look**: a `.cube` LUT, five of them bundled and any
+> other loadable from a file. This is the grade that *cannot* be a matrix — a split-tone
+> pushes the shadows one way and the highlights the other, which no 3x3 can express — so
+> it arrives as a lattice and is sampled on the GPU as a 3D texture. It runs in the
+> signal rather than in linear light, because that is what the `.cube` files anybody will
+> actually load were authored against; and it runs *after* the five sliders, because that
+> is the order a colourist works in and the order a look expects its input to have been
+> corrected in. The picker sits under the sliders for the same reason. Measured in the
+> running app at 1920x1080: five looks at two strengths each, layers flat at 2 and
+> decoders flat at 5, and **five cube uploads for eleven grade changes** — one per look,
+> nothing for the strength drag. Noir comes back **100% grey**, and half strength lands
+> exactly halfway between the ungraded shot and the full look on every channel.
 >
 > And it can now draw **shapes**: a rectangle, an ellipse, a line and an arrow, with a
 > fill, a stroke, a corner and a shadow — ⌘R at the playhead, on the lanes the captions
@@ -1203,7 +1216,63 @@ start to finish without touching another editor; undo works through the whole se
       grey** and the corner reads 151 where BT.709 luma of the source's
       (0,201,101) is 151.1; the other 9% is a single 432x432 square in the
       middle, which is the sticker on the overlay lane, ungraded.
-- [ ] LUT filter presets (`.cube` loading, applied in linear working space)
+- [x] LUT filter presets: `.cube` loading, five bundled looks, per-clip
+      strength — **the grade that cannot be a matrix**. The five sliders above
+      are every affine operation on RGB there is, which is exactly why they
+      fold into one 3x3; a look is the arbitrary map that is left over. A
+      split-tone sends the shadows towards teal while sending the highlights
+      towards orange, and no matrix applies two directions to one axis, so it
+      arrives as a lattice: `vd_lut.c` reads the file, samples it trilinearly,
+      and bakes the cube the shader fetches from. Plain C with no platform
+      dependency, like `vd_color.c` beside it — what a look *means* is asserted
+      against numbers, and what is left in Metal is a texture fetch a test
+      could tell you nothing about.
+      **It runs in the signal, not in linear light**, and that is a correction
+      to what this plan said before the work started. A `.cube` declares a
+      lattice and a domain and says *nothing* about the colour space of its
+      input, so the only thing that decides is convention — and the convention
+      for every creative look a user will download is Rec.709 as it comes off
+      the wire, which is exactly what `ycbcr_to_rgb` produces and exactly where
+      `vd_color_transform` already works. Sampling one of those after a
+      linearising transfer gives a crushed picture that is nobody's look. A LUT
+      authored for linear input exists, in ACES pipelines, and is not what
+      arrives through a file panel.
+      **The sliders run first and the look runs last**, which is the order a
+      colourist works in — correct the shot, then style it — and the order the
+      look was authored expecting. The inspector offers them that way round for
+      the reason it already puts temperature above saturation: a panel in some
+      other order teaches the wrong habit.
+      **A look is a name, and the name is what the project file records.** The
+      arrangement fonts already have, for the same two reasons: the bundled
+      cubes have no path inside a signed bundle, and a file naming one
+      machine's `~/Downloads` is a file that only opens on that machine. A
+      project naming a look this installation does not have draws ungraded,
+      exactly as a caption in a missing face falls back to the system's. A
+      `.cube` the user loads is *copied* into their own library rather than
+      linked to — no bookmark to mint, nothing to break when they tidy up, and
+      a look is a tool they will want on the next project too.
+      The five bundled looks are **generated** by `tools/make_luts.dart`, not
+      vendored: a look that ships in a product sold without an account has to
+      be one we may sell, and the `.cube` files people share are almost never
+      licensed for that. Each is thirty lines of arithmetic somebody can argue
+      with rather than a quarter of a million numbers nobody can review.
+      Two details worth the ink. The cube goes to the GPU as **RGBA16Unorm**,
+      because RGBA32Float is not filterable on Apple GPUs and the hardware
+      trilinear the whole design rests on would silently stop happening —
+      showing up as banding rather than as an error. And `vd_lut.c` parses its
+      own decimals rather than calling `strtof`, which reads the *locale's*
+      separator: under a locale where that is a comma, every value in the file
+      would be read as its integer part and every look would load without
+      error and render as garbage. That is a bug that only happens on other
+      people's computers.
+      Measured in the running app at 1920x1080: five looks at two strengths
+      each, **layers flat at 2 and decoders flat at 5**, and **five cube
+      uploads across eleven grade changes** — one per look, and nothing at all
+      for the drag on the strength slider. Noir returns **100% grey** away from
+      the sticker, at 157 where the BT.709 luma of the source's (0,201,101) is
+      151 before its own curve lifts it; half strength lands on (78,179,129),
+      exactly halfway between the ungraded shot and the full look on every
+      channel.
 
 ### Speed
 - [ ] Constant 0.1×–10× per clip; frame duplication for slow-mo

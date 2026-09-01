@@ -12,6 +12,7 @@ import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
 import '../media/fonts.dart';
+import '../media/looks.dart';
 import '../media/peaks.dart';
 import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
@@ -1019,6 +1020,82 @@ Future<void> runColorSelfTest(
   await Future<void>.delayed(const Duration(milliseconds: 150));
   engine.dumpPng('${out.path}/neutral_again.png');
   stdout.writeln('[selftest] colour: frames in ${out.path}');
+}
+
+/// Every look the app ships, on a real shot, at full strength and at half.
+///
+/// `vd_lut_test.c` asserts what each of these cubes does to a colour and
+/// `vd_compositor_test.c` asserts that one reaches a fragment. Neither can
+/// answer the only question that matters about a *look*, which is whether it
+/// is one anybody would choose — and that is a question a frame of real
+/// footage asks and a lattice of numbers cannot.
+///
+/// It also prints the upload count around the whole pass. A cube is a few
+/// hundred kilobytes and the same cube on every frame of every clip wearing
+/// it, so this should tick once per look and never again: once per look for
+/// the whole run, and *not* once more for the half-strength dump of the same
+/// one, which is the drag on the strength slider in miniature.
+Future<void> runLookSelfTest(
+    PreviewEngine engine, DocumentStore store) async {
+  final clip = store.project.mainTrack.clips
+      .where((c) => !c.isGenerated)
+      .firstOrNull;
+  if (clip == null) {
+    stdout.writeln('[selftest] looks: nothing on the main lane to grade');
+    return;
+  }
+
+  final at = clip.start.raw + clip.duration.raw ~/ 2;
+  engine.seek(at);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_looks_');
+  engine.dumpPng('${out.path}/none.png');
+  final before = engine.stats;
+
+  for (final name in BundledLooks.available) {
+    for (final strength in const [1.0, 0.5]) {
+      store.endGesture();
+      store.run(SetClipColor(
+          clip.id, ClipColor(look: name, lookStrength: strength)));
+      store.endGesture();
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final slug = name.toLowerCase().replaceAll(RegExp('[^a-z0-9]+'), '_');
+      engine.dumpPng(
+          '${out.path}/${slug}_${(strength * 100).round()}.png');
+    }
+  }
+
+  // A look and the five sliders on one clip, which is the whole feature in one
+  // frame: the sliders correct the shot and the look styles what they left.
+  store.endGesture();
+  store.run(SetClipColor(
+      clip.id,
+      ClipColor(
+        temperature: 0.2,
+        contrast: 0.2,
+        look: BundledLooks.available.first,
+        lookStrength: 0.7,
+      )));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/corrected_then_looked.png');
+
+  final after = engine.stats;
+  stdout.writeln('[selftest] looks: ${BundledLooks.available.length} looks at '
+      'two strengths on ${clip.id} at $at — layers ${before.activeLayers} '
+      'then ${after.activeLayers}, decoders ${before.openDecoders} then '
+      '${after.openDecoders}, cubes uploaded ${before.lutUploads} then '
+      '${after.lutUploads}');
+
+  // And back to the shot as it was shot, so the passes after this one see the
+  // timeline they expect.
+  store.endGesture();
+  store.run(SetClipColor(clip.id, ClipColor.neutral));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/none_again.png');
+  stdout.writeln('[selftest] looks: frames in ${out.path}');
 }
 
 /// A playhead that never moves. The timeline needs one to draw; nothing here

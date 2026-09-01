@@ -16,7 +16,11 @@ set(VD_GOLDEN_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/golden-failures")
 # is a font nothing checks.
 set(VD_FONT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../app/assets/fonts")
 
-foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test vd_peaks_test vd_text_test vd_shape_test vd_sticker_test vd_anim_test vd_transition_test vd_color_test)
+# The looks the app ships, on the same terms: a `.cube` the engine test passes
+# with and the app does not bundle is a look nothing checks.
+set(VD_LUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../app/assets/luts")
+
+foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_golden_test vd_engine_test vd_audio_test vd_thumbnail_test vd_peaks_test vd_text_test vd_shape_test vd_sticker_test vd_anim_test vd_transition_test vd_color_test vd_lut_test)
   add_executable(${test} ${test}.c)
   target_link_libraries(${test} PRIVATE vdodtor_engine)
   target_include_directories(${test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -24,7 +28,8 @@ foreach(test vd_time_test vd_probe_test vd_decoder_test vd_compositor_test vd_go
     PRIVATE VD_TEST_MEDIA_DIR="${VD_TEST_MEDIA_DIR}"
             VD_GOLDEN_DIR="${VD_GOLDEN_DIR}"
             VD_GOLDEN_OUT_DIR="${VD_GOLDEN_OUT_DIR}"
-            VD_FONT_DIR="${VD_FONT_DIR}")
+            VD_FONT_DIR="${VD_FONT_DIR}"
+            VD_LUT_DIR="${VD_LUT_DIR}")
   target_compile_options(${test} PRIVATE -Wall -Wextra)
   add_test(NAME ${test} COMMAND ${test})
 endforeach()

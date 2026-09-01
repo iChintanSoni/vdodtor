@@ -127,9 +127,23 @@ abstract final class MediaAccess {
   /// Opens the system file panel. Returns the chosen files, or an empty list
   /// if the user cancelled — cancelling is not a failure and does not deserve
   /// a branch in every caller.
-  static Future<List<GrantedFile>> pickFiles({bool multiple = true}) async {
-    final files = await _channel.invokeMethod<List<Object?>>(
-        'pickFiles', {'multiple': multiple});
+  ///
+  /// [extensions] narrows what the panel will show; leaving it out offers
+  /// video, audio and images, which is what importing media means. [message]
+  /// and [prompt] are the panel's title line and the button on it, and default
+  /// to the import wording for the same reason.
+  static Future<List<GrantedFile>> pickFiles({
+    bool multiple = true,
+    List<String>? extensions,
+    String? message,
+    String? prompt,
+  }) async {
+    final files = await _channel.invokeMethod<List<Object?>>('pickFiles', {
+      'multiple': multiple,
+      'extensions': ?extensions,
+      'message': ?message,
+      'prompt': ?prompt,
+    });
     return _filesFrom(files);
   }
 

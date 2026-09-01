@@ -277,6 +277,264 @@ class VdEngineBindings {
         void Function(ffi.Pointer<VdColorTransform>, ffi.Pointer<ffi.Float>)
       >();
 
+  /// Reads a `.cube` from memory. `text` need not be NUL terminated; `length` is
+  /// what is read.
+  ///
+  /// Bytes rather than a path is the primary door, for the reason
+  /// `vd_text_register_font` takes bytes: the looks the app ships live inside a
+  /// signed bundle where the only address anybody has for them is an asset key.
+  ffi.Pointer<VdLut> vd_lut_parse(
+    ffi.Pointer<ffi.Char> text,
+    int length,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_lut_parse(text, length, out_result);
+  }
+
+  late final _vd_lut_parsePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdLut> Function(
+            ffi.Pointer<ffi.Char>,
+            ffi.Int64,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_lut_parse');
+  late final _vd_lut_parse = _vd_lut_parsePtr
+      .asFunction<
+        ffi.Pointer<VdLut> Function(
+          ffi.Pointer<ffi.Char>,
+          int,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  /// The same, from a file — which is how a user's own `.cube` arrives.
+  ffi.Pointer<VdLut> vd_lut_open(
+    ffi.Pointer<ffi.Char> path,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_lut_open(path, out_result);
+  }
+
+  late final _vd_lut_openPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdLut> Function(
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_lut_open');
+  late final _vd_lut_open = _vd_lut_openPtr
+      .asFunction<
+        ffi.Pointer<VdLut> Function(
+          ffi.Pointer<ffi.Char>,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  void vd_lut_close(ffi.Pointer<VdLut> lut) {
+    return _vd_lut_close(lut);
+  }
+
+  late final _vd_lut_closePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdLut>)>>(
+        'vd_lut_close',
+      );
+  late final _vd_lut_close = _vd_lut_closePtr
+      .asFunction<void Function(ffi.Pointer<VdLut>)>();
+
+  /// What the file called itself, or "" when it did not say. Never NULL.
+  ffi.Pointer<ffi.Char> vd_lut_title(ffi.Pointer<VdLut> lut) {
+    return _vd_lut_title(lut);
+  }
+
+  late final _vd_lut_titlePtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Pointer<ffi.Char> Function(ffi.Pointer<VdLut>)>
+      >('vd_lut_title');
+  late final _vd_lut_title = _vd_lut_titlePtr
+      .asFunction<ffi.Pointer<ffi.Char> Function(ffi.Pointer<VdLut>)>();
+
+  /// Entries per axis, as the file declared it: the cube's side for a 3D file,
+  /// the curve's length for a 1D one.
+  int vd_lut_size(ffi.Pointer<VdLut> lut) {
+    return _vd_lut_size(lut);
+  }
+
+  late final _vd_lut_sizePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdLut>)>>(
+        'vd_lut_size',
+      );
+  late final _vd_lut_size = _vd_lut_sizePtr
+      .asFunction<int Function(ffi.Pointer<VdLut>)>();
+
+  /// False for a file that is three independent curves rather than a cube. Kept
+  /// as it was written rather than expanded on the way in: a 1D file is usually
+  /// sized in the thousands *because* it is a curve that needs the resolution,
+  /// and turning one into a 33-cube at the door would throw that away before
+  /// anything had a chance to ask.
+  bool vd_lut_is_3d(ffi.Pointer<VdLut> lut) {
+    return _vd_lut_is_3d(lut);
+  }
+
+  late final _vd_lut_is_3dPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdLut>)>>(
+        'vd_lut_is_3d',
+      );
+  late final _vd_lut_is_3d = _vd_lut_is_3dPtr
+      .asFunction<bool Function(ffi.Pointer<VdLut>)>();
+
+  /// Maps one straight — not premultiplied — RGB triple through the look, in
+  /// place, clamped to 0..1.
+  ///
+  /// Trilinear between the eight lattice points around the colour, or linear
+  /// along each curve for a 1D file. This is the arithmetic the shader's texture
+  /// fetch does, which is what lets a look be asserted on numbers.
+  void vd_lut_sample(ffi.Pointer<VdLut> lut, ffi.Pointer<ffi.Float> rgb) {
+    return _vd_lut_sample(lut, rgb);
+  }
+
+  late final _vd_lut_samplePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdLut>, ffi.Pointer<ffi.Float>)
+        >
+      >('vd_lut_sample');
+  late final _vd_lut_sample = _vd_lut_samplePtr
+      .asFunction<void Function(ffi.Pointer<VdLut>, ffi.Pointer<ffi.Float>)>();
+
+  /// The same, mixed back towards the colour it started from: 0 leaves the shot
+  /// alone, 1 is the look at full strength. Out of range is clamped.
+  ///
+  /// A mix rather than a second, weaker LUT, because that is the one operation
+  /// that works for every look — halfway to a monochrome is a desaturated shot,
+  /// halfway to a split-tone is a gentler split-tone — and because it is what the
+  /// shader can do in one instruction with the ungraded value already in hand.
+  void vd_lut_apply(
+    ffi.Pointer<VdLut> lut,
+    double strength,
+    ffi.Pointer<ffi.Float> rgb,
+  ) {
+    return _vd_lut_apply(lut, strength, rgb);
+  }
+
+  late final _vd_lut_applyPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdLut>,
+            ffi.Float,
+            ffi.Pointer<ffi.Float>,
+          )
+        >
+      >('vd_lut_apply');
+  late final _vd_lut_apply = _vd_lut_applyPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdLut>, double, ffi.Pointer<ffi.Float>)
+      >();
+
+  /// The look `lut` bakes down to, at `strength`.
+  ///
+  /// The lattice is baked on the first ask and then kept, so every clip wearing
+  /// the same look shares one — a timeline of twenty shots with one look on them
+  /// holds one cube, not twenty. A 1D file bakes into a cube here rather than at
+  /// the door, because a cube is what a GPU samples and this is the moment that
+  /// stops being avoidable; the curve itself stays as it was read.
+  ///
+  /// A NULL `lut` is the look that does nothing, which is the answer for a clip
+  /// nobody put one on.
+  VdColorLook vd_lut_look(ffi.Pointer<VdLut> lut, double strength) {
+    return _vd_lut_look(lut, strength);
+  }
+
+  late final _vd_lut_lookPtr =
+      _lookup<
+        ffi.NativeFunction<VdColorLook Function(ffi.Pointer<VdLut>, ffi.Float)>
+      >('vd_lut_look');
+  late final _vd_lut_look = _vd_lut_lookPtr
+      .asFunction<VdColorLook Function(ffi.Pointer<VdLut>, double)>();
+
+  /// Side of the cube `vd_lut_look` bakes into: the file's own size for a 3D
+  /// look, and 33 for a 1D one — the size the looks people ship are written at,
+  /// and enough that a smooth curve interpolates back to itself.
+  int vd_lut_bake_size(ffi.Pointer<VdLut> lut) {
+    return _vd_lut_bake_size(lut);
+  }
+
+  late final _vd_lut_bake_sizePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdLut>)>>(
+        'vd_lut_bake_size',
+      );
+  late final _vd_lut_bake_size = _vd_lut_bake_sizePtr
+      .asFunction<int Function(ffi.Pointer<VdLut>)>();
+
+  /// Registers `data` — the contents of a `.cube` — under `name`.
+  ///
+  /// Registering a name that is already there replaces nothing and is not an
+  /// error: it is what happens when the app restarts an engine, and the second
+  /// registration is quietly ignored so that every clip already pointing at the
+  /// first keeps pointing at something.
+  int vd_lut_register(
+    ffi.Pointer<ffi.Char> name,
+    ffi.Pointer<ffi.Void> data,
+    int size,
+  ) {
+    return _vd_lut_register(name, data, size);
+  }
+
+  late final _vd_lut_registerPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Char>,
+            ffi.Pointer<ffi.Void>,
+            ffi.Int64,
+          )
+        >
+      >('vd_lut_register');
+  late final _vd_lut_register = _vd_lut_registerPtr
+      .asFunction<
+        int Function(ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Void>, int)
+      >();
+
+  /// The looks registered so far, in the order they arrived — which is the order
+  /// they were handed over, and therefore the order a picker should offer them.
+  int vd_lut_count() {
+    return _vd_lut_count();
+  }
+
+  late final _vd_lut_countPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>('vd_lut_count');
+  late final _vd_lut_count = _vd_lut_countPtr.asFunction<int Function()>();
+
+  ffi.Pointer<ffi.Char> vd_lut_name(int index) {
+    return _vd_lut_name(index);
+  }
+
+  late final _vd_lut_namePtr =
+      _lookup<ffi.NativeFunction<ffi.Pointer<ffi.Char> Function(ffi.Int32)>>(
+        'vd_lut_name',
+      );
+  late final _vd_lut_name = _vd_lut_namePtr
+      .asFunction<ffi.Pointer<ffi.Char> Function(int)>();
+
+  /// The registered look called `name`, or NULL for a name nothing was registered
+  /// under — including NULL and "", which is how "no look" spells itself all the
+  /// way down from the document. Borrowed: the catalogue owns it.
+  ffi.Pointer<VdLut> vd_lut_find(ffi.Pointer<ffi.Char> name) {
+    return _vd_lut_find(name);
+  }
+
+  late final _vd_lut_findPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Pointer<VdLut> Function(ffi.Pointer<ffi.Char>)>
+      >('vd_lut_find');
+  late final _vd_lut_find = _vd_lut_findPtr
+      .asFunction<ffi.Pointer<VdLut> Function(ffi.Pointer<ffi.Char>)>();
+
   /// The cut with no transition on it: both clips at rest, nothing hidden, no
   /// flash. Not a zeroed struct — a zeroed one has both clips invisible.
   VdTransitionValue vd_transition_rest() {
@@ -706,6 +964,25 @@ class VdEngineBindings {
       >('vd_compositor_last_gpu_ms');
   late final _vd_compositor_last_gpu_ms = _vd_compositor_last_gpu_msPtr
       .asFunction<double Function(ffi.Pointer<VdCompositor>)>();
+
+  /// Look cubes uploaded to the GPU since the compositor was created.
+  ///
+  /// The number that says the look cache is working. A look is a few hundred
+  /// kilobytes and the same cube on every frame of every clip wearing it, so this
+  /// should tick once per look and then never again — not while playing, not
+  /// while somebody drags the strength slider, and not because two clips share
+  /// one. A stream of them means a cube is going up the bus sixty times a second
+  /// for a picture that did not change.
+  int vd_compositor_lut_uploads(ffi.Pointer<VdCompositor> compositor) {
+    return _vd_compositor_lut_uploads(compositor);
+  }
+
+  late final _vd_compositor_lut_uploadsPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int64 Function(ffi.Pointer<VdCompositor>)>
+      >('vd_compositor_lut_uploads');
+  late final _vd_compositor_lut_uploads = _vd_compositor_lut_uploadsPtr
+      .asFunction<int Function(ffi.Pointer<VdCompositor>)>();
 
   /// Writes the last composited frame to `path` as PNG. This is how the
   /// compositor gets checked on pixels rather than on timings.
@@ -2325,6 +2602,34 @@ final class VdColorTransform extends ffi.Struct {
   external ffi.Array<ffi.Float> offset;
 }
 
+final class VdLut extends ffi.Opaque {}
+
+/// A look, in the shape the compositor wants it.
+///
+/// `lattice` is `size` * `size` * `size` straight RGB triples with **red
+/// varying fastest**, which is the order a `.cube` writes its rows in and the
+/// order a 3D texture wants its slices. `size` is 0 for a clip with no look on
+/// it, and then nothing else here is read.
+final class VdColorLook extends ffi.Struct {
+  external ffi.Pointer<ffi.Float> lattice;
+
+  /// Entries per axis of `lattice`, or 0 for no look.
+  @ffi.Int32()
+  external int size;
+
+  /// Unique to one open LUT for as long as it is open, and never 0 when there
+  /// is a look. The compositor keys its texture cache on this rather than on
+  /// the pointer: a lattice freed and another allocated at the same address
+  /// would be a cache hit on the wrong picture, and a look that is wrong only
+  /// sometimes is the worst kind.
+  @ffi.Uint64()
+  external int id;
+
+  /// 0..1.
+  @ffi.Float()
+  external double strength;
+}
+
 /// The presets, in the order a picker offers them.
 ///
 /// One direction each. `VD_TRANSITION_WIPE` wipes left to right and
@@ -2813,6 +3118,18 @@ final class VdLayer extends ffi.Struct {
   /// blur-filled clip's backdrop is graded with it because the backdrop is the
   /// same picture.
   external VdColorAdjust color;
+
+  /// The other half of the same grade: the part that cannot be a matrix. A
+  /// zeroed value is no look, so this is a field a caller can leave alone.
+  ///
+  /// The lattice is borrowed for the duration of the call, like `pixel_buffer`
+  /// — but unlike a pixel buffer it is uploaded to the GPU and *kept*, keyed on
+  /// `id`, because a look is the same cube on every frame of every clip wearing
+  /// it. See vd_compositor_lut_uploads for how that is asserted.
+  ///
+  /// Applied after `color`, which is the order a colourist works in: correct
+  /// the shot, then style it. See vd_lut.h.
+  external VdColorLook look;
 }
 
 /// What gets drawn inside the box.
@@ -3149,6 +3466,21 @@ final class VdTimelineClip extends ffi.Struct {
   /// See vd_color.h.
   external VdColorAdjust color;
 
+  /// The look on this clip: a name registered with vd_lut_register, or NULL for
+  /// a clip nobody put one on. Copied on set_timeline; the caller keeps
+  /// ownership of its own string.
+  ///
+  /// A name rather than a path or a lattice, exactly as `VdTextSpec::font` is a
+  /// family name: the looks the app ships have no path inside a signed bundle,
+  /// and a document that names one reads like the edit that made it rather than
+  /// like one machine's filesystem. A name nothing was registered under draws
+  /// ungraded, which is the bargain a caption in a missing face already takes.
+  external ffi.Pointer<ffi.Char> look;
+
+  /// 0..1: how far towards the look to go. Only read when `look` names one.
+  @ffi.Float()
+  external double look_strength;
+
   /// How this clip joins the one before it on the same track. A zeroed
   /// VdClipTransition is "a plain cut", so this is a field a caller can ignore.
   ///
@@ -3324,6 +3656,14 @@ final class VdEngineStats extends ffi.Struct {
   @ffi.Int64()
   external int sticker_frames;
 
+  /// Look cubes uploaded to the GPU since the engine started. Straight from the
+  /// compositor, and read the same way `text_rasters` is: a look is the same
+  /// few hundred kilobytes on every frame of every clip wearing it, so this
+  /// should tick once per look and never during playback or during a drag on
+  /// the strength slider.
+  @ffi.Int64()
+  external int lut_uploads;
+
   /// Stickers decoded whole since the engine started, and what they are
   /// holding. An open is expensive and a byte is scarce, so both are worth
   /// watching: a count that climbs during playback means the cache is thrashing
@@ -3421,6 +3761,10 @@ const double VD_LUMA_R = 0.2125999927520752;
 const double VD_LUMA_G = 0.7152000069618225;
 
 const double VD_LUMA_B = 0.0722000002861023;
+
+const int VD_LUT_MAX_3D_SIZE = 64;
+
+const int VD_LUT_MAX_1D_SIZE = 65536;
 
 const int VD_AUDIO_SAMPLE_RATE = 48000;
 

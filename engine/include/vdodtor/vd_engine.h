@@ -19,6 +19,7 @@
 #include "vdodtor/vd_anim.h"
 #include "vdodtor/vd_color.h"
 #include "vdodtor/vd_compositor.h"
+#include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_sticker.h"
 #include "vdodtor/vd_text.h"
@@ -105,6 +106,20 @@ typedef struct {
   // why it is composed into a matrix down in the compositor and not here.
   // See vd_color.h.
   VdColorAdjust color;
+
+  // The look on this clip: a name registered with vd_lut_register, or NULL for
+  // a clip nobody put one on. Copied on set_timeline; the caller keeps
+  // ownership of its own string.
+  //
+  // A name rather than a path or a lattice, exactly as `VdTextSpec::font` is a
+  // family name: the looks the app ships have no path inside a signed bundle,
+  // and a document that names one reads like the edit that made it rather than
+  // like one machine's filesystem. A name nothing was registered under draws
+  // ungraded, which is the bargain a caption in a missing face already takes.
+  const char* look;
+
+  // 0..1: how far towards the look to go. Only read when `look` names one.
+  float look_strength;
 
   // How this clip joins the one before it on the same track. A zeroed
   // VdClipTransition is "a plain cut", so this is a field a caller can ignore.
@@ -287,6 +302,13 @@ typedef struct {
   // this four times a second, not sixty. A stream of them at the project's
   // rate means every frame is being copied again to show the same picture.
   int64_t sticker_frames;
+
+  // Look cubes uploaded to the GPU since the engine started. Straight from the
+  // compositor, and read the same way `text_rasters` is: a look is the same
+  // few hundred kilobytes on every frame of every clip wearing it, so this
+  // should tick once per look and never during playback or during a drag on
+  // the strength slider.
+  int64_t lut_uploads;
 
   // Stickers decoded whole since the engine started, and what they are
   // holding. An open is expensive and a byte is scarce, so both are worth

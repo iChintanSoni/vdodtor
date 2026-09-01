@@ -9,6 +9,7 @@
 
 #include "vdodtor/vd_audio.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_raster.h"
 #include "vdodtor/vd_sticker.h"
 #include "vdodtor/vd_transition.h"
@@ -55,6 +56,17 @@ typedef struct {
   VdFitMode fit;
   VdTransform transform;
   VdColorAdjust color;
+
+  // The look, resolved once per edit rather than looked up per frame: the
+  // catalogue is a linear walk over strings, and doing that sixty times a
+  // second for a cube that has not moved would be silly. NULL for a clip with
+  // no look, and also for one naming a look this installation does not have —
+  // which is the same thing as far as every frame is concerned.
+  //
+  // Borrowed. Nothing is ever unregistered, so this outlives the clip.
+  const VdLut* lut;
+  float look_strength;
+
   VdClipAnim anim;
   bool has_video;
 
@@ -635,6 +647,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
       layer->color = clip->color;
+      layer->look = vd_lut_look(clip->lut, clip->look_strength);
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -671,6 +684,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->opacity = clip->opacity;
       layer->transform = clip->transform;
       layer->color = clip->color;
+      layer->look = vd_lut_look(clip->lut, clip->look_strength);
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -707,8 +721,11 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     layer->opacity = clip->opacity;
     layer->transform = clip->transform;
     // Straight across, not composed with anything: unlike the animation and
-    // the transition below it, a grade does not change through the clip.
+    // the transition below it, a grade does not change through the clip. The
+    // look is the same story, and the lattice it points at is the catalogue's
+    // — one cube however many clips are wearing it.
     layer->color = clip->color;
+    layer->look = vd_lut_look(clip->lut, clip->look_strength);
     apply_anim(layer, &anim);
     if (has_head) apply_transition(layer, &head, true);
     if (has_tail) apply_transition(layer, &tail, false);
@@ -981,6 +998,8 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->fit = src->fit;
     dst->transform = src->transform;
     dst->color = src->color;
+    dst->lut = vd_lut_find(src->look);
+    dst->look_strength = src->look_strength;
     dst->has_video = src->has_video;
     dst->is_sticker = src->sticker;
     dst->anim = src->anim;
@@ -1234,6 +1253,10 @@ void vd_engine_stats(VdEngine* e, VdEngineStats* out) {
     sticker_bytes += vd_sticker_bytes(e->clips[i].sticker);
   }
   out->open_decoders = open;
+  // Asked of the compositor rather than accumulated here: it is the one that
+  // knows whether a cube went up the bus, and a second counter next to it
+  // would be a second thing to keep in step.
+  out->lut_uploads = vd_compositor_lut_uploads(e->compositor);
   // Counted here rather than accumulated, like open_decoders and for the same
   // reason: a clip leaving the timeline takes its sticker with it, and a
   // running total would have to be decremented on every path that frees one.

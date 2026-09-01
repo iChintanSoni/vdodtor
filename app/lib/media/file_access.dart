@@ -18,7 +18,16 @@ export 'package:vdodtor_engine/vdodtor_engine.dart'
 /// a user standing at the keyboard.
 abstract interface class FileAccess {
   /// Asks the user for files. Empty when they cancel.
-  Future<List<GrantedFile>> pick();
+  ///
+  /// [extensions] narrows what the panel shows; leaving it out offers video,
+  /// audio and images, which is what importing media means. The only caller
+  /// that asks for anything else is the look picker, and it wants `.cube`.
+  Future<List<GrantedFile>> pick({
+    bool multiple = true,
+    List<String>? extensions,
+    String? message,
+    String? prompt,
+  });
 
   /// Mints a bookmark for a file the app can already reach — after a drop, or
   /// for a file inside a dropped folder. Null when one cannot be made.
@@ -43,10 +52,20 @@ final class SystemFileAccess implements FileAccess {
   bool get _available => Platform.isMacOS;
 
   @override
-  Future<List<GrantedFile>> pick() async {
+  Future<List<GrantedFile>> pick({
+    bool multiple = true,
+    List<String>? extensions,
+    String? message,
+    String? prompt,
+  }) async {
     if (!_available) return const [];
     try {
-      return await MediaAccess.pickFiles();
+      return await MediaAccess.pickFiles(
+        multiple: multiple,
+        extensions: extensions,
+        message: message,
+        prompt: prompt,
+      );
     } on MissingPluginException {
       return const [];
     }

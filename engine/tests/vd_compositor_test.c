@@ -4,6 +4,7 @@
 // editor.
 #include "vd_check.h"
 #include "vdodtor/vd_color.h"
+#include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_decoder.h"
 
@@ -716,6 +717,254 @@ static void test_a_grade_reaches_the_blur_fill_backdrop(void) {
   vd_frame_release(&frame);
 }
 
+// --- looks ------------------------------------------------------------------
+// The other half of a grade: the part vd_color.c cannot express, sampled from
+// a cube instead of multiplied by a matrix. What a look *means* is pinned in
+// vd_lut_test.c with no GPU; what is left for here is that the cube reaches
+// the fragment on each of the paths a layer can take, in the right order
+// relative to the sliders, and that it is uploaded once rather than per frame.
+
+// A look that swaps red and blue: the eight corners of the colour cube, with
+// the first and last channels exchanged. Affine, which is the point — a look
+// whose answer is arithmetic anybody can do in their head is the one worth
+// checking the plumbing with.
+static VdLut* swap_rb_look(void) {
+  static const char* text =
+      "TITLE \"Swap\"\n"
+      "LUT_3D_SIZE 2\n"
+      "0 0 0\n0 0 1\n0 1 0\n0 1 1\n1 0 0\n1 0 1\n1 1 0\n1 1 1\n";
+  return vd_lut_parse(text, (int64_t)strlen(text), NULL);
+}
+
+// A look that sends black — and only black — to red. Nothing affine does that,
+// and nothing else answers "did the sliders run before the look or after it?"
+// as loudly.
+static VdLut* black_to_red_look(void) {
+  static const char* text =
+      "LUT_3D_SIZE 2\n"
+      "1 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+  return vd_lut_parse(text, (int64_t)strlen(text), NULL);
+}
+
+// A zeroed look is no look, so every test above this line — and every caller
+// that memsets a layer — keeps taking the path it took before looks existed.
+static void test_a_zeroed_look_leaves_the_picture_alone(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "a zeroed look looks at nothing");
+    // And nothing went up the bus for it.
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 0);
+
+    // A look at no strength is the same thing, and must not cost an upload
+    // either — otherwise dragging the slider to zero would leave a cube on the
+    // GPU for a look nobody is wearing.
+    VdLut* lut = swap_rb_look();
+    if (lut) {
+      layer.look = vd_lut_look(lut, 0.0f);
+      VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+      check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                     "a look at no strength");
+      VD_CHECK_EQ(vd_compositor_lut_uploads(c), 0);
+      vd_lut_close(lut);
+    }
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// A decoded frame is graded after the conversion to RGB, and looked up there
+// too: a `.cube` is written against the signal as it comes off the wire, which
+// is exactly what ycbcr_to_rgb produces.
+static void test_a_look_reaches_a_decoded_frame(void) {
+  VdFrame frame;
+  VdLut* lut = swap_rb_look();
+  if (!lut) return;
+  if (!first_frame("solid_sd_601.mp4", &frame)) {
+    vd_lut_close(lut);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.look = vd_lut_look(lut, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_B, SOLID_G, SOLID_R,
+                   "red and blue swapped by the cube");
+
+    // Halfway is halfway, on every channel — one strength slider for a
+    // monochrome and a split-tone alike.
+    layer.look = vd_lut_look(lut, 0.5f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, (SOLID_R + SOLID_B) / 2, SOLID_G,
+                   (SOLID_R + SOLID_B) / 2, "half strength");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+  vd_lut_close(lut);
+}
+
+// The five sliders run first and the look runs last. That is the order a
+// colourist works in — correct the shot, then style it — and it is the order
+// the look was authored expecting.
+//
+// Brightness all the way down makes every pixel black; a look that sends black
+// to red then makes it red. Run the other way round the shot would be a
+// swapped colour and then black, so the two orders are as far apart as an
+// assertion can put them.
+static void test_the_sliders_run_before_the_look(void) {
+  VdFrame frame;
+  VdLut* lut = black_to_red_look();
+  if (!lut) return;
+  if (!first_frame("solid_sd_601.mp4", &frame)) {
+    vd_lut_close(lut);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.color = vd_color_neutral();
+    layer.color.brightness = -1.0f;
+    layer.look = vd_lut_look(lut, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, 255, 0, 0, "graded to black, then looked up");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+  vd_lut_close(lut);
+}
+
+// A caption, a shape and a sticker arrive premultiplied, so the look is undone
+// and redone around the alpha exactly as the matrix is. The number that says
+// so is how much of the picture underneath still shows: a look changes what
+// colour a pixel is, not whether it is there.
+static void test_a_look_reaches_a_premultiplied_layer(void) {
+  VdFrame picture;
+  VdLut* lut = swap_rb_look();
+  if (!lut) return;
+  if (!first_frame("solid_sd_601.mp4", &picture)) {
+    vd_lut_close(lut);
+    return;
+  }
+
+  CVPixelBufferRef overlay = generated_layer(200, 200, 0, 0, 128, 128);
+  VD_CHECK(overlay != NULL);
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c && overlay) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&picture, VD_FIT_STRETCH, 1.0f);
+    memset(&layers[1], 0, sizeof(layers[1]));
+    layers[1].pixel_buffer = overlay;
+    layers[1].format = VD_PIXEL_BGRA;
+    layers[1].fit = VD_FIT_STRETCH;
+    layers[1].opacity = 1.0f;
+    layers[1].look = vd_lut_look(lut, 1.0f);
+
+    // The overlay's *straight* colour is full red, which the cube sends to
+    // full blue; premultiplied back down by the same alpha it arrived with.
+    const float through = 1.0f - 128.0f / 255.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_pixel_is(c, 50, 100, (int)(SOLID_R * through),
+                   (int)(SOLID_G * through), 128 + (int)(SOLID_B * through),
+                   "looked up, and just as transparent");
+    vd_compositor_destroy(c);
+  }
+  if (overlay) CVPixelBufferRelease(overlay);
+  vd_frame_release(&picture);
+  vd_lut_close(lut);
+}
+
+// A blur-filled clip is drawn twice, so the look has to reach the backdrop —
+// and exactly once. Looking the offscreen up and then looking it up again on
+// the way out would leave the bars somewhere the picture in them is not.
+static void test_a_look_reaches_the_blur_fill_backdrop(void) {
+  VdFrame frame;
+  VdLut* lut = swap_rb_look();
+  if (!lut) return;
+  if (!first_frame("solid_sd_601.mp4", &frame)) {  // 4:3
+    vd_lut_close(lut);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);  // 16:9
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_BLUR, 1.0f);
+    layer.look = vd_lut_look(lut, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 320, 180, SOLID_B, SOLID_G, SOLID_R,
+                   "the picture is looked up");
+    check_pixel_is(c, 20, 180, SOLID_B, SOLID_G, SOLID_R,
+                   "and the bars with it, once");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+  vd_lut_close(lut);
+}
+
+// A cube is a few hundred kilobytes and the same cube on every frame of every
+// clip wearing it. Sending it up the bus per frame would be the whole cost of
+// the feature, so this is the assertion that says it is sent once.
+static void test_a_look_is_uploaded_once(void) {
+  VdFrame frame;
+  VdLut* first = swap_rb_look();
+  VdLut* second = black_to_red_look();
+  if (!first || !second) {
+    vd_lut_close(first);
+    vd_lut_close(second);
+    return;
+  }
+  if (!first_frame("solid_sd_601.mp4", &frame)) {
+    vd_lut_close(first);
+    vd_lut_close(second);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.look = vd_lut_look(first, 1.0f);
+    for (int i = 0; i < 30; i++) {
+      VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    }
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 1);
+
+    // A drag on the strength slider is thirty more renders of the same cube.
+    for (int i = 1; i <= 30; i++) {
+      layer.look = vd_lut_look(first, (float)i / 30.0f);
+      VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    }
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 1);
+
+    // Two clips wearing one look still share one cube.
+    VdLayer layers[2];
+    layers[0] = layer;
+    layers[1] = layer;
+    layers[1].reveal.left = 0.5f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 1);
+
+    // A different look is a different cube, and going back to the first finds
+    // it still there.
+    layer.look = vd_lut_look(second, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 2);
+    layer.look = vd_lut_look(first, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    VD_CHECK_EQ(vd_compositor_lut_uploads(c), 2);
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+  vd_lut_close(first);
+  vd_lut_close(second);
+}
+
 // One layer's grade is its own. The layer beside it on the frame is a
 // different clip, and a grade that leaked across lanes would be an effect on
 // the project wearing a clip's clothes.
@@ -1312,6 +1561,12 @@ int main(void) {
   test_a_grade_reaches_a_premultiplied_layer();
   test_a_grade_reaches_the_blur_fill_backdrop();
   test_a_grade_belongs_to_one_layer();
+  test_a_zeroed_look_leaves_the_picture_alone();
+  test_a_look_reaches_a_decoded_frame();
+  test_the_sliders_run_before_the_look();
+  test_a_look_reaches_a_premultiplied_layer();
+  test_a_look_reaches_the_blur_fill_backdrop();
+  test_a_look_is_uploaded_once();
   test_a_null_layer_is_skipped_not_crashed();
   test_output_and_png();
   test_repeated_renders_stay_correct();

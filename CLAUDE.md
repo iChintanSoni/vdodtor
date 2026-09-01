@@ -33,17 +33,19 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
            `lib/media` — import, thumbnails, waveforms, bundled fonts, sandbox file
            access — and `lib/ui`); `assets/fonts` holds the five OFL faces a caption
-           can be set in
+           can be set in, and `assets/luts` the five .cube looks a clip can wear
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_transition (how one clip becomes the next),
-           vd_color (five grading sliders as one matrix), vd_probe,
+           vd_color (five grading sliders as one matrix),
+           vd_lut (the grade that cannot be one: .cube looks), vd_probe,
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
            vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
+           make_luts.dart  — writes the bundled looks from the formulae in it
 ```
 
 ### Commands
@@ -120,8 +122,9 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   temperature and tint are all affine on RGB, so `vd_color_transform` composes them
   into one 3x3 and an offset on the CPU and the shader does a single multiply-add.
   That is what keeps the meaning of a grade in plain C, testable with no GPU, the way
-  `vd_anim` and `vd_transition` are — and it is the line the LUT work will need: a LUT
-  is the grade that *cannot* be a matrix, which is why it is a lookup table.
+  `vd_anim` and `vd_transition` are — and it is the line `vd_lut` sits on the other
+  side of: a LUT is the grade that *cannot* be a matrix, which is why it is a
+  lookup table.
   Every slider is −1..1 with 0 neutral, so a zeroed `VdColorAdjust` is the ungraded
   shot; the compositor checks `vd_color_is_neutral` first so an ungraded fragment takes
   the arithmetic it took before the feature existed, and the goldens did not move.
@@ -141,6 +144,46 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   through the offset row gives a half-transparent pixel half a contrast lift. A
   blur-filled clip's backdrop is graded *once*, inside the offscreen pass and not again
   at the composite, or the bars end up twice as far from neutral as the picture in them.
+- **A look is the grade that cannot be a matrix, and it runs in the signal.** Every
+  slider in `vd_color` is affine, which is why five fold into one 3x3; a split-tone
+  pushes shadows one way and highlights the other, and no matrix applies two directions
+  to one axis. So it arrives as a lattice: `vd_lut.c` parses a `.cube`, samples it
+  trilinearly and bakes the cube the shader fetches — plain C with no GPU in the room,
+  on `vd_color.c`'s terms. **Not** in linear light, whatever an older draft of PLAN.md
+  said: a `.cube` declares no colour space, and every creative look anybody will load
+  was authored against Rec.709 as it comes off the wire — which is what `ycbcr_to_rgb`
+  produces and where `vd_color_transform` already works. And it runs **after** the five
+  sliders, which is the order a colourist works in and the order the inspector offers
+  them in, for the reason temperature already sits above saturation.
+- **A look is a name in a catalogue, registered by bytes.** `vd_lut_register` /
+  `Looks.register` / `BundledLooks`, the arrangement `vd_text_register_font` and
+  `BundledFonts` already have and for the same two reasons: the bundled cubes have no
+  path inside a signed bundle, and a project file that named one machine's filesystem
+  would only open on that machine. A name nothing was registered under draws ungraded —
+  the bargain a caption in a missing face already takes. Nothing is ever unregistered,
+  which is what lets `vd_lut_find` hand out a borrowed pointer the render thread keeps.
+  A user's own `.cube` is **copied** into `Application Support/vdodtor/Looks` rather
+  than linked to: no security-scoped bookmark to mint, nothing to break when they tidy
+  up their downloads, and a look is a tool they will want on the next project.
+- **The cube is uploaded once, keyed on an id and never on the pointer.** `VdColorLook`
+  carries a `id` assigned at parse time; the compositor's eight-slot cache matches on
+  it, because a lattice freed and another allocated at the same address would be a cache
+  hit on the wrong picture. `VdEngineStats::lut_uploads` is how that is asserted: once
+  per look, never during playback and never during a drag on the strength slider.
+  It goes up as **RGBA16Unorm** — `RGBA32Float` is not filterable on Apple GPUs, so the
+  hardware trilinear the whole design rests on would quietly stop happening and show up
+  as banding rather than as an error.
+- **`vd_lut.c` parses its own decimals.** `strtof` reads the *locale's* separator and a
+  `.cube` always writes a full stop, so under a locale where that separator is a comma
+  every value in the file is read as its integer part: the look loads without error and
+  renders as garbage. That is a bug that only happens on other people's computers, which
+  is exactly the kind worth forty lines to make unreachable.
+- **The bundled looks are generated, not vendored.** `tools/make_luts.dart` holds five
+  formulae and writes the `.cube` files from them. A look shipped in a product sold
+  without an account has to be one we may sell, and the files people share almost never
+  are — and thirty lines of arithmetic is something a reviewer can argue with where a
+  quarter of a million numbers is not. `engine/tests/vd_lut_test.c` reads the *shipped*
+  files, the way `vd_text_test.c` reads the shipped fonts.
 - **A transition's overlap is made by the engine, never by the document.** Two clips
   that meet at a cut are butt-joined and non-overlapping in `Track` — `Track.clipAt`
   binary-searches on that, and so do hit testing, split and insert — so the engine

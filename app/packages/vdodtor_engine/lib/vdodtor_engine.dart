@@ -32,5 +32,6 @@ export 'src/native.dart' show EngineException;
 export 'src/peaks.dart' show NativePeaks, Peaks;
 export 'src/preview.dart' show EnginePreview;
 export 'src/probe.dart' show NativeProbe, VdodtorEngine;
+export 'src/looks.dart' show Looks;
 export 'src/text.dart' show TextFonts;
 export 'src/thumbnails.dart' show NativeThumbnail, Thumbnails;

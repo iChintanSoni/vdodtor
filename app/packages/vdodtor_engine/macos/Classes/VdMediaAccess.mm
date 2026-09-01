@@ -242,10 +242,39 @@ static NSDictionary *vd_file_entry(NSURL *url) {
       call.arguments[@"multiple"] == nil;
   panel.canChooseDirectories = NO;
   panel.canChooseFiles = YES;
-  panel.message = @"Choose video, audio or images to import";
-  panel.prompt = @"Import";
-  panel.allowedContentTypes =
-      @[ UTTypeMovie, UTTypeAudiovisualContent, UTTypeAudio, UTTypeImage ];
+
+  // Media unless the caller asks for something else. The only other caller is
+  // the look picker, which wants `.cube` and would otherwise be offered every
+  // video on the machine and none of the files it is looking for.
+  NSArray *extensions = call.arguments[@"extensions"];
+  if ([extensions isKindOfClass:[NSArray class]] && extensions.count > 0) {
+    NSMutableArray<UTType *> *types = [NSMutableArray array];
+    for (NSString *extension in extensions) {
+      if (![extension isKindOfClass:[NSString class]]) continue;
+      // A type the system has never heard of — which `.cube` is, on a machine
+      // with no colour tools installed — still filters correctly as long as it
+      // is *declared*, so an exported identifier is used rather than nothing.
+      UTType *type = [UTType typeWithFilenameExtension:extension];
+      if (type == nil) {
+        type = [UTType exportedTypeWithIdentifier:
+                           [@"com.vdodtor." stringByAppendingString:extension]
+                                  conformingToType:UTTypePlainText];
+      }
+      if (type != nil) [types addObject:type];
+    }
+    if (types.count > 0) panel.allowedContentTypes = types;
+  } else {
+    panel.allowedContentTypes =
+        @[ UTTypeMovie, UTTypeAudiovisualContent, UTTypeAudio, UTTypeImage ];
+  }
+
+  NSString *message = call.arguments[@"message"];
+  panel.message = [message isKindOfClass:[NSString class]]
+                      ? message
+                      : @"Choose video, audio or images to import";
+  NSString *prompt = call.arguments[@"prompt"];
+  panel.prompt =
+      [prompt isKindOfClass:[NSString class]] ? prompt : @"Import";
 
   _panelOpen = YES;
   __weak VdMediaAccess *weakSelf = self;

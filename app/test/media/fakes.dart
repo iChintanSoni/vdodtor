@@ -27,9 +27,19 @@ class FakeFileAccess implements FileAccess {
   final List<String> released = [];
   int pickCount = 0;
 
+  /// The extensions the last [pick] filtered on, so a test can say which panel
+  /// was opened — media, or the look picker's `.cube`.
+  List<String>? pickedExtensions;
+
   @override
-  Future<List<GrantedFile>> pick() async {
+  Future<List<GrantedFile>> pick({
+    bool multiple = true,
+    List<String>? extensions,
+    String? message,
+    String? prompt,
+  }) async {
     pickCount++;
+    pickedExtensions = extensions;
     return picks;
   }
 

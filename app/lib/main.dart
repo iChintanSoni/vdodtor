@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'app/workspace.dart';
 import 'dev/self_test.dart';
 import 'media/fonts.dart';
+import 'media/looks.dart';
 import 'ui/editor_screen.dart';
 import 'ui/new_project_dialog.dart';
 import 'ui/start_screen.dart';
@@ -45,6 +46,17 @@ class _VdodtorAppState extends State<VdodtorApp> {
     // it afterwards.
     await BundledFonts.load();
     await widget.workspace.start();
+
+    // After storage is resolved, because the user's own looks live under it —
+    // and before any project opens, because a clip naming a look that is not
+    // registered yet renders ungraded and registering it afterwards would not
+    // redraw the frame. `start` leaves the chooser up, so there is no project
+    // in between.
+    if (widget.workspace.stage != WorkspaceStage.failed) {
+      await BundledLooks.load(
+          library: BundledLooks.libraryOf(widget.workspace.paths.support));
+    }
+
     if (selfTestRequested &&
         widget.workspace.stage == WorkspaceStage.chooser) {
       await openSelfTestProject(widget.workspace);
@@ -123,6 +135,7 @@ class _VdodtorAppState extends State<VdodtorApp> {
           open: open,
           access: workspace.fileAccess,
           peakCache: workspace.paths.peaks,
+          lookLibrary: BundledLooks.libraryOf(workspace.paths.support),
           onClose: () => unawaited(workspace.close()),
         );
     }
