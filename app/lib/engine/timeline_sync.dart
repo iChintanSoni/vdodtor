@@ -148,6 +148,11 @@ EngineColor _engineColorFor(ClipColor color) => EngineColor(
       saturation: color.saturation,
       temperature: color.temperature,
       tint: color.tint,
+      // The look's name, resolved against the engine's catalogue on the other
+      // side. A name it does not know draws ungraded rather than failing, so
+      // there is nothing to check here.
+      look: color.look,
+      lookStrength: color.lookStrength,
     );
 
 /// The entrance and the exit. Only the halves that actually run cross over —

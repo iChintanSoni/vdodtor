@@ -177,6 +177,8 @@ final class ClipColor {
     this.saturation = 0,
     this.temperature = 0,
     this.tint = 0,
+    this.look = '',
+    this.lookStrength = 1,
   });
 
   /// The shot as it was shot. The default for every clip, and the value
@@ -200,6 +202,34 @@ final class ClipColor {
   /// fluorescent light.
   final double tint;
 
+  /// The look on this clip: a name from `Looks.names`, or empty for none.
+  ///
+  /// **The half of a grade that cannot be a matrix.** Everything above is
+  /// affine on RGB, which is what lets the engine fold all five into one 3x3;
+  /// a look is an arbitrary map from colour to colour, so it arrives as a
+  /// lookup table instead. See `engine/include/vdodtor/vd_lut.h`.
+  ///
+  /// A *name* rather than a path, exactly as [ClipText.font] is a family name
+  /// rather than a font file. The looks the app ships have no path inside a
+  /// signed bundle, and a project file that named one machine's `~/Downloads`
+  /// would be a project file that only opens on that machine. A name this
+  /// installation does not have draws ungraded — the same bargain a caption in
+  /// a missing face takes.
+  final String look;
+
+  /// 0..1: how far towards [look] to go, mixed against the shot as the five
+  /// sliders left it. 1 is the look as it was authored.
+  ///
+  /// A mix rather than a weaker look, because that is the one operation that
+  /// works for all of them: halfway to a monochrome is a desaturated shot,
+  /// halfway to a split-tone is a gentler split-tone.
+  final double lookStrength;
+
+  /// Whether a look is doing anything. A named look at no strength is a look
+  /// the user can bring back with the slider, so the *document* keeps it while
+  /// the *frame* shows nothing of it.
+  bool get hasLook => look.isNotEmpty && lookStrength > 0;
+
   bool get isNeutral => this == neutral;
 
   /// Pulled inside the range the inspector offers, on the way into the
@@ -213,6 +243,8 @@ final class ClipColor {
         saturation: saturation.clamp(-1.0, 1.0),
         temperature: temperature.clamp(-1.0, 1.0),
         tint: tint.clamp(-1.0, 1.0),
+        look: look,
+        lookStrength: lookStrength.clamp(0.0, 1.0),
       );
 
   ClipColor copyWith({
@@ -221,6 +253,8 @@ final class ClipColor {
     double? saturation,
     double? temperature,
     double? tint,
+    String? look,
+    double? lookStrength,
   }) =>
       ClipColor(
         brightness: brightness ?? this.brightness,
@@ -228,6 +262,20 @@ final class ClipColor {
         saturation: saturation ?? this.saturation,
         temperature: temperature ?? this.temperature,
         tint: tint ?? this.tint,
+        look: look ?? this.look,
+        lookStrength: lookStrength ?? this.lookStrength,
+      );
+
+  /// Puts a look on, or takes one off with the empty string.
+  ///
+  /// [copyWith] cannot do it: a look chosen after one was turned down to
+  /// nothing would arrive wearing the old strength and appear to do nothing,
+  /// so picking one brings the strength back up. Taking a look off leaves the
+  /// strength alone, because the next one the user picks is very likely meant
+  /// to be as strong as the last.
+  ClipColor withLook(String name) => copyWith(
+        look: name,
+        lookStrength: name.isNotEmpty && lookStrength <= 0 ? 1 : lookStrength,
       );
 
   @override
@@ -237,17 +285,20 @@ final class ClipColor {
       other.contrast == contrast &&
       other.saturation == saturation &&
       other.temperature == temperature &&
-      other.tint == tint;
+      other.tint == tint &&
+      other.look == look &&
+      other.lookStrength == lookStrength;
 
   @override
-  int get hashCode =>
-      Object.hash(brightness, contrast, saturation, temperature, tint);
+  int get hashCode => Object.hash(brightness, contrast, saturation, temperature,
+      tint, look, lookStrength);
 
   @override
   String toString() => isNeutral
       ? 'ClipColor.neutral'
       : 'ClipColor(b $brightness c $contrast s $saturation '
-          't $temperature/$tint)';
+          't $temperature/$tint'
+          '${look.isEmpty ? '' : ' look $look@$lookStrength'})';
 }
 
 /// One point on a clip's volume line.

@@ -10,6 +10,7 @@
 #include <pthread.h>
 
 #include "vdodtor/vd_audio.h"
+#include "vdodtor/vd_lut.h"
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -1404,6 +1405,144 @@ static void test_dragging_a_grade_keeps_the_decoders(void) {
   vd_engine_destroy(e);
 }
 
+// --- looks ------------------------------------------------------------------
+// What a look means is pinned in vd_lut_test.c and that a cube reaches a
+// fragment is pinned in vd_compositor_test.c. What is left for here is the
+// engine's own half: a clip names a look, the catalogue resolves it once per
+// edit, a name nobody registered draws ungraded, and a drag on the strength
+// slider costs neither a decoder nor an upload.
+
+// Green with red and blue swapped, which is what a swap cube does to the
+// fixture — 0 and 100 change places.
+static const int GREEN_SWAPPED[3] = {100, 200, 0};
+
+// Registers a swap cube under `name` and hands the name back, so a test can
+// say what it wants without knowing the catalogue is a global. Registration is
+// idempotent, which is exactly what makes calling this from several tests
+// safe.
+static const char* swap_look(void) {
+  static const char* text =
+      "TITLE \"Engine Swap\"\n"
+      "LUT_3D_SIZE 2\n"
+      "0 0 0\n0 0 1\n0 1 0\n0 1 1\n1 0 0\n1 0 1\n1 1 0\n1 1 1\n";
+  vd_lut_register("Engine Swap", text, (int64_t)strlen(text));
+  return "Engine Swap";
+}
+
+static void test_a_look_on_a_clip_reaches_the_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.look = swap_look();
+  clip.look_strength = 1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN_SWAPPED, "a clip wearing a look");
+
+  // And off again: a look is a property of the timeline, not something the
+  // engine keeps once it has seen one.
+  clip.look = NULL;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "and back to the shot as it was shot");
+
+  vd_engine_destroy(e);
+}
+
+// A project made on a machine with a look pack opens on one without it. It
+// draws ungraded rather than refusing, which is the bargain a caption in a
+// missing face already takes — see VdTextSpec::font.
+static void test_a_look_nobody_registered_draws_ungraded(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.look = "A Look This Machine Has Never Heard Of";
+  clip.look_strength = 1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "a missing look is no look");
+
+  // Empty and NULL are the same thing all the way down from the document.
+  clip.look = "";
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "an empty look name is no look");
+
+  vd_engine_destroy(e);
+}
+
+// A look is the same cube at every instant of the clip, like the five sliders
+// beside it and unlike the animation and the transition.
+static void test_a_look_does_not_change_through_the_clip(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.look = swap_look();
+  clip.look_strength = 1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  const VdTick at[] = {0, SECOND / 2, SECOND, 2 * SECOND - 1};
+  for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); i++) {
+    vd_engine_seek(e, at[i]);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+    check_frame_is(e, GREEN_SWAPPED, "the same look at every instant");
+  }
+
+  vd_engine_destroy(e);
+}
+
+// The strength slider is dragged, so it arrives as a whole new timeline sixty
+// times a second — and it must cost neither a reopened decoder nor a re-sent
+// cube. A look that went up the bus on every value would stutter the preview
+// for the whole length of the drag, which is exactly when the user is looking.
+static void test_dragging_a_looks_strength_costs_nothing(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "solid_sd_601.mp4");
+  clip.look = swap_look();
+  clip.look_strength = 1.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  VdEngineStats before;
+  vd_engine_stats(e, &before);
+  VD_CHECK_EQ(before.open_decoders, 1);
+  VD_CHECK_EQ(before.lut_uploads, 1);
+
+  for (int i = 1; i <= 20; i++) {
+    clip.look_strength = (float)i / 20.0f;
+    VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  }
+
+  VdEngineStats after;
+  vd_engine_stats(e, &after);
+  VD_CHECK_EQ(after.open_decoders, 1);
+  VD_CHECK_EQ(after.lut_uploads, 1);
+
+  // At zero strength the look is gone from the frame without being gone from
+  // the document, which is what makes the slider reversible.
+  clip.look_strength = 0.0f;
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, GREEN, "a look turned all the way down");
+
+  vd_engine_destroy(e);
+}
+
 static void test_an_entrance_fades_the_picture_up_from_black(void) {
   VdEngine* e = make_engine();
   if (!e) return;
@@ -1999,6 +2138,10 @@ int main(void) {
   test_a_grade_does_not_change_through_the_clip();
   test_a_grade_belongs_to_the_clip_that_carries_it();
   test_dragging_a_grade_keeps_the_decoders();
+  test_a_look_on_a_clip_reaches_the_frame();
+  test_a_look_nobody_registered_draws_ungraded();
+  test_a_look_does_not_change_through_the_clip();
+  test_dragging_a_looks_strength_costs_nothing();
   test_an_entrance_fades_the_picture_up_from_black();
   test_an_exit_is_measured_from_the_end();
   test_an_animation_composes_with_the_transform();

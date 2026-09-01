@@ -48,6 +48,15 @@ struct VdLayerUniforms {
   // learned about grading, bit for bit, so the golden frames cannot move for
   // a feature nobody used.
   uint graded;
+  // Entries per axis of the look's cube, or 0 for a layer wearing no look —
+  // which short-circuits the fetch on the same terms and for the same reason
+  // `graded` does. The size is needed rather than merely the flag because a
+  // lattice point sits at a texel *centre*, so where 0 and 1 land in the
+  // texture depends on how many texels there are.
+  uint lut_size;
+  // How far towards the look to go: 0 is the shot as it was graded, 1 is the
+  // look at full strength.
+  float lut_strength;
 };
 
 struct VertexOut {
@@ -126,13 +135,40 @@ static inline float3 ycbcr_to_rgb(float y, float cb, float cr, float kr,
   return clamp(rgb, 0.0, 1.0);
 }
 
+constexpr sampler vd_lut_sampler(filter::linear, address::clamp_to_edge);
+
+// The look: an arbitrary map from colour to colour, which is the half of a
+// grade that cannot be a matrix. See vd_lut.h, where what a look *means* lives
+// and can be asserted on numbers.
+//
+// A lattice point sits at the centre of a texel, so the ends of the ramp are
+// half a texel in from the ends of the texture — sampling at rgb directly
+// would read the first and last lattice points a texel early and flatten both
+// ends of every look.
+static inline float3 vd_look(float3 rgb, constant VdLayerUniforms& u,
+                             texture3d<float> lut) {
+  if (u.lut_size == 0u) return rgb;
+  const float n = float(u.lut_size);
+  const float3 coord = (clamp(rgb, 0.0, 1.0) * (n - 1.0) + 0.5) / n;
+  return mix(rgb, lut.sample(vd_lut_sampler, coord).rgb, u.lut_strength);
+}
+
 // The grade, on a straight — not premultiplied — RGB triple.
-static inline float3 vd_grade(float3 rgb, constant VdLayerUniforms& u) {
-  if (u.graded == 0u) return rgb;
-  const float3 graded = float3(dot(u.grade[0].xyz, rgb) + u.grade[0].w,
-                               dot(u.grade[1].xyz, rgb) + u.grade[1].w,
-                               dot(u.grade[2].xyz, rgb) + u.grade[2].w);
-  return clamp(graded, 0.0, 1.0);
+//
+// Five sliders and then the look, which is the order a colourist works in:
+// correct the shot, then style it. It is also the order the look was authored
+// expecting — a film emulation built against a neutral, properly exposed frame
+// should be handed one — and it is why the inspector puts the look under the
+// sliders rather than over them.
+static inline float3 vd_grade(float3 rgb, constant VdLayerUniforms& u,
+                              texture3d<float> lut) {
+  if (u.graded != 0u) {
+    const float3 graded = float3(dot(u.grade[0].xyz, rgb) + u.grade[0].w,
+                                 dot(u.grade[1].xyz, rgb) + u.grade[1].w,
+                                 dot(u.grade[2].xyz, rgb) + u.grade[2].w);
+    rgb = clamp(graded, 0.0, 1.0);
+  }
+  return vd_look(rgb, u, lut);
 }
 
 // The same, for a texel that arrives premultiplied — a caption, a shape, a
@@ -144,9 +180,10 @@ static inline float3 vd_grade(float3 rgb, constant VdLayerUniforms& u) {
 // contrast lift. The alpha itself is never touched — a grade changes what
 // colour a pixel is, not whether it is there.
 static inline float4 vd_grade_premultiplied(float4 texel,
-                                            constant VdLayerUniforms& u) {
-  if (u.graded == 0u || texel.a <= 0.0) return texel;
-  return float4(vd_grade(texel.rgb / texel.a, u) * texel.a, texel.a);
+                                            constant VdLayerUniforms& u,
+                                            texture3d<float> lut) {
+  if ((u.graded == 0u && u.lut_size == 0u) || texel.a <= 0.0) return texel;
+  return float4(vd_grade(texel.rgb / texel.a, u, lut) * texel.a, texel.a);
 }
 
 constexpr sampler vd_sampler(filter::linear, address::clamp_to_edge);
@@ -155,12 +192,13 @@ constexpr sampler vd_sampler(filter::linear, address::clamp_to_edge);
 fragment float4 vd_fragment_nv12(VertexOut in [[stage_in]],
                                  constant VdLayerUniforms& u [[buffer(0)]],
                                  texture2d<float> luma [[texture(0)]],
-                                 texture2d<float> chroma [[texture(1)]]) {
+                                 texture2d<float> chroma [[texture(1)]],
+                                 texture3d<float> lut [[texture(3)]]) {
   if (vd_hidden(in.quad, u.hide)) discard_fragment();
   float y = luma.sample(vd_sampler, in.uv).r;
   float2 cbcr = chroma.sample(vd_sampler, in.uv).rg;
   float3 rgb = ycbcr_to_rgb(y, cbcr.x, cbcr.y, u.kr, u.kb, u.full_range != 0u);
-  rgb = vd_grade(rgb, u);
+  rgb = vd_grade(rgb, u, lut);
   // Premultiplied, to match the blend state.
   return float4(rgb * u.opacity, u.opacity);
 }
@@ -170,12 +208,14 @@ fragment float4 vd_fragment_yuv420p(VertexOut in [[stage_in]],
                                     constant VdLayerUniforms& u [[buffer(0)]],
                                     texture2d<float> luma [[texture(0)]],
                                     texture2d<float> cb [[texture(1)]],
-                                    texture2d<float> cr [[texture(2)]]) {
+                                    texture2d<float> cr [[texture(2)]],
+                                    texture3d<float> lut [[texture(3)]]) {
   if (vd_hidden(in.quad, u.hide)) discard_fragment();
   float y = luma.sample(vd_sampler, in.uv).r;
   float u_ = cb.sample(vd_sampler, in.uv).r;
   float v_ = cr.sample(vd_sampler, in.uv).r;
-  float3 rgb = vd_grade(ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u), u);
+  float3 rgb = vd_grade(
+      ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u), u, lut);
   return float4(rgb * u.opacity, u.opacity);
 }
 
@@ -202,9 +242,11 @@ fragment float4 vd_fragment_blur(VertexOut in [[stage_in]],
 // Draws an already-composited RGBA texture, at a given opacity.
 fragment float4 vd_fragment_texture(VertexOut in [[stage_in]],
                                     constant VdLayerUniforms& u [[buffer(0)]],
-                                    texture2d<float> source [[texture(0)]]) {
+                                    texture2d<float> source [[texture(0)]],
+                                    texture3d<float> lut [[texture(3)]]) {
   if (vd_hidden(in.quad, u.hide)) discard_fragment();
-  const float4 texel = vd_grade_premultiplied(source.sample(vd_sampler, in.uv), u);
+  const float4 texel =
+      vd_grade_premultiplied(source.sample(vd_sampler, in.uv), u, lut);
   // Already premultiplied by the pass that produced it, so opacity scales
   // both halves together.
   return texel * u.opacity;

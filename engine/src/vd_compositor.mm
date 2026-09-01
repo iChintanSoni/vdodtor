@@ -39,12 +39,17 @@ struct LayerUniforms {
   float hide[4];
   float grade[3][4];
   uint32_t graded;
+  uint32_t lut_size;
+  float lut_strength;
   // Metal rounds a struct up to its own 16-byte alignment and this mirror
-  // would stop at 148 bytes; setFragmentBytes copies exactly what it is told
+  // would stop at 156 bytes; setFragmentBytes copies exactly what it is told
   // to, so without this the GPU is handed a buffer shorter than the layout it
   // was compiled against.
-  uint32_t padding_[3];
+  uint32_t padding_[1];
 };
+static_assert(sizeof(LayerUniforms) == 160,
+              "VdLayerUniforms in vd_shaders.metal is 160 bytes; this mirror "
+              "has drifted from it");
 
 static float clamp01(float v) {
   if (!(v > 0.0f)) return 0.0f;  // NaN lands here too
@@ -131,6 +136,57 @@ void set_grade(LayerUniforms* u, const VdColorAdjust& adjust) {
   u->graded = 1;
 }
 
+// The other half, and the same bargain: a layer with no look on it takes the
+// arithmetic it took before this compositor learned about looks, so the golden
+// frames cannot move for a feature nobody used.
+void set_look(LayerUniforms* u, const VdColorLook& look) {
+  if (!look.lattice || look.size < 2 || look.id == 0 ||
+      !(look.strength > 0.0f)) {
+    u->lut_size = 0;
+    return;
+  }
+  u->lut_size = (uint32_t)look.size;
+  u->lut_strength = look.strength > 1.0f ? 1.0f : look.strength;
+}
+
+// How many distinct looks stay on the GPU at once.
+//
+// A cube is a few hundred kilobytes, and the number that can be on screen
+// together is bounded by the lane count — but a timeline where every lane
+// wears a different look is not the case worth sizing for, and an eviction
+// only costs one upload. Eight is comfortably past what any real frame asks
+// for and small enough to walk linearly.
+const int32_t kLutSlots = 8;
+
+struct LutSlot {
+  // `key`, not `id`: a member called `id` shadows Objective-C's own `id` for
+  // the rest of the struct, and the texture below stops being declarable.
+  uint64_t key;
+  id<MTLTexture> texture;
+  int64_t last_used;
+};
+
+// A lattice as the GPU holds it: 16-bit normalised, which is the widest format
+// that filters on every Metal family.
+//
+// Not 32-bit float — on Apple GPUs RGBA32Float is not filterable, so the
+// hardware trilinear the whole design rests on would silently stop happening
+// and every look would show its lattice as banding. 16 bits is 65536 levels
+// across a range this pipeline has already clamped to 0..1, which is far more
+// than an 8-bit output can show.
+void pack_lattice(const float* lattice, int32_t size, uint16_t* out) {
+  const int64_t texels = (int64_t)size * size * size;
+  for (int64_t i = 0; i < texels; i++) {
+    for (int c = 0; c < 3; c++) {
+      float v = lattice[i * 3 + c];
+      if (!(v > 0.0f)) v = 0.0f;  // NaN lands here too
+      if (v > 1.0f) v = 1.0f;
+      out[i * 4 + c] = (uint16_t)(v * 65535.0f + 0.5f);
+    }
+    out[i * 4 + 3] = 65535;
+  }
+}
+
 bool is_full_range(OSType pixel_format) {
   switch (pixel_format) {
     case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
@@ -166,6 +222,15 @@ struct VdCompositor {
   CVMetalTextureCacheRef texture_cache = nullptr;
   CVMetalTextureRef output_metal_texture = nullptr;
 
+  // The cubes uploaded so far, keyed on the id the engine gave each look, and
+  // a 2x2x2 identity for every draw that has no look on it — a fragment
+  // function declares its texture arguments whether or not it reads them, and
+  // an unbound one is not a thing Metal will validate.
+  LutSlot luts[kLutSlots];
+  id<MTLTexture> lut_identity = nil;
+  int64_t lut_clock = 0;
+  int64_t lut_uploads = 0;
+
   double last_gpu_ms = 0.0;
 };
 
@@ -193,6 +258,45 @@ static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> device,
 
   NSError* error = nil;
   return [device newRenderPipelineStateWithDescriptor:desc error:&error];
+}
+
+// An empty 3D texture of `size` per axis, ready for a lattice.
+static id<MTLTexture> make_lut_texture(id<MTLDevice> device, int32_t size) {
+  MTLTextureDescriptor* desc = [[MTLTextureDescriptor alloc] init];
+  desc.textureType = MTLTextureType3D;
+  desc.pixelFormat = MTLPixelFormatRGBA16Unorm;
+  desc.width = (NSUInteger)size;
+  desc.height = (NSUInteger)size;
+  desc.depth = (NSUInteger)size;
+  desc.usage = MTLTextureUsageShaderRead;
+  return [device newTextureWithDescriptor:desc];
+}
+
+// The look that changes nothing: a 2-cube whose corners are the corners of the
+// colour space, so trilinear between them is the colour you started with.
+static id<MTLTexture> make_identity_lut(id<MTLDevice> device) {
+  id<MTLTexture> texture = make_lut_texture(device, 2);
+  if (!texture) return nil;
+  float lattice[2 * 2 * 2 * 3];
+  int32_t at = 0;
+  for (int32_t b = 0; b < 2; b++) {
+    for (int32_t g = 0; g < 2; g++) {
+      for (int32_t r = 0; r < 2; r++) {
+        lattice[at++] = (float)r;
+        lattice[at++] = (float)g;
+        lattice[at++] = (float)b;
+      }
+    }
+  }
+  uint16_t packed[2 * 2 * 2 * 4];
+  pack_lattice(lattice, 2, packed);
+  [texture replaceRegion:MTLRegionMake3D(0, 0, 0, 2, 2, 2)
+             mipmapLevel:0
+                   slice:0
+               withBytes:packed
+             bytesPerRow:2 * 4 * sizeof(uint16_t)
+           bytesPerImage:2 * 2 * 4 * sizeof(uint16_t)];
+  return texture;
 }
 
 VdCompositor* vd_compositor_create(int32_t width, int32_t height,
@@ -283,6 +387,18 @@ VdCompositor* vd_compositor_create(int32_t width, int32_t height,
   }
   c->output_texture = CVMetalTextureGetTexture(c->output_metal_texture);
 
+  // The cube a draw with no look on it binds. It is never sampled — the shader
+  // returns before the fetch when lut_size is 0 — but it has to exist, and
+  // making it the *identity* rather than an empty texture means a binding that
+  // did get sampled by mistake would show the picture rather than a colour
+  // nobody can explain.
+  c->lut_identity = make_identity_lut(c->device);
+  if (!c->lut_identity) {
+    if (out_result) *out_result = VD_ERR_UNSUPPORTED;
+    vd_compositor_destroy(c);
+    return nullptr;
+  }
+
   return c;
 }
 
@@ -298,6 +414,8 @@ void vd_compositor_destroy(VdCompositor* c) {
   }
   if (c->output) CVPixelBufferRelease(c->output);
   c->output_texture = nil;
+  for (int32_t i = 0; i < kLutSlots; i++) c->luts[i].texture = nil;
+  c->lut_identity = nil;
   c->blur_a = nil;
   c->blur_b = nil;
   c->pipeline_nv12 = nil;
@@ -313,6 +431,9 @@ int32_t vd_compositor_width(const VdCompositor* c) { return c ? c->width : 0; }
 int32_t vd_compositor_height(const VdCompositor* c) { return c ? c->height : 0; }
 double vd_compositor_last_gpu_ms(const VdCompositor* c) {
   return c ? c->last_gpu_ms : 0.0;
+}
+int64_t vd_compositor_lut_uploads(const VdCompositor* c) {
+  return c ? c->lut_uploads : 0;
 }
 
 // --- rendering -------------------------------------------------------------
@@ -379,6 +500,57 @@ static bool ensure_blur_textures(VdCompositor* c) {
   return c->blur_a != nil && c->blur_b != nil;
 }
 
+// The GPU's copy of `look`, uploaded if this is the first time it has been
+// seen and reused every time after.
+//
+// Keyed on the id the look was given when it was parsed, never on the lattice
+// pointer: a cube freed and another allocated at the same address would be a
+// cache hit on the wrong picture, and a look that is wrong only sometimes is
+// the worst kind of wrong. Returns the identity for a layer with no look,
+// which is what the shader's own short-circuit already assumes.
+static id<MTLTexture> lut_texture_for(VdCompositor* c,
+                                      const VdColorLook& look) {
+  if (!look.lattice || look.size < 2 || look.id == 0) return c->lut_identity;
+
+  int32_t victim = 0;
+  for (int32_t i = 0; i < kLutSlots; i++) {
+    if (c->luts[i].key == look.id && c->luts[i].texture) {
+      c->luts[i].last_used = ++c->lut_clock;
+      return c->luts[i].texture;
+    }
+    // An empty slot first, then the one drawn longest ago.
+    if (!c->luts[i].texture) {
+      victim = i;
+      break;
+    }
+    if (c->luts[i].last_used < c->luts[victim].last_used) victim = i;
+  }
+
+  id<MTLTexture> texture = make_lut_texture(c->device, look.size);
+  if (!texture) return c->lut_identity;
+
+  const int64_t texels = (int64_t)look.size * look.size * look.size;
+  uint16_t* packed = (uint16_t*)malloc((size_t)texels * 4 * sizeof(uint16_t));
+  if (!packed) return c->lut_identity;
+  pack_lattice(look.lattice, look.size, packed);
+  [texture replaceRegion:MTLRegionMake3D(0, 0, 0, (NSUInteger)look.size,
+                                         (NSUInteger)look.size,
+                                         (NSUInteger)look.size)
+             mipmapLevel:0
+                   slice:0
+               withBytes:packed
+             bytesPerRow:(NSUInteger)look.size * 4 * sizeof(uint16_t)
+           bytesPerImage:(NSUInteger)look.size * look.size * 4 *
+                         sizeof(uint16_t)];
+  free(packed);
+
+  c->luts[victim].key = look.id;
+  c->luts[victim].texture = texture;
+  c->luts[victim].last_used = ++c->lut_clock;
+  c->lut_uploads++;
+  return texture;
+}
+
 static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> commands,
                                               id<MTLTexture> target,
                                               bool clear) {
@@ -396,8 +568,8 @@ static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> commands,
 // per tap, or zero for a plain draw.
 static void draw_full_frame(id<MTLRenderCommandEncoder> encoder,
                             id<MTLRenderPipelineState> pipeline,
-                            id<MTLTexture> source, float opacity,
-                            float step_x, float step_y,
+                            id<MTLTexture> source, id<MTLTexture> lut,
+                            float opacity, float step_x, float step_y,
                             const float hide[4]) {
   LayerUniforms u = {};
   if (hide) memcpy(u.hide, hide, sizeof(u.hide));
@@ -417,6 +589,11 @@ static void draw_full_frame(id<MTLRenderCommandEncoder> encoder,
   [encoder setVertexBytes:&u length:sizeof(u) atIndex:0];
   [encoder setFragmentBytes:&u length:sizeof(u) atIndex:0];
   [encoder setFragmentTexture:source atIndex:0];
+  // Zeroed uniforms mean no look here, so this is only ever the identity —
+  // bound because the fragment function declares the argument, not because
+  // anything reads it. The blur-fill backdrop carried its look into the
+  // offscreen already, exactly as it carried its grade.
+  [encoder setFragmentTexture:lut atIndex:3];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
               vertexStart:0
               vertexCount:4];
@@ -518,6 +695,8 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       uniforms.hide[3] = clamp01(layer.reveal.bottom);
       uniforms.opacity = opacity;
       set_grade(&uniforms, layer.color);
+      set_look(&uniforms, layer.look);
+      id<MTLTexture> lut = lut_texture_for(c, layer.look);
       uniforms.quarter_turns = (uint32_t)turns;
       // The decoder read the range from the stream; the pixel buffer's own
       // format type is the fallback for buffers that did not come from it.
@@ -592,6 +771,7 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         [into setFragmentTexture:planes[0] atIndex:0];
         [into setFragmentTexture:planes[1] atIndex:1];
         if (planes[2]) [into setFragmentTexture:planes[2] atIndex:2];
+        [into setFragmentTexture:lut atIndex:3];
         [into drawPrimitives:MTLPrimitiveTypeTriangleStrip
                  vertexStart:0
                  vertexCount:4];
@@ -603,24 +783,25 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         const float step_y = 1.0f / (float)c->blur_height;
         id<MTLRenderCommandEncoder> across =
             begin_pass(commands, c->blur_b, true);
-        draw_full_frame(across, c->pipeline_blur, c->blur_a, 1.0f, step_x, 0.0f,
-                        nullptr);
+        draw_full_frame(across, c->pipeline_blur, c->blur_a, c->lut_identity,
+                        1.0f, step_x, 0.0f, nullptr);
         [across endEncoding];
 
         id<MTLRenderCommandEncoder> down =
             begin_pass(commands, c->blur_a, true);
-        draw_full_frame(down, c->pipeline_blur, c->blur_b, 1.0f, 0.0f, step_y,
-                        nullptr);
+        draw_full_frame(down, c->pipeline_blur, c->blur_b, c->lut_identity,
+                        1.0f, 0.0f, step_y, nullptr);
         [down endEncoding];
 
         // Back to the output, keeping whatever earlier layers drew.
         encoder = begin_pass(commands, c->output_texture, false);
         // Cut here, where discarding leaves what is underneath showing. The
-        // grade is *not* passed on: `background` carried it into the offscreen
-        // above, so these pixels are already graded and doing it again would
-        // grade the backdrop twice as hard as the picture in front of it.
-        draw_full_frame(encoder, c->pipeline_texture, c->blur_a, opacity, 0.0f,
-                        0.0f, uniforms.hide);
+        // grade is *not* passed on, and neither is the look: `background`
+        // carried both into the offscreen above, so these pixels are already
+        // graded and doing it again would leave the bars twice as far from
+        // neutral as the picture in front of them.
+        draw_full_frame(encoder, c->pipeline_texture, c->blur_a,
+                        c->lut_identity, opacity, 0.0f, 0.0f, uniforms.hide);
       }
 
       [encoder setRenderPipelineState:pipeline];
@@ -629,6 +810,7 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       [encoder setFragmentTexture:planes[0] atIndex:0];
       [encoder setFragmentTexture:planes[1] atIndex:1];
       if (planes[2]) [encoder setFragmentTexture:planes[2] atIndex:2];
+      [encoder setFragmentTexture:lut atIndex:3];
       [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
                   vertexStart:0
                   vertexCount:4];

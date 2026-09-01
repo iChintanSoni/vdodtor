@@ -16,6 +16,7 @@
 
 #include "vdodtor/vd_color.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_time.h"
 
 #ifdef __cplusplus
@@ -140,6 +141,18 @@ typedef struct {
   // blur-filled clip's backdrop is graded with it because the backdrop is the
   // same picture.
   VdColorAdjust color;
+
+  // The other half of the same grade: the part that cannot be a matrix. A
+  // zeroed value is no look, so this is a field a caller can leave alone.
+  //
+  // The lattice is borrowed for the duration of the call, like `pixel_buffer`
+  // — but unlike a pixel buffer it is uploaded to the GPU and *kept*, keyed on
+  // `id`, because a look is the same cube on every frame of every clip wearing
+  // it. See vd_compositor_lut_uploads for how that is asserted.
+  //
+  // Applied after `color`, which is the order a colourist works in: correct
+  // the shot, then style it. See vd_lut.h.
+  VdColorLook look;
 } VdLayer;
 
 // Creates a compositor rendering `width` x `height` BGRA frames.
@@ -164,6 +177,16 @@ VD_EXPORT void* vd_compositor_copy_output(VdCompositor* compositor);
 
 // Milliseconds of GPU time the last render took.
 VD_EXPORT double vd_compositor_last_gpu_ms(const VdCompositor* compositor);
+
+// Look cubes uploaded to the GPU since the compositor was created.
+//
+// The number that says the look cache is working. A look is a few hundred
+// kilobytes and the same cube on every frame of every clip wearing it, so this
+// should tick once per look and then never again — not while playing, not
+// while somebody drags the strength slider, and not because two clips share
+// one. A stream of them means a cube is going up the bus sixty times a second
+// for a picture that did not change.
+VD_EXPORT int64_t vd_compositor_lut_uploads(const VdCompositor* compositor);
 
 // Writes the last composited frame to `path` as PNG. This is how the
 // compositor gets checked on pixels rather than on timings.

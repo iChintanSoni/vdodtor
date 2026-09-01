@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/commands/document_store.dart';
 import 'package:vdodtor/commands/edits.dart';
+import 'package:vdodtor/media/looks.dart';
 import 'package:vdodtor/model/clip.dart';
 import 'package:vdodtor/model/ids.dart';
 import 'package:vdodtor/model/time.dart';
@@ -28,12 +29,17 @@ void main() {
     store.dispose();
   });
 
-  Future<void> pumpInspector(WidgetTester tester) => tester.pumpWidget(
+  Future<void> pumpInspector(WidgetTester tester,
+          {Future<String?> Function()? onLoadLook}) =>
+      tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
             body: AnimatedBuilder(
               animation: controller,
-              builder: (context, _) => Inspector(timeline: controller),
+              builder: (context, _) => Inspector(
+                timeline: controller,
+                onLoadLook: onLoadLook,
+              ),
             ),
           ),
         ),
@@ -845,6 +851,136 @@ void main() {
       expect(find.text('Reset'), findsOneWidget);
 
       await tester.tap(find.text('Reset'));
+      await tester.pumpAndSettle();
+      expect(store.project.clipById('b')!.color, ClipColor.neutral);
+    });
+
+    testWidgets('the reset appears for a look with no slider moved',
+        (tester) async {
+      // A look is a grade too, and it is one somebody may well want off in one
+      // press rather than by hunting back through the picker.
+      store.run(const SetClipColor('b', ClipColor(look: 'Noir')));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      expect(find.text('Reset'), findsOneWidget);
+    });
+
+    testWidgets('the look is offered under the five sliders', (tester) async {
+      // Because that is where it runs: correct the shot, then style it. A
+      // panel that put the look first would be teaching the wrong habit, the
+      // same reason temperature sits above saturation.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      expect(find.text('Look'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('Saturation')).dy,
+          lessThan(tester.getTopLeft(find.text('Look')).dy));
+    });
+
+    testWidgets('every bundled look is on offer, and None with them',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).last);
+      await tester.pumpAndSettle();
+      expect(find.text('None'), findsWidgets);
+      for (final name in BundledLooks.names) {
+        expect(find.text(name), findsWidgets, reason: name);
+      }
+    });
+
+    testWidgets('picking one puts it on the clip', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+
+      await tester.tap(find.byType(DropdownButtonFormField<String>).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Noir').last);
+      await tester.pumpAndSettle();
+
+      expect(store.project.clipById('b')!.color.look, 'Noir');
+      expect(store.project.clipById('b')!.color.lookStrength, 1);
+    });
+
+    testWidgets('the strength only appears once there is a look',
+        (tester) async {
+      // A slider under "None" is a control that does nothing, and one that
+      // stayed put would invite a drag and a puzzled look at the picture.
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      expect(find.text('Strength'), findsNothing);
+
+      store.run(const SetClipColor('b', ClipColor(look: 'Faded')));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToColour(tester);
+      expect(find.text('Strength'), findsOneWidget);
+      expect(readout(tester, 'Strength'), '100%');
+    });
+
+    testWidgets('the strength reads as a proportion, not as a change',
+        (tester) async {
+      // Unsigned, unlike the five above it: a strength is how much of a look
+      // there is rather than how far from neutral the shot has moved, so
+      // there is no centre for it to be off.
+      store.run(const SetClipColor(
+          'b', ClipColor(look: 'Faded', lookStrength: 0.4)));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      expect(readout(tester, 'Strength'), '40%');
+    });
+
+    testWidgets('a look this build does not have still shows its name',
+        (tester) async {
+      // Otherwise changing anything else about the clip would silently drop a
+      // look the project is asking for, and there would be no way to see that
+      // it had been.
+      store.run(const SetClipColor('b', ClipColor(look: 'Somebody Elses')));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      expect(find.text('Somebody Elses'), findsOneWidget);
+    });
+
+    testWidgets('Load… is hidden when there is nowhere to load from',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToColour(tester);
+      expect(find.text('Load…'), findsNothing);
+    });
+
+    testWidgets('loading a cube puts it on the clip in one step',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester, onLoadLook: () async => 'Kodak 2383');
+      await scrollToColour(tester);
+
+      await tester.tap(find.text('Load…'));
+      await tester.pumpAndSettle();
+
+      expect(store.project.clipById('b')!.color.look, 'Kodak 2383');
+      // One undo step, not two: loading it is how the user chose it.
+      store.undo();
+      expect(store.project.clipById('b')!.color.look, isEmpty);
+    });
+
+    testWidgets('cancelling the panel changes nothing', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester, onLoadLook: () async => null);
+      await scrollToColour(tester);
+
+      await tester.tap(find.text('Load…'));
       await tester.pumpAndSettle();
       expect(store.project.clipById('b')!.color, ClipColor.neutral);
     });

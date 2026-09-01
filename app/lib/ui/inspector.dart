@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../commands/document_store.dart';
 import '../commands/edits.dart';
 import '../media/fonts.dart';
+import '../media/looks.dart';
 import '../model/clip.dart';
 import '../model/time.dart';
 import '../model/track.dart';
@@ -17,9 +18,18 @@ import 'timeline/timeline_controller.dart';
 /// clip, and averaging four clips' rotations into one slider would be a lie
 /// that is hard to notice and harder to undo.
 class Inspector extends StatelessWidget {
-  const Inspector({super.key, required this.timeline});
+  const Inspector({super.key, required this.timeline, this.onLoadLook});
 
   final TimelineController timeline;
+
+  /// Opens a `.cube` and adds it to the user's look library, handing back the
+  /// name it went in under — or null if they cancelled or it would not read.
+  ///
+  /// A callback rather than a file panel and a directory, because the panel is
+  /// the one thing in this rail that cannot exist in a widget test. Null hides
+  /// the button, which is what a build with no way to reach the user's files
+  /// should show.
+  final Future<String?> Function()? onLoadLook;
 
   static const double width = 224;
 
@@ -150,6 +160,19 @@ class Inspector extends StatelessWidget {
                 _store.run(SetClipColor(clip.id, ClipColor.neutral));
                 _commit();
               },
+              onLoadLook: onLoadLook == null
+                  ? null
+                  : () async {
+                      final name = await onLoadLook!();
+                      if (name == null) return;
+                      // One step in the undo stack, not two: loading a look is
+                      // how the user *chose* it, and an undo that put back a
+                      // look nobody had picked yet would be a step nobody took.
+                      _commit();
+                      _store.run(
+                          SetClipColor(clip.id, clip.color.withLook(name)));
+                      _commit();
+                    },
             ),
           // Where a clip sits, and then how it gets there. In that order
           // because the resting position is what an animation animates to,
@@ -1067,12 +1090,16 @@ class _ColorControls extends StatelessWidget {
     required this.onChanged,
     required this.onCommit,
     required this.onReset,
+    this.onLoadLook,
   });
 
   final ClipColor color;
   final ValueChanged<ClipColor> onChanged;
   final VoidCallback onCommit;
   final VoidCallback onReset;
+
+  /// Opens a `.cube` and puts it on this clip. Null hides the button.
+  final VoidCallback? onLoadLook;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -1142,9 +1169,120 @@ class _ColorControls extends StatelessWidget {
             onChanged: (v) => onChanged(color.copyWith(saturation: v)),
             onCommit: onCommit,
           ),
+          // Under the five, because that is where it runs. A look is applied
+          // to what the sliders left — correct the shot, then style it — and a
+          // panel that offered it first would be teaching the wrong habit, the
+          // same reason temperature sits above saturation rather than below.
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 2),
+            child: Row(
+              children: [
+                const Text('Look',
+                    style: TextStyle(fontSize: 11, color: VdColors.text)),
+                const Spacer(),
+                if (onLoadLook != null)
+                  TextButton(
+                    onPressed: onLoadLook,
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                    child: const Text('Load…', style: TextStyle(fontSize: 11)),
+                  ),
+              ],
+            ),
+          ),
+          _LookPicker(
+            look: color.look,
+            onChanged: (name) => onChanged(color.withLook(name)),
+            onCommit: onCommit,
+          ),
+          // Only once there is something to weaken. A strength slider under
+          // "None" is a control that does nothing, and one that stayed put
+          // would invite the user to drag it and wonder why the picture did
+          // not move.
+          if (color.look.isNotEmpty)
+            _Slider(
+              label: 'Strength',
+              value: color.lookStrength,
+              min: 0,
+              max: 1,
+              format: _strengthPercent,
+              onChanged: (v) => onChanged(color.copyWith(lookStrength: v)),
+              onCommit: onCommit,
+            ),
         ],
       );
 }
+
+/// Which look is on this clip, if any.
+///
+/// The list is [BundledLooks.available] rather than the engine's own
+/// catalogue, and they are the same list: `BundledLooks` is the only thing
+/// that registers one, and reading it from this side is what lets the rail be
+/// built in a test with no engine alive. A clip wearing a look this
+/// installation does not have still shows the name it is asking for — exactly
+/// as the font picker does — or changing anything else about the clip would
+/// silently drop the look.
+class _LookPicker extends StatelessWidget {
+  const _LookPicker({
+    required this.look,
+    required this.onChanged,
+    required this.onCommit,
+  });
+
+  /// Empty for no look, which is what every clip starts with.
+  final String look;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onCommit;
+
+  @override
+  Widget build(BuildContext context) {
+    final available = BundledLooks.available;
+    final options = <String>[
+      BundledLooks.none,
+      ...available,
+      if (look.isNotEmpty && !available.contains(look)) look,
+    ];
+
+    return DropdownButtonFormField<String>(
+      initialValue: options.contains(look) ? look : BundledLooks.none,
+      isDense: true,
+      // The rail is 224 px and a look somebody named after their camera is
+      // wider than that; without this the row overflows instead of eliding.
+      isExpanded: true,
+      decoration: const InputDecoration(
+        isDense: true,
+        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        border: OutlineInputBorder(),
+      ),
+      style: const TextStyle(fontSize: 12, color: VdColors.text),
+      items: [
+        for (final option in options)
+          DropdownMenuItem(
+            value: option,
+            child: Text(
+              option.isEmpty ? 'None' : option,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+      ],
+      onChanged: (value) {
+        if (value == null) return;
+        onChanged(value);
+        // Picking one is a whole decision, unlike a drag: the next thing the
+        // user does should be its own undo step.
+        onCommit();
+      },
+    );
+  }
+}
+
+/// 0..100%, unsigned: a strength is a proportion of a look rather than a
+/// change to the shot, so there is no centre for it to be off.
+String _strengthPercent(double v) => '${(v * 100).round()}%';
 
 /// Signed, so a slider that is off centre says which way. "0%" for the shot as
 /// it was shot reads better than "100%" would: a grade is a change, and the

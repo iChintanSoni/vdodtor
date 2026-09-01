@@ -136,6 +136,11 @@ Map<String, Object?> _gradeToJson(ClipColor c) => {
       if (c.saturation != 0) 'saturation': c.saturation,
       if (c.temperature != 0) 'temperature': c.temperature,
       if (c.tint != 0) 'tint': c.tint,
+      // The look's *name*, which is what makes a graded project portable: the
+      // file says "Warm Film" rather than where this machine keeps its cubes.
+      if (c.look.isNotEmpty) 'look': c.look,
+      if (c.look.isNotEmpty && c.lookStrength != 1)
+        'lookStrength': c.lookStrength,
     };
 
 ClipColor _gradeFromJson(Map<String, Object?> json) => ClipColor(
@@ -148,6 +153,8 @@ ClipColor _gradeFromJson(Map<String, Object?> json) => ClipColor(
       saturation: _double(json, 'saturation', 0),
       temperature: _double(json, 'temperature', 0),
       tint: _double(json, 'tint', 0),
+      look: json['look'] is String ? json['look']! as String : '',
+      lookStrength: _double(json, 'lookStrength', 1),
     );
 
 Map<String, Object?> _audioToJson(ClipAudio a) => {

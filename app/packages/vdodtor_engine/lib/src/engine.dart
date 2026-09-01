@@ -73,6 +73,8 @@ class EngineColor {
     this.saturation = 0,
     this.temperature = 0,
     this.tint = 0,
+    this.look = '',
+    this.lookStrength = 1,
   });
 
   /// The shot as it was shot, which is what the engine does with a zeroed
@@ -93,6 +95,16 @@ class EngineColor {
 
   /// Magenta at +1, green at −1.
   final double tint;
+
+  /// A look registered with [Looks], or empty for none.
+  ///
+  /// A name rather than a path, exactly as [EngineText.font] is a family name:
+  /// the looks the app ships have no path inside a signed bundle. A name the
+  /// engine does not know draws ungraded.
+  final String look;
+
+  /// 0..1: how far towards [look] to go. Ignored when there is no look.
+  final double lookStrength;
 }
 
 /// One point on a clip's volume line.
@@ -453,6 +465,7 @@ class EngineStats {
     required this.stickerFrames,
     required this.stickerOpens,
     required this.stickerBytes,
+    required this.lutUploads,
   });
 
   final int framesPresented;
@@ -505,6 +518,12 @@ class EngineStats {
   /// decoded RGBA they are holding.
   final int stickerOpens;
   final int stickerBytes;
+
+  /// Look cubes uploaded to the GPU since the engine started. Read the way
+  /// [textRasters] is: a look is the same few hundred kilobytes on every frame
+  /// of every clip wearing it, so it should tick once per look and never
+  /// during playback or during a drag on the strength slider.
+  final int lutUploads;
 }
 
 /// Drives the native preview engine and owns its Flutter texture.
@@ -665,6 +684,13 @@ class PreviewEngine extends ChangeNotifier {
         entry.color.saturation = color.saturation;
         entry.color.temperature = color.temperature;
         entry.color.tint = color.tint;
+        // From the same arena as the paths, for the same reason: the engine
+        // resolves the name against its catalogue before set_timeline returns
+        // and keeps the look, not the string.
+        entry.look = color.look.isEmpty
+            ? nullptr
+            : color.look.toNativeUtf8(allocator: arena).cast<Char>();
+        entry.look_strength = color.lookStrength;
 
         final animation = clip.animation;
         entry.anim.in_presetAsInt = animation.inPreset.index;
@@ -754,6 +780,7 @@ class PreviewEngine extends ChangeNotifier {
         stickerFrames: 0,
         stickerOpens: 0,
         stickerBytes: 0,
+        lutUploads: 0,
       );
     }
     final out = calloc<VdEngineStats>();
@@ -783,6 +810,7 @@ class PreviewEngine extends ChangeNotifier {
         stickerFrames: s.sticker_frames,
         stickerOpens: s.sticker_opens,
         stickerBytes: s.sticker_bytes,
+        lutUploads: s.lut_uploads,
       );
     } finally {
       calloc.free(out);

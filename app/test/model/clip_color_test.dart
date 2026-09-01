@@ -169,6 +169,58 @@ void main() {
     });
   });
 
+  group('a look is the half that cannot be a matrix', () {
+    test('a clip nobody has put one on wears none', () {
+      expect(ClipColor.neutral.look, isEmpty);
+      expect(ClipColor.neutral.hasLook, isFalse);
+      expect(ClipColor.neutral.isNeutral, isTrue);
+    });
+
+    test('a look alone is a grade, even with every slider at zero', () {
+      const look = ClipColor(look: 'Noir');
+      expect(look.isNeutral, isFalse,
+          reason: 'the Reset button has to offer itself for a look too');
+      expect(look.hasLook, isTrue);
+    });
+
+    test('a look at no strength is kept but does nothing', () {
+      const off = ClipColor(look: 'Noir', lookStrength: 0);
+      expect(off.hasLook, isFalse, reason: 'nothing of it reaches the frame');
+      expect(off.look, 'Noir',
+          reason: 'and the document keeps it, so the slider can bring it back');
+    });
+
+    test('picking a look after turning one off brings the strength back', () {
+      // Otherwise choosing a look would appear to do nothing, and the user
+      // would go looking for the slider they had already forgotten about.
+      const off = ClipColor(look: 'Noir', lookStrength: 0);
+      expect(off.withLook('Faded').lookStrength, 1);
+      // But an ordinary swap keeps whatever strength was set.
+      const half = ClipColor(look: 'Noir', lookStrength: 0.4);
+      expect(half.withLook('Faded').lookStrength, 0.4);
+    });
+
+    test('taking a look off leaves the strength where it was', () {
+      const half = ClipColor(look: 'Noir', lookStrength: 0.4);
+      final off = half.withLook('');
+      expect(off.look, isEmpty);
+      expect(off.lookStrength, 0.4,
+          reason: 'the next look they pick is probably meant to be as strong');
+    });
+
+    test('a strength past its end is pulled back into range', () {
+      expect(const ClipColor(look: 'Noir', lookStrength: 4).clamped().lookStrength, 1);
+      expect(const ClipColor(look: 'Noir', lookStrength: -2).clamped().lookStrength, 0);
+    });
+
+    test('two grades differing only in the look are different grades', () {
+      expect(const ClipColor(look: 'Noir'), isNot(const ClipColor(look: 'Faded')));
+      expect(const ClipColor(look: 'Noir', lookStrength: 0.5),
+          isNot(const ClipColor(look: 'Noir')));
+      expect(const ClipColor(look: 'Noir'), const ClipColor(look: 'Noir'));
+    });
+  });
+
   group('through the file', () {
     test('a neutral grade is not written down at all', () {
       final json = projectToJson(projectWithClip());
@@ -206,6 +258,52 @@ void main() {
       expect(back.clipById('a')!.color.brightness, -1);
     });
 
+    test('a look is written down by name, not by path', () {
+      final project = projectWithClip().updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          t.clips.first.copyWith(color: const ClipColor(look: 'Warm Film')),
+        ]),
+      );
+      final clip = _firstClipJson(projectToJson(project));
+      // The name and nothing else: a full-strength look has no strength to
+      // record, and a path would be a project that only opens on one machine.
+      expect(clip['color'], {'look': 'Warm Film'});
+    });
+
+    test('a look survives the round trip, strength and all', () {
+      const graded = ClipColor(
+          brightness: 0.2, look: 'Teal & Orange', lookStrength: 0.35);
+      final project = projectWithClip().updateTrack(
+        mainTrackId,
+        (t) => t.withClips([t.clips.first.copyWith(color: graded)]),
+      );
+      final back = decodeProject(encodeProject(project));
+      expect(back.clipById('a')!.color, graded);
+    });
+
+    test('a strength with no look is not written down', () {
+      // It would be a number that means nothing, and reading it back would put
+      // a strength on the next look somebody picked.
+      final project = projectWithClip().updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          t.clips.first
+              .copyWith(color: const ClipColor(contrast: 0.5, lookStrength: 0.2)),
+        ]),
+      );
+      final clip = _firstClipJson(projectToJson(project));
+      expect(clip['color'], {'contrast': 0.5});
+    });
+
+    test('a file with no strength opens at full', () {
+      final json = projectToJson(projectWithClip());
+      _firstClipJson(json)['color'] = {'look': 'Noir'};
+      final back = projectFromJson(json);
+      expect(back.clipById('a')!.color.look, 'Noir');
+      expect(back.clipById('a')!.color.lookStrength, 1);
+    });
+
     test('a slider this version has never heard of is ignored', () {
       // The bargain a grade gets, and it is the right one: the sliders this
       // version does know still apply, and the picture is wrong in a way the
@@ -238,6 +336,20 @@ void main() {
       expect(clip.color.saturation, 0);
       expect(clip.color.temperature, 0);
       expect(clip.color.tint, 0);
+      expect(clip.color.look, isEmpty);
+    });
+
+    test('the look crosses as a name, for the engine to resolve', () {
+      final project = projectWithClip().updateTrack(
+        mainTrackId,
+        (t) => t.withClips([
+          t.clips.first.copyWith(
+              color: const ClipColor(look: 'Warm Film', lookStrength: 0.6)),
+        ]),
+      );
+      final clip = engineTimelineFor(project).clips.single;
+      expect(clip.color.look, 'Warm Film');
+      expect(clip.color.lookStrength, 0.6);
     });
   });
 }

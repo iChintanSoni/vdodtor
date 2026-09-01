@@ -12,6 +12,7 @@ import '../engine/engine_transport.dart';
 import '../engine/media_probe.dart';
 import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
+import '../media/looks.dart';
 import '../media/media_import.dart';
 import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
@@ -40,6 +41,7 @@ class EditorScreen extends StatefulWidget {
     required this.access,
     this.prober = const EngineMediaProber(),
     this.peakCache,
+    this.lookLibrary,
   });
 
   final OpenProject open;
@@ -55,6 +57,11 @@ class EditorScreen extends StatefulWidget {
   /// memory for the session only, which is what a test without a home
   /// directory gets.
   final Directory? peakCache;
+
+  /// Where the user's own colour looks are kept. Null takes the "Load…" button
+  /// off the inspector, which is the honest thing to show when there is
+  /// nowhere to put one.
+  final Directory? lookLibrary;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -156,6 +163,10 @@ class _EditorScreenState extends State<EditorScreen> {
         // leaving one on would make the frames the passes after it dump a
         // question about the grade rather than about themselves.
         await runColorSelfTest(engine, _store);
+        // Straight after the sliders, because it is the other half of the same
+        // panel — and on the same terms: it puts the clip back the way it
+        // found it, so what the passes below dump is about themselves.
+        await runLookSelfTest(engine, _store);
         // Last, and it puts the timeline back the way it found it: a
         // transition is the one pass that changes what a *cut* looks like, so
         // leaving one on would change every frame the play pass dumps.
@@ -212,6 +223,33 @@ class _EditorScreenState extends State<EditorScreen> {
       if (mounted) setState(() => _notice = 'Import failed: $error');
     } finally {
       if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  /// Opens a `.cube` and adds it to the user's look library.
+  ///
+  /// The file is *copied* rather than referenced — see [BundledLooks] — so
+  /// nothing here has to mint a bookmark, and the look is there next launch
+  /// and on the next project.
+  Future<String?> _loadLook() async {
+    final library = widget.lookLibrary;
+    if (library == null) return null;
+    final files = await widget.access.pick(
+      multiple: false,
+      extensions: const [BundledLooks.extension],
+      message: 'Choose a .cube colour look',
+      prompt: 'Add Look',
+    );
+    if (files.isEmpty) return null;
+    try {
+      final name = await BundledLooks.import(files.first.path, library: library);
+      if (mounted) setState(() => _notice = 'Added the look "$name"');
+      return name;
+    } catch (error) {
+      // A file that is not a look says so and changes nothing, which is the
+      // whole reason import() parses before it copies.
+      if (mounted) setState(() => _notice = 'Not a usable .cube file');
+      return null;
     }
   }
 
@@ -345,7 +383,11 @@ class _EditorScreenState extends State<EditorScreen> {
                         if (_timeline != null) ...[
                           const VerticalDivider(
                               width: 1, color: VdColors.line),
-                          Inspector(timeline: _timeline!),
+                          Inspector(
+                            timeline: _timeline!,
+                            onLoadLook:
+                                widget.lookLibrary == null ? null : _loadLook,
+                          ),
                         ],
                       ],
                     ),
