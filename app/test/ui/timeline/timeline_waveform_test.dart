@@ -250,6 +250,57 @@ void main() {
     });
   });
 
+  test('a retimed clip reads more of the file across the same pixels',
+      () async {
+    // Peaks belong to the *file*, so a clip at 2x crosses twice as much of the
+    // envelope in the same width — and the loud half of this fixture arrives
+    // half way along the clip rather than at the end of it.
+    NativePeaks stepped() {
+      const buckets = 6 * 48000 ~/ 128;  // six seconds
+      return nativePyramid([
+        for (var i = 0; i < buckets; i++)
+          i < buckets ~/ 3 ? (-0.05, 0.05) : (-0.9, 0.9),
+      ]);
+    }
+
+    Project withSpeed(double rate, Tick duration) {
+      final project = emptyProject().addMedia(audioAsset('song', seconds: 6));
+      return project.updateTrack(
+        audioTrackId,
+        (t) => t.withClips([
+          clipOf('bed', 'song', start: Tick.zero, duration: duration)
+              .copyWith(speed: ClipSpeed(rate: rate)),
+        ]),
+      );
+    }
+
+    int at(double seconds) =>
+        (TimelineGeometry.headerWidth + seconds * geometry.pxPerSecond).round();
+
+    int heightAt(Uint8List rgba, int x) {
+      final fill = pixelAt(rgba, x, bodyTop + 1);
+      final inked = inkedRows(rgba, x, bodyTop, bodyBottom, fill);
+      return inked.isEmpty ? 0 : inked.last - inked.first;
+    }
+
+    final slowCache = WaveformCache(analyzer: (path) async => stepped());
+    final fastCache = WaveformCache(analyzer: (path) async => stepped());
+    addTearDown(slowCache.dispose);
+    addTearDown(fastCache.dispose);
+
+    // Four seconds of file either way: at 1x that is a four-second clip whose
+    // loud part starts half way, and at 2x a two-second clip whose loud part
+    // starts a quarter of the way — which lands at the same *fraction* of the
+    // clip and half the distance in seconds.
+    final atOne = await render(withSpeed(1, secs(4)), slowCache);
+    final atTwo = await render(withSpeed(2, secs(2)), fastCache);
+
+    // A second and a half in: still the quiet half at 1x, and past the step
+    // at 2x, where the file is already three seconds along.
+    expect(heightAt(atOne, at(1.5)), lessThan(8));
+    expect(heightAt(atTwo, at(1.5)), greaterThan(20));
+  });
+
   test('a video clip wears its waveform along the bottom', () async {
     final cache = WaveformCache(analyzer: (path) async => steady());
     addTearDown(cache.dispose);

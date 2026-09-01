@@ -1,9 +1,12 @@
 #include "vdodtor/vd_audio.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "vdodtor/vd_stretch.h"
 
 // Half a second of lead. Long enough to ride out a decode that stalls behind a
 // seek on a slow disk, short enough that a scrub does not feel like it is
@@ -25,6 +28,11 @@ typedef struct {
   VdTick duration;
   VdTick source_in;
 
+  // Source time per timeline time, and whether the pitch goes with it. Both
+  // clamped once here, so the mixer below never has to wonder.
+  double speed;
+  bool pitch_shift;
+
   float gain;
   VdTick fade_in;
   VdTick fade_out;
@@ -37,8 +45,28 @@ typedef struct {
 
   VdAudioSource* source;
   bool open_failed;
-  // Where the source will read from next, so a sequential decode does not
-  // re-seek every chunk.
+
+  // Turns `speed` into sound. NULL for a clip nobody retimed, which is what
+  // keeps the common path exactly the path it was before speed existed — the
+  // source is read straight into the mix with nothing in between.
+  //
+  // `stretch_failed` is what tells that apart from a stretcher that could not
+  // be built: a retimed clip whose stretcher is missing must go *silent*, not
+  // quietly play at 1x while the picture runs at the rate it was given. The
+  // drift that would cause grows by a whole chunk every chunk and there is
+  // nothing on screen to say so. It is also why one failure is remembered
+  // rather than retried every 21 milliseconds, like `open_failed` beside it.
+  VdStretch* stretch;
+  bool stretch_failed;
+
+  // Where the clip expects the next chunk to start, *on the timeline*, so a
+  // sequential decode does not re-seek every chunk.
+  //
+  // The timeline rather than the source, which it was before a clip could be
+  // retimed: a stretcher buffers its own input, so the source position after a
+  // chunk is a window-length or so ahead of where the arithmetic says it
+  // should be and comparing the two would re-seek — and reset the stretcher —
+  // on every chunk of every sped-up clip.
   VdTick expected_position;
   bool positioned;
 } VdAudioClip;
@@ -71,8 +99,9 @@ struct VdAudioRenderer {
 
   _Atomic int64_t underruns;
 
-  float* mix;      // scratch, VD_AUDIO_CHUNK_FRAMES
-  float* scratch;  // scratch, VD_AUDIO_CHUNK_FRAMES
+  float* mix;       // the chunk being built, VD_AUDIO_CHUNK_FRAMES
+  float* clip_out;  // one clip's contribution to it, at the timeline's rate
+  float* scratch;   // raw source frames on their way into a stretcher
 };
 
 // --- clip bookkeeping ------------------------------------------------------
@@ -80,6 +109,7 @@ struct VdAudioRenderer {
 static void free_clips(VdAudioRenderer* r) {
   for (int32_t i = 0; i < r->clip_count; i++) {
     if (r->clips[i].source) vd_audio_source_close(r->clips[i].source);
+    vd_stretch_destroy(r->clips[i].stretch);
     free(r->clips[i].path);
     free(r->clips[i].points);
   }
@@ -159,6 +189,63 @@ float vd_audio_automation_gain(const VdVolumePoint* points, int32_t count,
   return automation_between(points, count, index, source_time);
 }
 
+// --- speed -----------------------------------------------------------------
+
+// Where in the source a clip is when the playhead is at `position` — the same
+// multiply the picture side does in vd_engine.c, and it has to be: a frame and
+// the sound under it disagreeing about where in the file they are is the one
+// bug in a video editor everybody can hear.
+static VdTick source_time_at(const VdAudioClip* clip, VdTick position) {
+  const VdTick offset = position - clip->start;
+  if (clip->speed == 1.0) return clip->source_in + offset;
+  return clip->source_in + (VdTick)llround((double)offset * clip->speed);
+}
+
+// Caller holds the lock. Called only for a retimed clip, so NULL here means
+// the stretcher could not be built — see VdAudioClip::stretch.
+static VdStretch* stretch_for(VdAudioClip* clip) {
+  if (clip->stretch) return clip->stretch;
+  if (clip->stretch_failed) return NULL;
+  clip->stretch = vd_stretch_create(VD_AUDIO_SAMPLE_RATE, VD_AUDIO_CHANNELS,
+                                    clip->speed, clip->pitch_shift);
+  if (!clip->stretch) clip->stretch_failed = true;
+  return clip->stretch;
+}
+
+// Reads `frames` of clip audio, retimed if the clip asks for it.
+//
+// The stretcher decides how much source it wants and this feeds it until it
+// has enough, so nothing here knows the ratio: at 10x that is ten reads for
+// one chunk and at 0.1x it is one read for ten chunks, and both come out of
+// the same loop. A short return means the source ended, which the caller
+// leaves as silence.
+//
+// The fast path is chosen on the *speed*, not on whether there is a stretcher.
+// Those are different questions, and answering the second would make a clip
+// whose stretcher would not allocate play its sound at 1x under a picture
+// running at 4x — silently, and further out of step every chunk.
+static int32_t read_clip(VdAudioRenderer* r, VdAudioClip* clip,
+                         VdAudioSource* source, float* out, int32_t frames) {
+  if (clip->speed == 1.0) return vd_audio_source_read(source, out, frames);
+  VdStretch* stretch = stretch_for(clip);
+  if (!stretch) return 0;  // silent, rather than out of step
+
+  int32_t done = 0;
+  while (done < frames) {
+    done += vd_stretch_read(stretch, out + (size_t)done * VD_AUDIO_CHANNELS,
+                            frames - done);
+    if (done >= frames) break;
+
+    int32_t wanted = vd_stretch_wanted(stretch);
+    if (wanted <= 0) break;  // full and still hungry: nothing more to try
+    if (wanted > VD_AUDIO_CHUNK_FRAMES) wanted = VD_AUDIO_CHUNK_FRAMES;
+    const int32_t got = vd_audio_source_read(source, r->scratch, wanted);
+    if (got <= 0) break;  // the source ran out
+    vd_stretch_write(stretch, r->scratch, got);
+  }
+  return done;
+}
+
 // --- decoding --------------------------------------------------------------
 
 // Fills `out` with `frames` of mixed audio for timeline position `position`.
@@ -186,14 +273,19 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
     VdAudioSource* source = source_for(r, clip);
     if (!source) continue;
 
-    const VdTick source_time = clip->source_in + (position - clip->start);
-    if (!clip->positioned || clip->expected_position != source_time) {
+    const VdTick source_time = source_time_at(clip, position);
+    if (!clip->positioned || clip->expected_position != position) {
       if (vd_audio_source_seek(source, source_time) != VD_OK) continue;
+      // Whatever the stretcher had buffered belongs to a moment that is no
+      // longer next: crossfading across a seek would smear the material
+      // before it into the material after.
+      if (clip->stretch) vd_stretch_reset(clip->stretch);
       clip->positioned = true;
     }
 
-    const int32_t got = vd_audio_source_read(source, r->scratch, frames);
-    clip->expected_position = vd_audio_source_position(source);
+    const int32_t got = read_clip(r, clip, source, r->clip_out, frames);
+    clip->expected_position =
+        position + vd_scale(frames, VD_TICKS_PER_SECOND, VD_AUDIO_SAMPLE_RATE);
 
     const bool fading = clip->fade_in > 0 || clip->fade_out > 0;
     const bool automated = clip->points && clip->point_count > 0;
@@ -224,7 +316,14 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
                                      clip->fade_in, clip->fade_out);
         }
         if (automated) {
-          const VdTick at = source_time + into;
+          // The fade is measured on the timeline and the volume line in the
+          // source, so only one of the two moves when a clip is retimed: at 2x
+          // a fade is still the length it was drawn, and the duck under it
+          // arrives twice as soon because the word it was drawn on does.
+          const VdTick at =
+              source_time + (clip->speed == 1.0
+                                 ? into
+                                 : (VdTick)llround((double)into * clip->speed));
           while (segment + 1 < clip->point_count &&
                  clip->points[segment + 1].source_time <= at) {
             segment++;
@@ -235,7 +334,7 @@ static void mix_at(VdAudioRenderer* r, VdTick position, float* out,
       }
       for (int32_t ch = 0; ch < VD_AUDIO_CHANNELS; ch++) {
         const int32_t i = frame * VD_AUDIO_CHANNELS + ch;
-        out[i] += r->scratch[i] * gain;
+        out[i] += r->clip_out[i] * gain;
       }
     }
     mixed++;
@@ -299,9 +398,11 @@ VdAudioRenderer* vd_audio_renderer_create(int32_t* out_result) {
   r->ring = vd_audio_ring_create(VD_AUDIO_RING_FRAMES);
   r->mix = calloc((size_t)VD_AUDIO_CHUNK_FRAMES * VD_AUDIO_CHANNELS,
                   sizeof(float));
+  r->clip_out = calloc((size_t)VD_AUDIO_CHUNK_FRAMES * VD_AUDIO_CHANNELS,
+                       sizeof(float));
   r->scratch = calloc((size_t)VD_AUDIO_CHUNK_FRAMES * VD_AUDIO_CHANNELS,
                       sizeof(float));
-  if (!r->ring || !r->mix || !r->scratch) {
+  if (!r->ring || !r->mix || !r->clip_out || !r->scratch) {
     vd_audio_renderer_destroy(r);
     if (out_result) *out_result = VD_ERR_OPEN;
     return NULL;
@@ -329,6 +430,7 @@ void vd_audio_renderer_destroy(VdAudioRenderer* r) {
   free_clips(r);
   vd_audio_ring_destroy(r->ring);
   free(r->mix);
+  free(r->clip_out);
   free(r->scratch);
   pthread_cond_destroy(&r->wake);
   pthread_mutex_destroy(&r->lock);
@@ -359,6 +461,8 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
     next[i].start = clips[i].start;
     next[i].duration = clips[i].duration;
     next[i].source_in = clips[i].source_in;
+    next[i].speed = vd_speed_clamp(clips[i].speed);
+    next[i].pitch_shift = clips[i].pitch_shift;
     next[i].gain = clips[i].gain;
     next[i].fade_in = clips[i].fade_in;
     next[i].fade_out = clips[i].fade_out;
@@ -384,6 +488,15 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
           strcmp(old->path, next[i].path) == 0) {
         next[i].source = old->source;
         old->source = NULL;
+        // And the stretcher with it, when the edit was not the speed itself.
+        // Its buffers are a hundred kilobytes and its windows are the last
+        // forty milliseconds of the clip; rebuilding both because somebody
+        // nudged a fader would be work for nothing.
+        if (old->stretch && vd_stretch_matches(old->stretch, next[i].speed,
+                                               next[i].pitch_shift)) {
+          next[i].stretch = old->stretch;
+          old->stretch = NULL;
+        }
         break;
       }
     }
@@ -392,6 +505,7 @@ int32_t vd_audio_renderer_set_timeline(VdAudioRenderer* r,
 
   for (int32_t j = 0; j < previous_count; j++) {
     if (previous[j].source) vd_audio_source_close(previous[j].source);
+    vd_stretch_destroy(previous[j].stretch);
     free(previous[j].path);
     free(previous[j].points);
   }

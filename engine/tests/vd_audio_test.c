@@ -763,6 +763,98 @@ static void test_the_volume_line_is_copied(void) {
   }
 }
 
+// --- speed -----------------------------------------------------------------
+
+// Pulls `frames` of a retimed clip out of the real mixer and reports the
+// frequency of what came out.
+//
+// Through the renderer rather than through vd_stretch directly, deliberately:
+// vd_stretch_test.c already pins what a stretch *means* against a sine in an
+// array, and what only this can show is that the mixer feeds it the file — the
+// seek, the chunking, the source that runs at its own rate while the output
+// runs at the timeline's.
+static double retimed_frequency(double speed, bool pitch_shift) {
+  VdAudioRenderer* r = vd_audio_renderer_create(NULL);
+  if (!r) return 0.0;
+
+  VdTimelineClip clip = audio_clip(0, 2 * VD_TICKS_PER_SECOND);
+  clip.speed = speed;
+  clip.pitch_shift = pitch_shift;
+  vd_audio_renderer_set_timeline(r, &clip, 1);
+  vd_audio_renderer_start(r, 0);
+  wait_for_buffer(r, VD_AUDIO_SAMPLE_RATE / 4);
+
+  const int32_t want = VD_AUDIO_SAMPLE_RATE / 4;  // 250 ms of output
+  float* buffer = calloc((size_t)want * VD_AUDIO_CHANNELS, sizeof(float));
+  vd_audio_renderer_pull(r, buffer, want);
+
+  // Skip the first 50 ms: the stretcher has to see a window of source before
+  // it can emit anything, so the very start of the pull is the ring still
+  // filling rather than the signal.
+  const int32_t from = VD_AUDIO_SAMPLE_RATE / 20;
+  const int32_t count = want - from;
+  const double hz =
+      count_zero_crossings(buffer + (size_t)from * VD_AUDIO_CHANNELS, count) /
+      2.0 / ((double)count / VD_AUDIO_SAMPLE_RATE);
+
+  free(buffer);
+  vd_audio_renderer_destroy(r);
+  return hz;
+}
+
+// The default, and the one that matters: a clip played at another speed still
+// sounds like itself. A voice slowed to half is the same voice, not a
+// different person.
+static void test_a_retimed_clip_keeps_its_pitch(void) {
+  const double rates[] = {0.5, 2.0};
+  for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
+    const double hz = retimed_frequency(rates[i], false);
+    vd_checks++;
+    if (fabs(hz - 440.0) > 30.0) {
+      vd_failures++;
+      fprintf(stderr, "FAIL %.2fx through the mixer gave %.1f Hz, expected "
+                      "440\n",
+              rates[i], hz);
+    }
+  }
+}
+
+// And the toggle, which is the tape: everything rises with the speed. 440 Hz
+// at 2x is 880, at half speed it is 220, and a document that asked for one of
+// these must not get the other.
+static void test_the_pitch_shift_toggle_reaches_the_mixer(void) {
+  const struct {
+    double rate;
+    double hz;
+  } cases[] = {{2.0, 880.0}, {0.5, 220.0}};
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    const double hz = retimed_frequency(cases[i].rate, true);
+    vd_checks++;
+    if (fabs(hz - cases[i].hz) > cases[i].hz * 0.06) {
+      vd_failures++;
+      fprintf(stderr,
+              "FAIL %.2fx shifted through the mixer gave %.1f Hz, expected "
+              "%.1f\n",
+              cases[i].rate, hz, cases[i].hz);
+    }
+  }
+}
+
+// A clip nobody retimed takes the path it always took: no stretcher, no
+// resampler, the source read straight into the mix. The assertion is that
+// 1x is bit-for-bit what it was, which is the same bargain an ungraded
+// fragment gets from vd_color_is_neutral.
+static void test_playing_at_its_own_speed_changes_nothing(void) {
+  const double hz = retimed_frequency(1.0, true);
+  vd_checks++;
+  if (fabs(hz - 440.0) > 20.0) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL 1x with the pitch toggle on gave %.1f Hz, expected 440\n",
+            hz);
+  }
+}
+
 static void test_renderer_clock(void) {
   VdAudioRenderer* r = vd_audio_renderer_create(NULL);
   if (!r) return;
@@ -898,6 +990,9 @@ int main(void) {
   test_the_volume_line_ducks_what_comes_out();
   test_the_volume_line_ramps_within_a_chunk();
   test_the_volume_line_is_copied();
+  test_a_retimed_clip_keeps_its_pitch();
+  test_the_pitch_shift_toggle_reaches_the_mixer();
+  test_playing_at_its_own_speed_changes_nothing();
   test_renderer_clock();
   test_renderer_silence_where_there_is_none();
   test_renderer_underruns_are_counted();

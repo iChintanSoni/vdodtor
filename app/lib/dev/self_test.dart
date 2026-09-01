@@ -1098,6 +1098,146 @@ Future<void> runLookSelfTest(
   stdout.writeln('[selftest] looks: frames in ${out.path}');
 }
 
+/// A clip played at other speeds, watched and listened to.
+///
+/// The engine's own tests pin both halves of this against numbers:
+/// `vd_engine_test.c` checks which source frame reaches the screen at a given
+/// rate, and `vd_stretch_test.c` and `vd_audio_test.c` check that a 440 Hz tone
+/// is still 440 Hz at 2x — or 880 with the toggle on. What none of them can
+/// answer is whether the stretcher keeps up *in real time*, because they all
+/// pull the renderer offline with no device and no deadline.
+///
+/// So this one plays. The number to read is the underrun count across the
+/// play: every underrun is audible, and a WSOLA that cannot fill the ring
+/// inside its budget shows up here and nowhere else. The frames it dumps
+/// answer the other question a page of numbers cannot — whether four times
+/// slower looks like slow motion or like a stutter.
+///
+/// It puts the clip back at its own speed, so the passes after it see the
+/// timeline they expect. Retiming rounds to a whole tick each time, so "back"
+/// is within a few microseconds rather than exact.
+Future<void> runSpeedSelfTest(PreviewEngine engine, DocumentStore store) async {
+  final target = _clipToRetime(store.project);
+  if (target == null) {
+    stdout.writeln('[selftest] speed: nothing on the main lane to retime');
+    return;
+  }
+  final asset = store.project.assetFor(target)!;
+  final original = target.duration;
+  stdout.writeln('[selftest] speed: ${asset.displayName} on ${target.id}, '
+      '${(original.raw / 120000).toStringAsFixed(2)}s, '
+      'sound=${asset.probe.hasAudio}');
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_speed_');
+  final before = engine.stats;
+
+  for (final speed in const [
+    ClipSpeed(rate: 0.25),
+    ClipSpeed(rate: 0.5),
+    ClipSpeed(rate: 2),
+    ClipSpeed(rate: 4),
+    // The tape, which is the other half of the toggle and the one worth
+    // hearing rather than reading.
+    ClipSpeed(rate: 2, pitchShift: true),
+  ]) {
+    store.endGesture();
+    store.run(SetClipSpeed(target.id, speed));
+    store.endGesture();
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+
+    final clip = store.project.clipById(target.id)!;
+    final sent = engineTimelineFor(store.project)
+        .clips
+        .where((c) => c.path == asset.path)
+        .toList();
+    final slug = '${(speed.rate * 100).round()}'
+        '${speed.pitchShift ? '_pitched' : ''}';
+
+    // Four *project* frames in a row from the head of the clip, which is the
+    // only way to see what a rate does: at a quarter speed those four are the
+    // same picture, and at four times they are sixteen source frames apart.
+    // Seeking to the same fraction of each clip would land on the same frame
+    // of the file every time and dump five identical PNGs.
+    final frame = Timebase.project.ticksPerFrame(FrameRates.fps30);
+    final sourceTimes = <String>[];
+    for (var i = 0; i < 4; i++) {
+      final at = clip.start.raw + i * frame;
+      engine.seek(at);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      engine.dumpPng('${out.path}/at_${slug}_f$i.png');
+      sourceTimes.add(
+          (clip.sourceTimeAt(Tick(at)).raw / 120000).toStringAsFixed(3));
+    }
+
+    stdout.writeln('[selftest] speed: ${speed.rate}x'
+        '${speed.pitchShift ? ' pitched' : ''} — '
+        '${(clip.duration.raw / 120000).toStringAsFixed(2)}s on the timeline, '
+        '${(clip.sourceDuration.raw / 120000).toStringAsFixed(2)}s of file, '
+        'engine gets speed=${sent.isEmpty ? '-' : sent.first.speed} '
+        'shift=${sent.isEmpty ? '-' : sent.first.pitchShift}, '
+        'four frames land at ${sourceTimes.join(" ")}, '
+        'layers=${engine.stats.activeLayers} '
+        'decoders=${engine.stats.openDecoders}');
+  }
+
+  // And the part only a running app can measure: playing a retimed clip at
+  // half speed with the pitch kept, which is the expensive path, and counting
+  // what the device had to be given silence for.
+  store.endGesture();
+  store.run(SetClipSpeed(target.id, const ClipSpeed(rate: 0.5)));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+
+  final retimed = store.project.clipById(target.id)!;
+  engine.seek(retimed.start.raw);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  final beforePlay = engine.stats;
+  final clock = Stopwatch()..start();
+  engine.play();
+  await Future<void>.delayed(const Duration(seconds: 3));
+  final playing = engine.stats;
+  clock.stop();
+  engine.pause();
+
+  stdout.writeln('[selftest] speed: played 3s at half speed — '
+      'underruns ${playing.audioUnderruns - beforePlay.audioUnderruns}, '
+      'buffered ${playing.audioBufferedFrames}, '
+      'frames ${playing.framesPresented - beforePlay.framesPresented} in '
+      '${(clock.elapsedMilliseconds / 1000).toStringAsFixed(2)}s, '
+      'late ${playing.framesLate - beforePlay.framesLate}');
+
+  store.endGesture();
+  store.run(SetClipSpeed(target.id, ClipSpeed.normal));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  engine.seek(store.project.clipById(target.id)!.start.raw);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+  engine.dumpPng('${out.path}/at_100_again_f0.png');
+
+  final restored = store.project.clipById(target.id)!;
+  stdout.writeln('[selftest] speed: back at 1x — '
+      '${(restored.duration.raw / 120000).toStringAsFixed(3)}s against '
+      '${(original.raw / 120000).toStringAsFixed(3)}s, '
+      'layers ${before.activeLayers} then ${engine.stats.activeLayers}, '
+      'decoders ${before.openDecoders} then ${engine.stats.openDecoders}');
+  stdout.writeln('[selftest] speed: frames in ${out.path}');
+}
+
+/// The clip a retime goes on: the first one on the main lane with sound in it,
+/// and failing that the first one at all. Sound, because the expensive half of
+/// a speed change is the stretcher and a silent clip would not run it.
+Clip? _clipToRetime(Project project) {
+  Clip? fallback;
+  for (final clip in project.mainTrack.clips) {
+    if (clip.isGenerated) continue;
+    final asset = project.assetFor(clip);
+    if (asset == null || asset.probe.kind == MediaKind.image) continue;
+    if (asset.probe.hasAudio) return clip;
+    fallback ??= clip;
+  }
+  return fallback;
+}
+
 /// A playhead that never moves. The timeline needs one to draw; nothing here
 /// is playing.
 class _StillTransport implements TimelineTransport {

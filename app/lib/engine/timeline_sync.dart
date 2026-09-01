@@ -78,6 +78,11 @@ EngineTimeline engineTimelineFor(Project project) {
         startTicks: clip.start.raw,
         durationTicks: clip.duration.raw,
         sourceInTicks: clip.sourceIn.raw,
+        // The rate, not the window it implies: the engine multiplies a
+        // timeline offset by this to find where in the file it is, and it has
+        // to be the same multiply the document does — see `Clip.sourceTimeAt`.
+        speed: clip.speed.rate,
+        pitchShift: clip.speed.pitchShift,
         // List order is z-order: the main track is first, so it renders first.
         track: index,
         hasVideo: showsPicture,

@@ -360,11 +360,17 @@ class TimelinePainter extends CustomPainter {
     final ticksPerPixel = 1 / controller.geometry.pxPerTick;
     final into = (left - clipLeft) * ticksPerPixel;
 
+    // Peaks belong to the *file*, so a retimed clip reads more or less of them
+    // across the same pixels: at 2x a column covers two ticks of source for
+    // every one of timeline, and the envelope drawn on the clip is the shape
+    // it will play at.
+    final rate = clip.speed.rate;
+
     if (_envelope.length < columns * 2) _envelope = Float32List(columns * 2);
     peaks.envelopeInto(
       _envelope,
-      from: Tick((clip.sourceIn.raw + into).round()),
-      ticksPerPixel: ticksPerPixel,
+      from: Tick((clip.sourceIn.raw + into * rate).round()),
+      ticksPerPixel: ticksPerPixel * rate,
       pixels: columns,
     );
 
@@ -506,8 +512,13 @@ class TimelinePainter extends CustomPainter {
       final face = caption.font.isEmpty ? 'system' : caption.font;
       return '$length · $face';
     }
-    if (asset == null || !asset.probe.hasVideo) return length;
-    return '$length · ${asset.probe.displayWidth}×${asset.probe.displayHeight}';
+    // Before the size, and deliberately: this line is clipped from the right
+    // on a busy lane, and a retimed clip that looks exactly like every other
+    // one is the surprise worth spending the first characters on.
+    final rate = clip.speed.isRetimed ? ' · ${clip.speed.label}' : '';
+    if (asset == null || !asset.probe.hasVideo) return '$length$rate';
+    return '$length$rate · '
+        '${asset.probe.displayWidth}×${asset.probe.displayHeight}';
   }
 
   void _paintHeaders(Canvas canvas, Size size) {

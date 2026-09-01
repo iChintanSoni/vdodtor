@@ -12,6 +12,7 @@
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_raster.h"
 #include "vdodtor/vd_sticker.h"
+#include "vdodtor/vd_stretch.h"
 #include "vdodtor/vd_transition.h"
 
 // How many decoders stay open at once. The M0 spike measured four concurrent
@@ -51,6 +52,11 @@ typedef struct {
   VdTick start;
   VdTick duration;
   VdTick source_in;
+  // Source time per timeline time, clamped once here so the render loop never
+  // has to wonder. 1 for every clip nobody retimed, which is almost all of
+  // them — and the reason `source_time_at` below is a multiply rather than a
+  // branch.
+  double speed;
   int32_t track;
   float opacity;
   VdFitMode fit;
@@ -574,6 +580,22 @@ static void apply_anim(VdLayer* layer, const VdAnimValue* anim) {
   layer->opacity *= anim->opacity;
 }
 
+// Where in the source a clip is when the playhead is at `position`.
+//
+// The whole of what speed does to the picture, and it is a multiply. A clip at
+// 2x is asked for source time that runs twice as fast, so the decoder hands
+// back every other frame; at 0.5x the source time has not left the frame it
+// was on and the decoder hands back the same one again — which is what
+// "frame duplication for slow motion" turns out to be here. There is no
+// duplication step, because there is nothing to duplicate: a frame is on
+// screen until the next frame starts, and slowing the clip down is asking for
+// an instant that is still inside the same interval.
+static VdTick source_time_at(const VdClipEntry* clip, VdTick position) {
+  const VdTick offset = position - clip->start;
+  if (clip->speed == 1.0) return clip->source_in + offset;
+  return clip->source_in + (VdTick)llround((double)offset * clip->speed);
+}
+
 // Renders `position` into the compositor.
 //
 // Requires render_lock and *not* `lock`: decoding and compositing take
@@ -668,8 +690,9 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       VdSticker* sticker = sticker_for(e, clip);
       if (!sticker) continue;
       bool changed = false;
-      void* buffer = vd_sticker_frame_at(
-          sticker, clip->source_in + (position - clip->start), &changed);
+      void* buffer =
+          vd_sticker_frame_at(sticker, source_time_at(clip, position),
+                              &changed);
       if (!buffer) continue;
       if (changed) {
         pthread_mutex_lock(&e->lock);
@@ -699,7 +722,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     VdDecoder* decoder = decoder_for(e, clip);
     if (!decoder) continue;
 
-    const VdTick source_time = clip->source_in + (position - clip->start);
+    const VdTick source_time = source_time_at(clip, position);
 
     VdProbeInfo info;
     vd_decoder_info(decoder, &info);
@@ -871,6 +894,10 @@ VdTimelineClip vd_timeline_clip_default(void) {
   clip.gain = 1.0f;
   clip.fit = VD_FIT_CONTAIN;
   clip.has_video = true;
+  // Belt and braces: `speed` 0 is read as 1 everywhere downstream, so a caller
+  // that memsets gets the unretimed clip either way. Saying so here is what
+  // makes the struct readable in a debugger.
+  clip.speed = 1.0;
   return clip;
 }
 
@@ -993,6 +1020,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->start = src->start;
     dst->duration = src->duration;
     dst->source_in = src->source_in;
+    dst->speed = vd_speed_clamp(src->speed);
     dst->track = src->track;
     dst->opacity = src->opacity;
     dst->fit = src->fit;

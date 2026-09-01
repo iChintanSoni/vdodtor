@@ -1081,4 +1081,127 @@ void main() {
       expect(store.project.clipById('b')!.animation, ClipAnimation.still);
     });
   });
+
+  group('speed', () {
+    Future<void> scrollToSpeed(WidgetTester tester) async {
+      await tester.scrollUntilVisible(find.text('SPEED'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a clip whose source runs gets the section', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSpeed(tester);
+
+      expect(find.text('SPEED'), findsOneWidget);
+      expect(find.text('Rate'), findsOneWidget);
+      expect(find.text('1.0×'), findsWidgets);
+      // Nothing to shift the pitch of yet: at its own speed the two answers
+      // agree, and a toggle that changes nothing is one nobody trusts.
+      expect(find.text('Pitch kept'), findsNothing);
+    });
+
+    testWidgets('a caption has no source to run', (tester) async {
+      controller.addTextClip();
+      await pumpInspector(tester);
+      await tester.pumpAndSettle();
+
+      expect(find.text('SPEED'), findsNothing);
+    });
+
+    testWidgets('a preset retimes the clip and repacks the lane',
+        (tester) async {
+      controller.select('a');  // 0–2s, with b and c behind it
+      await pumpInspector(tester);
+      await scrollToSpeed(tester);
+
+      await tester.tap(find.text('2.0×'));
+      await tester.pump();
+
+      expect(store.project.clipById('a')!.speed.rate, 2);
+      expect(store.project.clipById('a')!.duration, secs(1));
+      expect(store.project.clipById('b')!.start, secs(1),
+          reason: 'the magnetic lane closes up behind it');
+      expect(store.undoLabels, ['Change speed']);
+    });
+
+    testWidgets('the pitch toggle appears once there is a speed',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToSpeed(tester);
+      await tester.tap(find.text('0.50×'));
+      await tester.pumpAndSettle();
+      await scrollToSpeed(tester);
+
+      expect(find.text('Pitch kept'), findsOneWidget);
+      await tester.tap(find.text('Pitch kept'));
+      await tester.pump();
+
+      expect(store.project.clipById('b')!.speed.pitchShift, isTrue);
+      await scrollToSpeed(tester);
+      expect(find.text('Pitch shifts'), findsOneWidget);
+    });
+
+    testWidgets('the rate slider runs slow on the left and fast on the right',
+        (tester) async {
+      // A log scale, so 1x sits in the middle rather than a tenth of the way
+      // along — and a scale that came out inverted would still look like a
+      // working slider.
+      final rate = find.descendant(
+        of: find
+            .ancestor(of: find.text('Rate'), matching: find.byType(Column))
+            .first,
+        matching: find.byType(Slider),
+      );
+
+      controller.select('b');  // 2–5s on the magnetic lane
+      await pumpInspector(tester);
+      await scrollToSpeed(tester);
+      await tester.drag(rate, const Offset(30, 0));
+      await tester.pumpAndSettle();
+
+      final fast = store.project.clipById('b')!;
+      expect(fast.speed.rate, greaterThan(1));
+      expect(fast.duration.raw, lessThan(secs(3).raw));
+      // The same frames, to within the tick a retime rounds to: the length is
+      // whole ticks and the rate is not, so the window comes back a tick short
+      // of the three seconds it went in as. Eight microseconds.
+      expect(fast.sourceDuration.raw, closeTo(secs(3).raw, 2),
+          reason: 'the same frames');
+
+      store.endGesture();
+      await scrollToSpeed(tester);
+      await tester.drag(rate, const Offset(-60, 0));
+      await tester.pumpAndSettle();
+
+      final slow = store.project.clipById('b')!;
+      expect(slow.speed.rate, lessThan(1));
+      expect(slow.duration.raw, greaterThan(secs(3).raw));
+    });
+
+    testWidgets('Reset puts the clip back at the length it had',
+        (tester) async {
+      controller.select('b');
+      store.run(const SetClipSpeed('b', ClipSpeed(rate: 4)));
+      store.endGesture();
+      await pumpInspector(tester);
+      await scrollToSpeed(tester);
+
+      // Two Resets on screen — the transform's and this one — so it is the
+      // one inside the speed section that has to be pressed.
+      await tester.tap(find.descendant(
+        of: find.ancestor(
+          of: find.text('SPEED'),
+          matching: find.byType(Row),
+        ).first,
+        matching: find.text('Reset'),
+      ));
+      await tester.pump();
+
+      expect(store.project.clipById('b')!.speed, ClipSpeed.normal);
+      expect(store.project.clipById('b')!.duration, secs(3));
+    });
+  });
 }

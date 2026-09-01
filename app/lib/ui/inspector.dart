@@ -7,6 +7,7 @@ import '../commands/edits.dart';
 import '../media/fonts.dart';
 import '../media/looks.dart';
 import '../model/clip.dart';
+import '../model/media.dart';
 import '../model/time.dart';
 import '../model/track.dart';
 import 'theme.dart';
@@ -61,6 +62,9 @@ class Inspector extends StatelessWidget {
       _store.run(SetClipTransition(clip.id, transition),
           fromGestureStart: true);
 
+  void _setSpeed(Clip clip, ClipSpeed speed) =>
+      _store.run(SetClipSpeed(clip.id, speed), fromGestureStart: true);
+
   @override
   Widget build(BuildContext context) {
     final clip = timeline.selectedClip;
@@ -81,6 +85,12 @@ class Inspector extends StatelessWidget {
     final showsPicture = clip.isGenerated ||
         ((track?.kind.isVisual ?? true) && (asset?.probe.hasVideo ?? true));
     final hasSound = asset?.probe.hasAudio ?? false;
+    // A speed needs something that runs. A caption and a shape have no source
+    // at all, and a still has one that never moves — a rate on either would be
+    // a number that changes nothing but the clip's length, which is what
+    // dragging its edge is for. A sticker does run: its loop is what speeds up.
+    final runs = !clip.isGenerated && asset != null &&
+        asset.probe.kind != MediaKind.image;
 
     return Container(
       width: width,
@@ -192,6 +202,24 @@ class Inspector extends StatelessWidget {
               clip: clip,
               onChanged: (a) => _setAnimation(clip, a),
               onCommit: _commit,
+            ),
+          // On the boundary between the picture and the sound, which is where
+          // a speed belongs: it is the last thing about *time* — after how the
+          // clip joins and how it arrives, both of which are lengths it
+          // decides — and the toggle it carries is about the sound the section
+          // below sets the level of. Above the picture controls it would also
+          // have split the ADJUST header from the sliders that its Reset
+          // button resets.
+          if (runs)
+            _SpeedControls(
+              clip: clip,
+              onChanged: (s) => _setSpeed(clip, s),
+              onCommit: _commit,
+              onReset: () {
+                _commit();
+                _store.run(SetClipSpeed(clip.id, ClipSpeed.normal));
+                _commit();
+              },
             ),
           // After the picture, because that is the order someone works in and
           // because sound is the half you check last.
@@ -1290,6 +1318,199 @@ String _strengthPercent(double v) => '${(v * 100).round()}%';
 String _gradePercent(double v) {
   final percent = (v * 100).round();
   return percent > 0 ? '+$percent%' : '$percent%';
+}
+
+/// How fast the clip plays, and what that does to the sound in it.
+///
+/// The slider is logarithmic, so 1x sits in the middle rather than a tenth of
+/// the way along: the range is 0.1x to 10x, and on a linear scale everything
+/// anybody actually reaches for — a half, a double — would be crowded into the
+/// first inch of the track. It also makes the two halves symmetrical, which is
+/// what "twice as fast" and "half as fast" being the same distance either side
+/// of the middle should look like.
+///
+/// It snaps to 1x near the middle. On a log scale the exact centre is a single
+/// pixel, and a clip left at 1.02x is one that plays at a speed nobody chose
+/// and cannot see; the presets are there for the other round numbers.
+class _SpeedControls extends StatelessWidget {
+  const _SpeedControls({
+    required this.clip,
+    required this.onChanged,
+    required this.onCommit,
+    required this.onReset,
+  });
+
+  final Clip clip;
+  final ValueChanged<ClipSpeed> onChanged;
+  final VoidCallback onCommit;
+  final VoidCallback onReset;
+
+  /// The speeds worth one press. Halves and doubles, because those are what a
+  /// slow-motion moment and a sped-up montage actually are.
+  static const _presets = [0.25, 0.5, 1.0, 2.0];
+
+  static final _logMin = math.log(ClipSpeed.minRate);
+  static final _logMax = math.log(ClipSpeed.maxRate);
+
+  /// Slider position 0..1 for a rate, and back.
+  static double _positionOf(double rate) =>
+      ((math.log(rate) - _logMin) / (_logMax - _logMin)).clamp(0.0, 1.0);
+
+  static double _rateOf(double position) {
+    final rate = math.exp(_logMin + position * (_logMax - _logMin));
+    // A detent at the middle. It has to be explicit because on a log track the
+    // exact centre is one pixel: the rounding below already catches everything
+    // from 1.00 up to 1.05, and this catches the other side, which together
+    // make a target a few pixels wide. Not wider, because 1.1x has to stay
+    // reachable — and because the preset row has a 1.0x button for anyone who
+    // would rather not aim at all.
+    if ((rate - 1).abs() < 0.05) return 1;
+    // Two decimals below 1x, one above: 0.33x is a speed and 3.33x is a
+    // number. Rounding here rather than at the label keeps the document and
+    // what it says on it the same.
+    return rate < 1
+        ? (rate * 100).roundToDouble() / 100
+        : (rate * 10).roundToDouble() / 10;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final speed = clip.speed;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const _SectionLabel('SPEED'),
+            const Spacer(),
+            if (!speed.isNormal)
+              TextButton(
+                onPressed: onReset,
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Reset', style: TextStyle(fontSize: 11)),
+              ),
+          ],
+        ),
+        Row(
+          children: [
+            for (final rate in _presets)
+              _SpeedPreset(
+                rate: rate,
+                on: speed.rate == rate,
+                onTap: () {
+                  onCommit();
+                  onChanged(speed.copyWith(rate: rate));
+                  onCommit();
+                },
+              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        _Slider(
+          label: 'Rate',
+          value: _positionOf(speed.rate),
+          min: 0,
+          max: 1,
+          // The rate, not the slider's own position: what the control says has
+          // to be the number in the document.
+          format: (_) => speed.label,
+          onChanged: (position) =>
+              onChanged(speed.copyWith(rate: _rateOf(position))),
+          onCommit: onCommit,
+        ),
+        // The length it comes to, which is the thing the user is really
+        // choosing: a rate is abstract and eleven seconds is not. "Duration"
+        // rather than "Length" because the join above already has a Length and
+        // it is a different one — a transition's, not the clip's.
+        Row(
+          children: [
+            const Text('Duration',
+                style: TextStyle(fontSize: 11, color: VdColors.text)),
+            const Spacer(),
+            Text(_clipSeconds(clip.duration),
+                style: vdMono.copyWith(fontSize: 10, color: VdColors.dim)),
+          ],
+        ),
+        // Only where it would do something. At 1x the two answers agree, and a
+        // toggle that changes nothing is one somebody will press and mistrust.
+        if (speed.isRetimed)
+          _PitchButton(
+            shifted: speed.pitchShift,
+            onTap: () {
+              onCommit();
+              onChanged(speed.copyWith(pitchShift: !speed.pitchShift));
+              onCommit();
+            },
+          ),
+      ],
+    );
+  }
+}
+
+/// A clip's own length. Always a number of seconds, unlike [_seconds], which
+/// reads a fade of nothing as "none": a clip always lasts for something, and
+/// one short enough to round to nothing is exactly the one worth showing.
+String _clipSeconds(Tick duration) =>
+    '${(duration.raw / Timebase.project.ticksPerSecond).toStringAsFixed(2)}s';
+
+class _SpeedPreset extends StatelessWidget {
+  const _SpeedPreset({
+    required this.rate,
+    required this.on,
+    required this.onTap,
+  });
+
+  final double rate;
+  final bool on;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 1),
+          child: OutlinedButton(
+            onPressed: onTap,
+            style: OutlinedButton.styleFrom(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(0, 28),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              foregroundColor: on ? VdColors.accent : VdColors.dim,
+              side: BorderSide(color: on ? VdColors.accent : VdColors.line),
+            ),
+            child: Text(ClipSpeed.labelFor(rate),
+                style: const TextStyle(fontSize: 10)),
+          ),
+        ),
+      );
+}
+
+/// Whether the pitch goes with the speed.
+///
+/// Worded as what it *does* rather than as what it is off: "Pitch shifts" is
+/// the tape, and the unpressed state says "Pitch kept" so the default is
+/// legible without pressing anything to find out.
+class _PitchButton extends StatelessWidget {
+  const _PitchButton({required this.shifted, required this.onTap});
+
+  final bool shifted;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+        onPressed: onTap,
+        icon: Icon(shifted ? Icons.graphic_eq : Icons.lock_outline, size: 15),
+        label: Text(shifted ? 'Pitch shifts' : 'Pitch kept',
+            style: const TextStyle(fontSize: 11)),
+        style: TextButton.styleFrom(
+          foregroundColor: shifted ? VdColors.accent : VdColors.dim,
+          visualDensity: VisualDensity.compact,
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
+      );
 }
 
 class _TransitionControls extends StatelessWidget {

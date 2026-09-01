@@ -85,6 +85,10 @@ Map<String, Object?> _trackToJson(Track t) => {
             'start': c.start.raw,
             'duration': c.duration.raw,
             'sourceIn': c.sourceIn.raw,
+            // Left out for every clip at its own speed, which is almost all
+            // of them — and a bare `pitchShift` with no rate would be
+            // recording a toggle that changes nothing.
+            if (!c.speed.isNormal) 'speed': _speedToJson(c.speed),
             if (c.label.isNotEmpty) 'label': c.label,
             if (!c.enabled) 'enabled': false,
             // Left out entirely when nothing was changed, which is almost
@@ -155,6 +159,21 @@ ClipColor _gradeFromJson(Map<String, Object?> json) => ClipColor(
       tint: _double(json, 'tint', 0),
       look: json['look'] is String ? json['look']! as String : '',
       lookStrength: _double(json, 'lookStrength', 1),
+    );
+
+/// The rate, and the toggle only when it is on. A retimed clip is the whole
+/// reason this object exists, so the rate is always written once there is one.
+Map<String, Object?> _speedToJson(ClipSpeed s) => {
+      'rate': s.rate,
+      if (s.pitchShift) 'pitchShift': true,
+    };
+
+ClipSpeed _speedFromJson(Map<String, Object?> json) => ClipSpeed(
+      // A file that names no rate is a clip at its own speed, which is the
+      // right reading of a `speed` object somebody hand-edited into nonsense:
+      // the clip still plays, and it plays the way it was shot.
+      rate: _double(json, 'rate', 1),
+      pitchShift: json['pitchShift'] == true,
     );
 
 Map<String, Object?> _audioToJson(ClipAudio a) => {
@@ -513,6 +532,12 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
       start: Tick(_int(c, 'start', '$where.start')),
       duration: duration,
       sourceIn: Tick(_int(c, 'sourceIn', '$where.sourceIn')),
+      // Clamped on the way in like every other slider: a file may claim a
+      // rate this version's engine cannot honour, and a clip that plays at
+      // the nearest speed it can is better than a project that will not open.
+      speed: c['speed'] == null
+          ? ClipSpeed.normal
+          : _speedFromJson(_asMap(c['speed'], '$where.speed')).clamped(),
       label: (c['label'] as String?) ?? '',
       enabled: _bool(c, 'enabled', true),
       transform: c['transform'] == null

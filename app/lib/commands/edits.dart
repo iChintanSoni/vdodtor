@@ -363,6 +363,124 @@ final class SetClipAnimation extends EditCommand {
       next is SetClipAnimation && next.clipId == clipId ? next : null;
 }
 
+/// Plays a clip faster or slower, over the length that implies.
+///
+/// The sixth of the set with [SetClipTransform], [SetClipAudio],
+/// [SetClipText], [SetClipShape] and [SetClipAnimation], merged on the clip id
+/// the same way — a drag on the speed slider is one decision.
+///
+/// It is the only one of them that changes how long the clip is, and that is
+/// not a side effect: the frames a clip shows do not change when it is
+/// retimed, so playing them faster *is* taking less timeline. What survives
+/// the edit is the window on the source — [Clip.sourceDuration] — which is
+/// why the same clip taken from 1x to 4x and back is the clip it started as
+/// rather than a sixteenth of it.
+///
+/// Because it is a change of length it is bounded like a trim: no more source
+/// than the file has, and on a free-form lane no further than the next clip.
+/// On a magnetic lane there is no ceiling to hit — the neighbours move — which
+/// is what makes slowing a shot down on the main track feel like the obvious
+/// thing rather than a fight. The floor of one frame is the exception, and it
+/// gives way in the other direction: see [apply].
+///
+/// A source with no length of its own — a sticker, a still — is retimed
+/// without changing the clip's length at all, because there is no window to
+/// hold still. What speeds up is the loop.
+///
+/// A caption or a shape is refused rather than quietly retimed. There is no
+/// source behind one, so a rate would be a number that means nothing and a
+/// length change nobody asked for; a clip the app draws is made longer by
+/// dragging its edge.
+final class SetClipSpeed extends EditCommand {
+  const SetClipSpeed(this.clipId, this.speed);
+
+  final String clipId;
+  final ClipSpeed speed;
+
+  @override
+  String get label => 'Change speed';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    if (clip.isGenerated) {
+      throw EditException('clip $clipId draws its own picture and has no '
+          'source to play at another speed');
+    }
+
+    final requested = speed.clamped();
+    if (clip.speed == requested) return project;
+
+    final asset = project.assetFor(clip);
+    // A source with no length of its own has no window to hold still. A
+    // sticker's own length is one loop rather than a limit, so what a rate
+    // changes about it is how fast the loop runs — and stretching a three
+    // second overlay to thirty because somebody slowed it down would be an
+    // edit nobody asked for. Same for a still, which has nothing that runs.
+    if (asset != null && asset.probe.kind.isEndless) {
+      return project.replaceTrack(track.withClips([
+        for (final c in track.clips)
+          c.id == clipId ? c.copyWith(speed: requested) : c,
+      ]));
+    }
+
+    // The window on the source is what a retime holds still. Rounding to a
+    // whole tick each time means a rate taken up and back down is not exactly
+    // where it started — a drag applies from the document as it stood when the
+    // gesture began, so within one drag it is, and between two it is a tick.
+    final window = clip.sourceDuration.raw;
+    final minimum = project.ticksPerFrame;
+    var wanted = (window / requested.rate).round();
+
+    // Bounded above the way a trim's tail is, and with the same consequence:
+    // the rate stands and the clip shows fewer frames than it did.
+    final limit = maxDurationFor(clip.retimedTo(requested, Tick(wanted)), asset);
+    if (limit.raw > 0 && wanted > limit.raw) wanted = limit.raw;
+    if (!track.isMagnetic) {
+      final ceiling = _startOfNext(track, clip);
+      if (ceiling != null && clip.start.raw + wanted > ceiling) {
+        wanted = ceiling - clip.start.raw;
+      }
+    }
+
+    // Bounded below the *other* way round, and this is the one worth the ink.
+    // Growing the length back up to a frame at the rate asked for would widen
+    // the window instead: the clip would start showing frames it never had,
+    // the round trip through 4× would not land where it started, and a clip at
+    // the end of its file would run past it. So here it is the rate that gives
+    // way — a clip with a frame of source in it has nothing left to play
+    // faster, and saying so is better than inventing the frames to do it with.
+    var resolved = requested;
+    if (wanted < minimum) {
+      wanted = minimum;
+      resolved = requested
+          .copyWith(
+              rate: (window / wanted)
+                  .clamp(ClipSpeed.minRate, ClipSpeed.maxRate))
+          .clamped();
+    }
+
+    if (resolved == clip.speed && wanted == clip.duration.raw) return project;
+
+    final retimed = clip.retimedTo(resolved, Tick(wanted));
+    final replaced = [
+      for (final c in track.clips) c.id == clipId ? retimed : c,
+    ];
+    // The same as a trim, and for the same reason: a magnetic lane has no gaps
+    // to leave behind, so a clip that got shorter pulls everything after it
+    // back and one that got longer pushes them along.
+    return project.replaceTrack(track.isMagnetic
+        ? track.packedInOrder(replaced)
+        : track.withClips(replaced));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipSpeed && next.clipId == clipId ? next : null;
+}
+
 /// One video clip's sound, lifted onto an audio lane as a clip of its own.
 ///
 /// Two edits that have to be one: the new audio clip appears *and* the video
@@ -594,8 +712,11 @@ final class TrimClip extends EditCommand {
     if (start != null) {
       var delta = start!.raw - clip.start.raw;
       // Cannot show frames the source does not have, and cannot trim a clip
-      // out of existence.
-      if (clip.sourceIn.raw + delta < 0) delta = -clip.sourceIn.raw;
+      // out of existence. The head takes `sourceIn` with it *at the clip's
+      // rate*, so on a 2x clip a second of timeline is two seconds of file and
+      // the head runs out of source in half the distance.
+      final sourceFloor = -(clip.sourceIn.raw / clip.speed.rate).floor();
+      if (delta < sourceFloor) delta = sourceFloor;
       if (clip.duration.raw - delta < minimum) {
         delta = clip.duration.raw - minimum;
       }
@@ -637,29 +758,6 @@ final class TrimClip extends EditCommand {
         : track.withClips(replaced));
   }
 
-  static int _endOfPrevious(Track track, Clip clip) {
-    var floor = 0;
-    for (final other in track.clips) {
-      if (other.id == clip.id) continue;
-      if (other.end.raw <= clip.start.raw && other.end.raw > floor) {
-        floor = other.end.raw;
-      }
-    }
-    return floor;
-  }
-
-  static int? _startOfNext(Track track, Clip clip) {
-    int? ceiling;
-    for (final other in track.clips) {
-      if (other.id == clip.id) continue;
-      if (other.start.raw >= clip.end.raw &&
-          (ceiling == null || other.start.raw < ceiling)) {
-        ceiling = other.start.raw;
-      }
-    }
-    return ceiling;
-  }
-
   /// A trim drag is one undo entry, the same way a move drag is.
   @override
   EditCommand? mergeWith(EditCommand next) =>
@@ -668,6 +766,34 @@ final class TrimClip extends EditCommand {
               (next.start == null) == (start == null)
           ? next
           : null;
+}
+
+/// Where the free space around a clip on a free-form lane begins and ends.
+///
+/// Shared by every edit that changes a clip's *length* rather than its
+/// position — a trim and a retime both — because on a lane that is not
+/// magnetic there is nothing to repack and the neighbour is a wall.
+int _endOfPrevious(Track track, Clip clip) {
+  var floor = 0;
+  for (final other in track.clips) {
+    if (other.id == clip.id) continue;
+    if (other.end.raw <= clip.start.raw && other.end.raw > floor) {
+      floor = other.end.raw;
+    }
+  }
+  return floor;
+}
+
+int? _startOfNext(Track track, Clip clip) {
+  int? ceiling;
+  for (final other in track.clips) {
+    if (other.id == clip.id) continue;
+    if (other.start.raw >= clip.end.raw &&
+        (ceiling == null || other.start.raw < ceiling)) {
+      ceiling = other.start.raw;
+    }
+  }
+  return ceiling;
 }
 
 /// Cuts a clip in two at [at], leaving both halves where they were.
@@ -723,9 +849,17 @@ final class SplitClip extends EditCommand {
       start: cut,
       duration: tailDuration,
       sourceIn: clip.sourceTimeAt(cut),
+      // Both halves play at the speed the whole did — and because `sourceIn`
+      // above is `sourceTimeAt(cut)`, which is scaled, the tail opens on the
+      // frame the head left off at rather than on the one a 1x cut would have
+      // found.
+      speed: clip.speed,
       label: clip.label,
       enabled: clip.enabled,
       transform: clip.transform,
+      // The grade goes across whole, like the transform: it does not vary
+      // with time, so both halves are the shot the user graded.
+      color: clip.color,
       audio: clip.audio.copyWith(fadeIn: Tick.zero).clampedTo(tailDuration),
       // The animations divide the way the fades do: each half keeps the one
       // at the end it still has. An entrance on the tail would be the clip

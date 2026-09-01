@@ -39,7 +39,8 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_transition (how one clip becomes the next),
            vd_color (five grading sliders as one matrix),
-           vd_lut (the grade that cannot be one: .cube looks), vd_probe,
+           vd_lut (the grade that cannot be one: .cube looks),
+           vd_stretch (the sound of a speed: WSOLA, and the tape), vd_probe,
            vd_decoder, vd_sticker (GIF/APNG/WebP overlays), vd_compositor (Metal),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
@@ -89,7 +90,13 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   is the coordinate `Clip.sourceIn` is in, so a trim slides the clip's window over the
   curve instead of dragging the curve with it, a split needs no dividing, and points
   outside a clip's window are kept rather than swept up. Anything that changes a clip's
-  length or window must leave `ClipAudio.points` alone.
+  length or window must leave `ClipAudio.points` alone — a retime included, which is why
+  a duck on a 2x clip arrives twice as soon on the timeline and still lands on the word
+  it was drawn for. A fade is the opposite: measured on the *timeline*, so it stays the
+  length it was drawn. Both mappings exist twice — `ClipAudio.gainAt` and `mix_at` — and
+  the timeline draws the first: `TimelineController.volumeLine` and the painter's
+  envelope both divide and multiply by the rate, so the curve is drawn where it is
+  heard.
 - **A frame is on screen until the next frame starts.** Not for the duration the
   container gave it: muxers write per-frame durations in *decode* order, so with B-frames
   they land on the wrong frames, and on a variable-rate source believing them puts frames
@@ -118,6 +125,53 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   unread, which is the whole migration story a cache needs. Peaks are a property of the
   **file**: volume, fades and mute scale the drawn envelope at paint time, so nothing
   about a clip can invalidate one.
+- **A speed is a rate, not a length.** `Clip.duration` stays the clip's length on the
+  *timeline* — so `Track.clipAt`'s binary search, magnetic packing, hit testing and split
+  all keep one way of asking how long a clip is — and `ClipSpeed.rate` says how fast the
+  window travels over the source while it is on screen. The window it implies,
+  `Clip.sourceDuration` = `duration * rate`, is derived and never stored: that is what
+  makes a clip taken to 4x and back to 1x the clip it started as rather than a sixteenth
+  of it, because what a retime holds still is the window. Changing the rate is therefore
+  a change of *length*, which is why `SetClipSpeed` is bounded like a trim — no more
+  source than the file has, and on a free-form lane no further than the next clip — and
+  why the magnetic lane repacks around it. The floor of one frame is the exception and
+  bends the other way: growing the length back up at the rate asked for would *widen* the
+  window, so it is the **rate** that gives way instead, and a clip with a frame of source
+  in it has nothing left to play faster. A source with no length of its own — a sticker,
+  a still — has no window to hold still at all, so retiming one changes the rate and
+  leaves the clip exactly as long as it was: what speeds up is the loop. `Clip.speed` and
+  `VdTimelineClip::speed` carry the rate and never the window: the engine multiplies, in
+  `source_time_at` in **both** `vd_engine.c` and `vd_audio_renderer.c`, and those two
+  agreeing with `Clip.sourceTimeAt` is the point — a frame and the sound under it
+  disagreeing about where in the file they are is the one bug in a video editor everybody
+  can hear.
+- **Frame duplication for slow motion is not a feature; it is what asking already does.**
+  A frame is on screen until the next frame starts, so a source time that has not left
+  the current frame's interval comes straight back out of `vd_decoder`'s cache. Four
+  project frames at a quarter speed are one decode, and there is no duplication step
+  anywhere in the engine because there is nothing to duplicate. The sound is the whole
+  cost of the feature: samples cannot be taken at an instant, so twice as many of them
+  have to become half as many.
+- **`vd_stretch` is that cost, and it is two answers.** WSOLA when the pitch is kept —
+  overlapping windows of the source laid down at the output's rate, each slid within a
+  15 ms search to wherever it continues the last one best — and a box-filtered resample
+  when `pitchShift` is on, which is the tape. A toggle rather than a rule, because a
+  slowed shot usually wants the voice in it to still be that voice and a sped-up montage
+  usually wants the chipmunk. Plain C with no platform dependency on `vd_color.c`'s
+  terms, testable with a sine in an array, and **not mirrored in Dart** for `vd_anim`'s
+  reason: nothing in the app draws a stretch. The analysis position advances by a fixed
+  `nominal_skip` whatever the overlap search picks, so the offset is a perturbation and
+  never an accumulating drift — the output stays exactly `rate` times shorter than the
+  input. And speeding up *decimates*, so the resampler averages over the whole span each
+  output frame stands for rather than taking the nearest: nearest-neighbour folds
+  everything above the new Nyquist back into the audible band as a whistle, and a box of
+  `rate` frames has its first null exactly where that whistle would have come from.
+- **The mixer tracks the timeline, not the source.** `VdAudioClip::expected_position` is
+  a *timeline* position, which it was not before a clip could be retimed: a stretcher
+  buffers its own input, so the source position after a chunk sits a window-length ahead
+  of where the arithmetic says it should, and comparing the two would re-seek — and reset
+  the stretcher — on every chunk of every retimed clip. A clip at 1x keeps no stretcher
+  at all, so the common path is bit for bit the path it always was.
 - **A grade is five sliders and one matrix.** Brightness, contrast, saturation,
   temperature and tint are all affine on RGB, so `vd_color_transform` composes them
   into one 3x3 and an offset on the CPU and the shader does a single multiply-add.

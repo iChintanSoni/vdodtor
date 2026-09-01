@@ -18,7 +18,7 @@ built and *how far* along it is. Update it in the same commit as the work it des
 >
 > **M3 has started: the editor can put words on the picture, draw shapes beside them, drop
 > animated stickers over them, make them all arrive, join one shot to the next, grade
-> the colour of any of them, and put a look on top.** A caption is a clip with no
+> the colour of any of them, put a look on top, and play any of it faster or slower.** A caption is a clip with no
 > file — the first thing on the timeline that is drawn rather than decoded — laid out by
 > Core Text in the engine and composited as an ordinary layer, so preview and export can
 > never disagree about it. Five bundled OFL faces, fill, outline, shadow, background box,
@@ -89,6 +89,20 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > **height** — both of them, so a circle is round in a 16:9 project and in a 9:16 one.
 > Measured in the running app: three layers, one draw per shape, and **zero** further
 > draws across eight seeks.
+>
+> And any clip can now be **retimed**, 0.1x to 10x. A speed is a *rate*, not a length:
+> `Clip.duration` stays the clip's length on the timeline, so nothing about packing,
+> hit testing or splitting changes, and the source window it implies is derived — which
+> is what makes 4x and back to 1x the clip you started with. Frame duplication for slow
+> motion turned out not to be a feature at all: a frame is on screen until the next frame
+> starts, so a source time that has not left the current interval comes back out of the
+> decoder's cache, and four project frames at a quarter speed are byte-identical PNGs.
+> The whole cost of the feature is the sound, which cannot be sampled at an instant —
+> `vd_stretch.c` is a WSOLA time-stretch that keeps the pitch and a box-filtered
+> resample for the clips that should sound like a tape, with a per-clip toggle because
+> both are right and no engine can tell which one this is. Measured in the running app:
+> a half-speed clip played for three seconds with **0 underruns and 0 late frames**, the
+> source window flat at 2.00s across every rate, and decoders flat at 5.
 >
 > Done: real repo tree, vendored universal **LGPL** FFmpeg 9.0.1, CMake engine wired into the
 > Flutter build, the whole **document model** (rational time, scene graph, undo, autosave,
@@ -1275,8 +1289,85 @@ start to finish without touching another editor; undo works through the whole se
       channel.
 
 ### Speed
-- [ ] Constant 0.1×–10× per clip; frame duplication for slow-mo
-- [ ] Pitch-preserved audio time-stretch, with per-clip pitch-shift toggle
+- [x] Constant 0.1×–10× per clip; frame duplication for slow-mo — and the
+      decision that makes the picture side cost nothing is that **a speed is a
+      rate, not a length**. `Clip.duration` stays what it has always been, the
+      clip's length on the timeline, so `Track.clipAt`'s binary search, the
+      magnetic packer, hit testing and split all keep exactly one way of asking
+      how long a clip is. What a rate says is how fast the window travels over
+      the source while the clip is on screen, and the window it implies —
+      `duration × rate` — is derived and never stored. That is what makes a
+      retime reversible: what it holds still is the *window*, so a clip taken
+      to 4× and back to 1× is the clip it started as rather than a sixteenth of
+      it. The alternative — storing the source window and deriving the length —
+      is the same information and a worse trade, because then every question
+      about the timeline has to divide first.
+      Because it *is* a change of length, it is bounded like a trim: no more
+      source than the file has, and on a free-form lane no further than the
+      next clip. On the magnetic lane there is no ceiling to hit — the
+      neighbours move — which is what makes slowing a shot down on the main
+      track the obvious thing rather than a fight. The floor of one frame is
+      the exception and bends the other way: growing the length back up at the
+      rate asked for would widen the window, so the **rate** gives way instead
+      and a clip with a frame of source in it has nothing left to play faster.
+      A sticker is the other exception — its own length is one loop rather than
+      a limit, so there is no window to hold still and retiming one changes how
+      fast the loop runs and nothing about how long it is on for.
+      **Frame duplication is not a feature here; it is what asking already
+      does.** A frame is on screen until the next frame starts, so a source
+      time that has not left the current frame's interval comes straight back
+      out of the decoder's cache. There is no duplication step anywhere in the
+      engine because there is nothing to duplicate — the whole of it is one
+      multiply in `source_time_at`, written twice because the sound has to
+      agree with the picture about where in the file it is.
+      Measured in the running app at 1920x1080, four consecutive project frames
+      from the head of the clip at each rate: at a **quarter speed all four
+      PNGs are byte-identical** — 0.000, 0.008, 0.017 and 0.025 seconds into a
+      source whose frames are 0.033 apart — at half speed they are two pairs,
+      and at 4× all four differ, landing 0.133 seconds apart. The source window
+      reads **2.00s at every rate** while the timeline length goes 8.00, 4.00,
+      1.00, 0.50; back at 1× the clip is 2.000s against the 2.000s it started
+      at. Layers flat at 2 and decoders flat at 5 throughout.
+- [x] Pitch-preserved audio time-stretch, with per-clip pitch-shift toggle —
+      the whole cost of the feature, and the reason it is a module of its own.
+      A frame can be sampled at an instant and sound cannot: twice as many
+      samples have to become half as many, and there are exactly two honest
+      ways to do it. `vd_stretch.c` is both. **Pitch preserved** is WSOLA —
+      overlapping windows of the source laid down at the output's rate, each
+      slid within a 15 ms search to wherever it best continues the last one —
+      and it is the default, because a slowed shot almost always wants the
+      voice in it to still be that voice. **Pitch shifted** is the tape: the
+      samples played faster, everything rising together. A per-clip toggle
+      rather than a rule, because a comedy speed-up wants the chipmunk and no
+      engine can tell which one this is.
+      Plain C with no platform dependency, on `vd_color.c`'s and `vd_anim.c`'s
+      terms and for their reason: what a stretch *means* is asserted against a
+      sine in an array, with no file, no device and no clock in the room, and
+      it is **not** mirrored in Dart because nothing in the app draws one.
+      Two details inside it are worth the ink. The analysis position advances
+      by a fixed `nominal_skip` whatever the overlap search picks, so the
+      offset is a perturbation and never an accumulating drift — the output
+      stays exactly `rate` times shorter than the input however hard the search
+      argues with itself. And speeding up *decimates*: taking the nearest input
+      frame folds everything above the new Nyquist back into the audible band
+      as a whistle, so the resampler averages over the whole span each output
+      frame stands for, a box whose first null sits exactly where that whistle
+      would have come from. Asserted both ways: **12 kHz at 4× comes back at
+      0.000 RMS** — the box's first null sits exactly there, where taking the
+      nearest frame would have folded it down to an audible 4 kHz tone — and
+      1 kHz at the same rate comes back at 0.70, which is a full-scale sine
+      untouched.
+      The mixer needed one change to carry it: a clip's `expected_position` is
+      now a *timeline* position rather than a source one. A stretcher buffers
+      its own input, so the source position after a chunk sits a window ahead
+      of where the arithmetic says, and comparing the two would re-seek — and
+      reset the stretcher — on every chunk of every retimed clip. A clip at 1×
+      keeps no stretcher at all, so the common path is the path it always was.
+      Measured in C: a 440 Hz tone through the real mixer reads 440 Hz at both
+      half and double speed with the pitch kept, and 220 and 880 with the
+      toggle on. Measured in the running app, which is the part no offline test
+      can reach: three seconds of playback of a half-speed clip with the pitch
+      kept gave **0 underruns and 0 late frames**, 90 frames in 3.04s.
 
 ### Audio effects
 - [ ] EQ presets and fade curves

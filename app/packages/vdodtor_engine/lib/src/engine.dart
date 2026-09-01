@@ -343,6 +343,8 @@ class EngineClip {
     required this.startTicks,
     required this.durationTicks,
     this.sourceInTicks = 0,
+    this.speed = 1.0,
+    this.pitchShift = false,
     this.track = 0,
     this.opacity = 1.0,
     this.fit = FitMode.contain,
@@ -386,6 +388,15 @@ class EngineClip {
   final int startTicks;
   final int durationTicks;
   final int sourceInTicks;
+
+  /// Source seconds per timeline second: 2 plays twice as fast. [durationTicks]
+  /// is still the clip's length on the timeline, so this says only how fast the
+  /// window over the source travels while the clip is on screen.
+  final double speed;
+
+  /// True to let the pitch rise and fall with [speed], the way a tape does.
+  /// False keeps the recording sounding like itself. Ignored at speed 1.
+  final bool pitchShift;
 
   /// Compositing order: lower renders first, so 0 is the main track.
   final int track;
@@ -643,6 +654,8 @@ class PreviewEngine extends ChangeNotifier {
         entry.start = clip.startTicks;
         entry.duration = clip.durationTicks;
         entry.source_in = clip.sourceInTicks;
+        entry.speed = clip.speed;
+        entry.pitch_shift = clip.pitchShift;
         entry.track = clip.track;
         entry.opacity = clip.opacity;
         entry.fitAsInt = clip.fit.index;
