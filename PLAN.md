@@ -27,7 +27,19 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > network, no account and nothing to sign into, so the whole purchase flow works on a
 > plane. **And content packs are in**: a `.vdpack` is a signed bundle of looks and faces,
 > the Cinema pack ships inside the app, and a locked item changes what may be *chosen*
-> and never what is *drawn*. What is left in M4 is packaging.
+> and never what is *drawn*. **And the editor now comes out as a disk image**:
+> `tools/package_mac.sh` builds it, checks that what got embedded is what the licence
+> notice says got embedded, signs it inside out under the hardened runtime, and stamps
+> out a DMG with the app, an `/Applications` symlink and the licences beside them —
+> everything but the two calls to Apple, which need a Developer ID this machine has not
+> got. Doing it turned up that `flutter build macos --release` had **never** succeeded:
+> `lipo` was producing universal FFmpeg dylibs with an unsigned x86_64 half, which
+> `codesign` refuses and every debug run was blind to. And it closes the LGPL: the
+> notice is generated from the files actually vendored — version, checksum, configure
+> line, the written source offer, how to build a replacement and drop it in — and shows
+> on the chooser's About sheet, because a disk image is a thing people throw away the
+> day they mount it. What is left in M4 is an update channel, crash reporting, and the
+> signing key.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1806,7 +1818,72 @@ look, one slow-mo moment) entirely in vdodtor.
       quietly show five fewer looks. `dart run tools/make_luts.dart` then
       `dart run tool/pack.dart build --from ../build/packs/cinema --key <seed>
       --out assets/packs/cinema.vdpack`.
-- [ ] Signed + notarized DMG; auto-update channel
+      `tools/package_mac.sh` **refuses to run** while this is outstanding, so the
+      ordering is mechanical rather than a note: `--allow-development-key` is the
+      way to get a DMG for yourself, and it prints a warning when you use it.
+- [~] Signed + notarized DMG — **the pipeline is in and everything but the two calls
+      to Apple has been run.** `tools/package_mac.sh` builds, checks, signs, verifies
+      and stamps out a disk image; what is left is one run with a Developer ID
+      Application certificate and a `notarytool` profile, neither of which exists on
+      the development machine yet.
+      **Signing is a script and not a checklist** because three of its steps are
+      things a person forgets exactly once. Sign the nested FFmpeg dylibs *before*
+      the framework that contains them — sign them after and the framework's seal is
+      already broken. Give the outer app the entitlements and the inner code none —
+      a framework carrying its own copy of the sandbox entitlement is how "the app is
+      not sandboxed after all" happens. And check that what got embedded is what the
+      licence notice says got embedded. All three fail late, at a stranger's
+      Gatekeeper prompt or in an obligation nobody re-reads.
+      So it **refuses more than it does**: a third-party notice that no longer
+      describes the vendored libraries, a dylib in the bundle that is not the one
+      `build_ffmpeg.sh` built, a binary linked against `/opt/homebrew`, a build that
+      still trusts the development licence key — each stops the run. The embedded
+      libraries are compared on **LC_UUID**, one per slice, because a dylib is signed
+      three times on its way into a bundle and every signature changes the bytes
+      while the code stays identical; the UUID is what the linker stamped in.
+      Notarization is **two submissions**, which is not waste. The ticket for the app
+      is fetched by the hash of the app, and stapling it changes the app — so the
+      image has to be built again around the stapled copy and notarized on its own
+      account. What that buys is an app in `/Applications` that verifies with no
+      network long after the disk image it arrived in was thrown away.
+      **Found by doing this: the release build had never been signable.**
+      `flutter build macos --release` failed on `master` with "code object is not
+      signed at all", naming the engine framework. The cause was two levels down: on
+      Apple Silicon the linker ad-hoc signs the arm64 slice it produces and leaves
+      the cross-built x86_64 one bare, so `lipo -create` yields a universal dylib
+      that `codesign -dvv` calls signed — it reports the native slice — and that
+      `codesign --sign` refuses when it recurses into a framework containing it.
+      `tools/build_ffmpeg.sh` now signs each universal file after lipo and verifies
+      **both** slices. Every debug run worked throughout, which is why it had gone
+      unnoticed.
+      `--adhoc` is for a build to look at, and it is signed **without** the hardened
+      runtime — the one place it differs from a real one. The hardened runtime turns
+      on library validation, which requires every framework a process maps to carry
+      the same Team ID, and an ad-hoc signature has no team at all: the app dies in
+      `dyld` before it draws a window. A Developer ID gives everything one team and
+      the problem does not exist. The alternative would be shipping
+      `com.apple.security.cs.disable-library-validation`, which is turning off the
+      thing the hardened runtime is for so that a test build launches.
+      **The LGPL obligations are discharged here**, and this is the item that closes
+      them. `tools/make_notices.dart` writes `app/assets/notices/` — what is in
+      vdodtor that we did not write, on what terms, from which tarball, at which
+      checksum, with the exact `configure` line, and how to build a replacement
+      library and drop it in — from the files actually vendored, in the same
+      arrangement `tools/make_luts.dart` has with the looks. It is **generated**
+      because a notice hand-edited beside a re-vendored library says 7.1 over a
+      9.0.1, and `app/test/app/about_test.dart` compares every number in the shipped
+      file against `third_party/ffmpeg/BUILD_INFO.txt` so that staleness is red
+      rather than silent. The notice and the licence text ship as **assets**, shown
+      by the About sheet on the chooser, because §6 wants the user given prominent
+      notice and a disk image is a thing people throw away the day they mount it;
+      the same two files go into the image as well, beside the OFL licences, because
+      somebody deciding whether to install should not have to install first.
+- [ ] Auto-update channel
+      Split off the item above because it is a different question: an editor whose
+      pitch is "no account, fully offline" has to decide what it is willing to ask
+      the network for, and the answer is not obvious. It is also the one piece of
+      shipping machinery that cannot be built and tested without somewhere to serve
+      an appcast from.
 - [ ] Opt-in crash reporting; analytics none-or-anonymous (positioning demands restraint)
 
 **Exit criteria:** a stranger can download the DMG, edit a video, hit the 4K gate,
@@ -1847,6 +1924,6 @@ buy Pro, and export 4K — with no help.
 | Timeline interaction doesn't feel "easy" | Still open — perf is proven, taste is not. Owner runs `spikes/s2_timeline`; M2 exit criteria are the real test |
 | Performance on low-end hardware is unknown | M0 measured only an M3 Pro. Name a low-end reference machine (PERF-06) and re-measure before promising anything |
 | **Scrub latency on long-GOP media** | **Open, and now measured.** A seek decodes forward from the preceding keyframe, so its cost is set by keyframe spacing, not resolution. A real 1080p25 stock clip with keyframes only at 0 s and 10 s seeks in 91–380 ms (mean 215) where the committed fixtures take 36 ms — and M0's 13 ms p50 came from denser media. Ordinary exported footage looks like this, so scrubbing needs a strategy of its own (proxies are already in the brief's fast-follow) before it can be called good. Bin thumbnails pay the same toll — they are decodes — which is why they run off the UI isolate, two at a time |
-| FFmpeg LGPL compliance in a sold, notarized app | **Half retired in M1** — a universal LGPL 2.1 build is vendored and dynamically linked, and the build script fails rather than emit a GPL or non-free configuration. Still open: the written source offer and signing the nested dylibs, both in M4 packaging |
+| ~~FFmpeg LGPL compliance in a sold, notarized app~~ | **Retired in M4 packaging.** M1 vendored a universal LGPL 2.1 build, dynamically linked, with a build script that fails rather than emit a GPL or non-free configuration. The rest arrived with `tools/package_mac.sh` and `tools/make_notices.dart`: the nested dylibs are signed inside-out ahead of the frameworks that contain them, and the notice — source URL, checksum, configure line, relink instructions and the §3(b) written offer — ships as an asset the About sheet shows and as a folder in the disk image. What is left is running the notarized build once, which is the packaging item, not this risk |
 | Preview/export parity drift | One compositor + golden-frame CI from M2, parity tests in M4 |
 | Solo-dev scope creep | Milestone exit criteria are the guardrails; anything not in the brief goes to Post-v1 |

@@ -158,6 +158,20 @@ void main() {
     expect(relaunched!.recovery, isNull);
   });
 
+  testWidgets('the chooser is where the licences are reachable from',
+      (tester) async {
+    // The About sheet is opened from here and nowhere else, which is what
+    // makes it the "prominent notice" LGPL 2.1 §6 asks for: this is the
+    // window every launch starts in. See lib/ui/about_dialog.dart.
+    await pumpStart(tester, await workspaceWith(tester, []));
+
+    await tester.tap(find.text('About…'));
+    await settleIo(tester);
+
+    expect(find.text('Third-party notices'), findsOneWidget);
+    expect(find.text('LGPL 2.1'), findsOneWidget);
+  });
+
   group('relativeTime', () {
     final now = DateTime(2026, 8, 30, 12);
 

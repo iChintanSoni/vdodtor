@@ -135,6 +135,15 @@ for dylib in "$WORK/install-arm64/lib"/*.dylib; do
   real="$(basename "$dylib")"
   soname="$(basename "$(otool -D "$dylib" | tail -1)")"   # e.g. libavcodec.63.dylib
   lipo -create "$dylib" "$WORK/install-x86_64/lib/$real" -output "$OUT/lib/$soname"
+  # Ad-hoc sign the universal file, and not for tidiness: on Apple Silicon the
+  # linker ad-hoc signs the arm64 slice it produces and leaves the cross-built
+  # x86_64 one bare, so `lipo -create` yields a binary that `codesign -dvv`
+  # calls signed — it reports the native slice — and that `codesign --sign`
+  # refuses as "code object is not signed at all" when it recurses into a
+  # framework containing it. That failure surfaces at the *app's* signing step,
+  # naming the framework rather than the library, and it makes a release build
+  # unsignable while every debug run works.
+  codesign --force --sign - --timestamp=none "$OUT/lib/$soname"
   # libavcodec.63.dylib -> libavcodec.dylib
   unversioned="${soname%%.*}.dylib"
   [[ "$unversioned" != "$soname" ]] && ln -sf "$soname" "$OUT/lib/$unversioned"
@@ -164,6 +173,13 @@ for dylib in "$OUT"/lib/*.dylib; do
   archs="$(lipo -archs "$dylib")"
   [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "not universal: $dylib ($archs)" >&2; exit 1; }
   otool -D "$dylib" | tail -1 | grep -q '@rpath/' || { echo "install_name is not @rpath: $dylib" >&2; exit 1; }
+  # Every slice, not just the one this machine runs. A dylib whose x86_64 half
+  # is unsigned is the failure described above, and it is invisible to the
+  # unqualified `codesign -dvv`.
+  for arch in arm64 x86_64; do
+    codesign --verify --arch "$arch" "$dylib" 2>/dev/null ||
+      { echo "$arch slice of $dylib is not signed" >&2; exit 1; }
+  done
 done
 
 echo
