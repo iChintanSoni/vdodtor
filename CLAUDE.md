@@ -286,6 +286,20 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   notice, a disk image is a thing people throw away the day they mount it, and the
   chooser is the window every launch starts in. The same two files go into the image as
   well, because somebody deciding whether to install should not have to install first.
+- **The app cannot open a socket, and that is a feature rather than a gap.** There is
+  no `com.apple.security.network.client` entitlement in `Release.entitlements`, so
+  nothing in vdodtor can reach the network — including an updater, which is why there
+  isn't one. `About.download` and `Checkout.buy` are opened in the **browser** through
+  `SystemLinks.open`, which needs no entitlement because it is the browser doing the
+  asking. The point is that the promise is *checkable*: `codesign -d --entitlements`
+  settles it in ten seconds, where a privacy policy has to be believed — which is the
+  actual exploit against the "ByteDance baggage" line in the brief's positioning table.
+  `app/test/app/about_test.dart` asserts the entitlement is absent **and** scans `lib/`
+  for `HttpClient`, `WebSocket` and friends; the scan is the useful half, because a
+  socket added here fails inside the sandbox as a user's bug report rather than as a red
+  test, and under `flutter run` it would appear to work perfectly. The cost is that
+  nobody is ever told about a new version, so the About sheet says so outright and the
+  version line is selectable for typing into a bug report.
 - **A universal dylib has a signature per slice, and `codesign -dvv` only shows you
   one.** On Apple Silicon the linker ad-hoc signs the arm64 binary it produces and
   leaves a cross-built x86_64 one bare, so `lipo -create` yields a file that reports

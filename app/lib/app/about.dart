@@ -39,6 +39,27 @@ abstract final class About {
   /// being unreachable costs a convenience rather than the obligation.
   static final source = Uri.parse('https://vdodtor.app/source');
 
+  /// Where a newer vdodtor comes from.
+  ///
+  /// **This is the whole of the update mechanism, and that is a decision
+  /// rather than an omission.** The app never checks: it has no
+  /// `com.apple.security.network.client` entitlement, so it cannot open a
+  /// socket at all, and a sandboxed app with no network entitlement is
+  /// *verifiably* incapable of sending anything anywhere — a claim anybody can
+  /// check in ten seconds with `codesign -d --entitlements`, where a privacy
+  /// policy is a claim they have to take on faith. For an editor whose
+  /// positioning is "your footage never leaves your machine", against
+  /// competitors whose problem is exactly that nobody believes them, that is
+  /// worth more than telling people about a point release.
+  ///
+  /// What it costs is real and should be said out loud: nobody is ever
+  /// notified, so people stay on the version they installed until they happen
+  /// to come back here. The button in the About sheet opens this page, which is
+  /// as far as an app with no network can go — and it is opened in the
+  /// *browser*, which needs no entitlement because it is the browser doing the
+  /// asking.
+  static final download = Uri.parse('https://vdodtor.app/download');
+
   /// What is in here that we did not write, and on what terms. Markdown, shown
   /// as it is: this is the file that ships, and a prettier rendering of it
   /// would be a second document to keep true.

@@ -48,6 +48,18 @@ void main() {
     }
   }
 
+  /// What the document box is showing.
+  ///
+  /// Reached through the scroll view rather than by type: the version line is
+  /// selectable too, so a bug report can be typed out of it, and
+  /// `find.byType(SelectableText)` alone now matches two things.
+  String readerText(WidgetTester tester) => tester
+      .widget<SelectableText>(find.descendant(
+        of: find.byType(SingleChildScrollView),
+        matching: find.byType(SelectableText),
+      ))
+      .data!;
+
   Future<void> openSheet(WidgetTester tester) async {
     await tester.pumpWidget(MaterialApp(
       home: Builder(
@@ -78,11 +90,11 @@ void main() {
   testWidgets('opens on the notices, with the library named', (tester) async {
     await openSheet(tester);
 
-    final reader = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(reader.data, contains('FFmpeg'));
-    expect(reader.data, contains('Lesser General Public Licence'));
+    final reader = readerText(tester);
+    expect(reader, contains('FFmpeg'));
+    expect(reader, contains('Lesser General Public Licence'));
     // The written offer is the part somebody has to be able to read and copy.
-    expect(reader.data, contains(About.source.toString()));
+    expect(reader, contains(About.source.toString()));
   });
 
   testWidgets('shows the licence itself when asked', (tester) async {
@@ -90,9 +102,9 @@ void main() {
     await tester.tap(find.text('LGPL 2.1'));
     await settleIo(tester);
 
-    final reader = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(reader.data, contains('GNU LESSER GENERAL PUBLIC LICENSE'));
-    expect(reader.data, contains('Version 2.1, February 1999'));
+    final reader = readerText(tester);
+    expect(reader, contains('GNU LESSER GENERAL PUBLIC LICENSE'));
+    expect(reader, contains('Version 2.1, February 1999'));
   });
 
   testWidgets('goes back to the notices', (tester) async {
@@ -102,8 +114,8 @@ void main() {
     await tester.tap(find.text('Third-party notices'));
     await settleIo(tester);
 
-    final reader = tester.widget<SelectableText>(find.byType(SelectableText));
-    expect(reader.data, contains('FFmpeg'));
+    final reader = readerText(tester);
+    expect(reader, contains('FFmpeg'));
   });
 
   testWidgets('the source button opens the page we own', (tester) async {
@@ -112,6 +124,25 @@ void main() {
     await settleIo(tester);
 
     expect(opened, [About.source.toString()]);
+  });
+
+  testWidgets('checking for updates opens the browser, not a socket',
+      (tester) async {
+    // The whole of the update mechanism. The app has no network entitlement,
+    // so the asking is done by something that has one — see About.download.
+    await openSheet(tester);
+    await tester.tap(find.text('Check for updates…'));
+    await settleIo(tester);
+
+    expect(opened, [About.download.toString()]);
+  });
+
+  testWidgets('and says so, rather than leaving silence to be read as a bug',
+      (tester) async {
+    // An app that never mentions a new version is unusual enough that saying
+    // nothing reads as an updater that is broken.
+    await openSheet(tester);
+    expect(find.textContaining('never checks for updates'), findsOneWidget);
   });
 
   testWidgets('and says where it is when it will not open', (tester) async {

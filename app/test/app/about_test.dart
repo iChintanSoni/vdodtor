@@ -171,10 +171,47 @@ void main() {
       // promise — "your footage never leaves this machine". A sandboxed app
       // with no network entitlement cannot open a socket, so this is the whole
       // enforcement, and it is one line away from being undone by accident.
+      //
+      // It is also the reason there is no updater: see About.download. Anything
+      // that checked for a new version would need this entitlement, and the
+      // claim above is worth more than the notification. DebugProfile has
+      // com.apple.security.network.server for the Dart VM service and is not
+      // checked here — nothing is shipped from it.
       final entitlements =
           File('macos/Runner/Release.entitlements').readAsStringSync();
       expect(entitlements, contains('com.apple.security.app-sandbox'));
       expect(entitlements, isNot(contains('com.apple.security.network')));
+    });
+
+    test('and nothing in the app so much as tries', () {
+      // The entitlement is what *stops* it; this is what stops somebody
+      // spending an afternoon on an updater before finding out. A socket in
+      // here would fail at runtime inside the sandbox, which is a bug report
+      // from a user rather than a red test — and outside the sandbox, in a
+      // `flutter run`, it would appear to work perfectly.
+      const forbidden = [
+        'HttpClient',
+        'WebSocket',
+        'RawSocket',
+        'Socket.connect',
+        'package:http/',
+        'dart:html',
+      ];
+
+      final offenders = <String>[];
+      for (final file in Directory('lib')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.dart'))) {
+        final source = file.readAsStringSync();
+        for (final needle in forbidden) {
+          if (source.contains(needle)) offenders.add('${file.path}: $needle');
+        }
+      }
+
+      expect(offenders, isEmpty,
+          reason: 'vdodtor reaches the network through the browser and in no '
+              'other way — see About.download');
     });
   });
 }
