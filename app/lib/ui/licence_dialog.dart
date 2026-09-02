@@ -13,9 +13,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
+import '../media/packs.dart';
 import '../pro/checkout.dart';
 import '../pro/licence.dart';
 import '../pro/licensing.dart';
+import '../pro/tier.dart';
 import 'theme.dart';
 
 /// Shows the sheet. Resolves when it is closed; the tier it may have changed
@@ -54,6 +56,11 @@ class _LicenceDialogState extends State<_LicenceDialog> {
   /// does nothing is the one failure a user cannot report.
   String? _linkFailure;
 
+  /// What went wrong with the last pack somebody tried to install, and the
+  /// pack that went in when nothing did.
+  PackProblem? _packProblem;
+  String? _packInstalled;
+
   @override
   void initState() {
     super.initState();
@@ -89,6 +96,45 @@ class _LicenceDialogState extends State<_LicenceDialog> {
     setState(() => _linkFailure = url.toString());
   }
 
+  /// Installs a `.vdpack`.
+  ///
+  /// The panel is reached directly rather than through a callback because this
+  /// dialog is opened from two places and neither has any other reason to know
+  /// what a content pack is — the export sheet least of all. It is the same
+  /// choice the export sheet makes about its save panel, and the same one the
+  /// inspector's `onLoadLook` deliberately does not: that one lives inside a
+  /// rail with no window around it in a test.
+  Future<void> _installPack() async {
+    final into = ContentPacks.installedIn;
+    if (into == null) return;
+
+    setState(() {
+      _working = true;
+      _packProblem = null;
+      _packInstalled = null;
+    });
+
+    final files = await MediaAccess.pickFiles(
+      multiple: false,
+      extensions: const [packFileExtension],
+      message: 'Choose a vdodtor content pack',
+      prompt: 'Install',
+    );
+    if (!mounted) return;
+    if (files.isEmpty) {
+      setState(() => _working = false);
+      return;
+    }
+
+    final read = await ContentPacks.install(files.first.path, into: into);
+    if (!mounted) return;
+    setState(() {
+      _working = false;
+      _packProblem = read.problem;
+      _packInstalled = read.pack?.manifest.name;
+    });
+  }
+
   Future<void> _paste() async {
     final clip = await Clipboard.getData(Clipboard.kTextPlain);
     final text = clip?.text;
@@ -122,6 +168,7 @@ class _LicenceDialogState extends State<_LicenceDialog> {
                   style: const TextStyle(fontSize: 12, color: VdColors.warn),
                 ),
               ],
+              ..._packs(),
               if (licensing.isDevelopmentBuild) ...[
                 const SizedBox(height: 16),
                 const _DevelopmentKeyWarning(),
@@ -137,6 +184,49 @@ class _LicenceDialogState extends State<_LicenceDialog> {
         ),
       ],
     );
+  }
+
+  /// What Pro brought, and how to add more of it.
+  ///
+  /// Shown to everybody, not only to Pro. A free installation has the Cinema
+  /// pack sitting there with a badge on it, which is the honest version of the
+  /// offer: these are the looks, they are already on the machine, and what is
+  /// being sold is the right to use them. Hiding them until after the purchase
+  /// would mean asking somebody to buy a list of names.
+  List<Widget> _packs() {
+    final packs = ContentPacks.packs;
+    final into = ContentPacks.installedIn;
+    if (packs.isEmpty && into == null) return const [];
+
+    return [
+      const SizedBox(height: 20),
+      const _SectionLabel('Content packs'),
+      const SizedBox(height: 8),
+      for (final pack in packs) _Pack(pack, tier: widget.licensing.tier),
+      if (packs.isEmpty)
+        const Text(
+          'None installed.',
+          style: TextStyle(fontSize: 12, color: VdColors.dim),
+        ),
+      if (into != null) ...[
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: _working ? null : () => unawaited(_installPack()),
+          child: const Text('Install a pack…'),
+        ),
+      ],
+      if (_packProblem != null) ...[
+        const SizedBox(height: 10),
+        _Problem(_packProblem!.message),
+      ],
+      if (_packInstalled != null) ...[
+        const SizedBox(height: 10),
+        Text(
+          '$_packInstalled is installed.',
+          style: const TextStyle(fontSize: 12, color: VdColors.dim),
+        ),
+      ],
+    ];
   }
 
   /// What somebody who has not bought it sees. The free tier is described
@@ -286,6 +376,61 @@ const List<String> _months = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+
+/// One pack, as the sheet lists it.
+///
+/// No Remove button, deliberately. Content cannot be taken back out of the
+/// engine once it is in — a look is registered under its name for the life of
+/// the process — so a Remove that left the picker still offering everything
+/// would be a button that lied about what it did. Deleting the `.vdpack` from
+/// the Packs folder is the honest way to undo an install, and it takes effect
+/// where every other pack change does: at the next launch.
+class _Pack extends StatelessWidget {
+  const _Pack(this.manifest, {required this.tier});
+
+  final PackManifest manifest;
+  final Tier tier;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(manifest.name,
+                            style: const TextStyle(fontSize: 13)),
+                      ),
+                      if (manifest.tier.isPro && !tier.isPro) ...[
+                        const SizedBox(width: 6),
+                        const ProBadge(),
+                      ],
+                    ],
+                  ),
+                  if (manifest.summary.isNotEmpty)
+                    Text(
+                      manifest.summary,
+                      style:
+                          const TextStyle(fontSize: 11, color: VdColors.dim),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              '${manifest.items.length}',
+              style: vdMono.copyWith(color: VdColors.dim),
+            ),
+          ],
+        ),
+      );
+}
 
 /// A purchase that has run out. Shown on the offer side, because that is
 /// where somebody with a lapsed subscription lands — and "your subscription

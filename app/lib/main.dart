@@ -8,6 +8,7 @@ import 'app/workspace.dart';
 import 'dev/self_test.dart';
 import 'media/fonts.dart';
 import 'media/looks.dart';
+import 'media/packs.dart';
 import 'ui/editor_screen.dart';
 import 'ui/new_project_dialog.dart';
 import 'ui/start_screen.dart';
@@ -55,6 +56,15 @@ class _VdodtorAppState extends State<VdodtorApp> {
     if (widget.workspace.stage != WorkspaceStage.failed) {
       await BundledLooks.load(
           library: BundledLooks.libraryOf(widget.workspace.paths.support));
+
+      // After the built-in looks and before any project, for the same reason:
+      // a clip naming a look that is not registered yet renders ungraded and
+      // registering it afterwards would not redraw the frame. Every pack is
+      // registered whatever the tier says — a locked look still has to draw
+      // for anybody whose project already names it. See lib/media/packs.dart.
+      await ContentPacks.load(
+          installed:
+              ContentPacks.libraryOf(widget.workspace.paths.support));
     }
 
     if (selfTestRequested &&

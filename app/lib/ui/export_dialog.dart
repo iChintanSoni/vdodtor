@@ -235,7 +235,7 @@ class _ExportDialogState extends State<_ExportDialog> {
                   ? Row(mainAxisSize: MainAxisSize.min, children: [
                       Text(resolution.label),
                       const SizedBox(width: 6),
-                      const _ProBadge(),
+                      const ProBadge(),
                     ])
                   : Text(resolution.label),
               selected: resolution == _plan.resolution,
@@ -353,7 +353,7 @@ class _ProGate extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const _ProBadge(),
+            const ProBadge(),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -386,31 +386,6 @@ class _ProGate extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      );
-}
-
-/// The badge on a locked chip and on the gate. Small, and not red: this is a
-/// price, not an error.
-class _ProBadge extends StatelessWidget {
-  const _ProBadge();
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-        decoration: BoxDecoration(
-          color: VdColors.accent.withValues(alpha: 0.18),
-          borderRadius: BorderRadius.circular(3),
-          border: Border.all(color: VdColors.accent.withValues(alpha: 0.5)),
-        ),
-        child: const Text(
-          'PRO',
-          style: TextStyle(
-            fontSize: 9,
-            letterSpacing: 0.6,
-            fontWeight: FontWeight.w700,
-            color: VdColors.accent,
-          ),
         ),
       );
 }

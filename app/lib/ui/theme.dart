@@ -64,3 +64,32 @@ ThemeData vdodtorTheme() {
 /// The monospace face used for anything the eye has to compare across rows:
 /// timecode, frame counts, milliseconds.
 const TextStyle vdMono = TextStyle(fontFamily: 'Menlo', fontSize: 12);
+
+/// The mark on anything that needs Pro: a locked export size, a look out of a
+/// paid pack, the panel that says so.
+///
+/// Small, and not red — this is a price, not an error. Shared rather than
+/// redrawn in each sheet so that the one thing in the app that says "this
+/// costs money" looks the same everywhere it appears.
+class ProBadge extends StatelessWidget {
+  const ProBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: VdColors.accent.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: VdColors.accent.withValues(alpha: 0.5)),
+        ),
+        child: const Text(
+          'PRO',
+          style: TextStyle(
+            fontSize: 9,
+            letterSpacing: 0.6,
+            fontWeight: FontWeight.w700,
+            color: VdColors.accent,
+          ),
+        ),
+      );
+}

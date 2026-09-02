@@ -215,10 +215,8 @@ final class LicenceVerifier {
       return const LicenceCheck.rejected(LicenceProblem.unrecognised);
     }
 
-    final Uint8List trusted;
-    try {
-      trusted = _unhex(publicKey);
-    } on FormatException {
+    final trusted = Ed25519.keyFromHex(publicKey);
+    if (trusted == null) {
       return const LicenceCheck.rejected(LicenceProblem.forged);
     }
 
@@ -363,15 +361,4 @@ String _encode(List<int> bytes) =>
 Uint8List _decode(String text) {
   final padded = text.padRight((text.length + 3) & ~3, '=');
   return base64Url.decode(padded);
-}
-
-Uint8List _unhex(String text) {
-  if (text.length.isOdd) throw const FormatException('odd-length hex');
-  final out = Uint8List(text.length ~/ 2);
-  for (var i = 0; i < out.length; i++) {
-    final byte = int.tryParse(text.substring(i * 2, i * 2 + 2), radix: 16);
-    if (byte == null) throw FormatException('not hex', text, i * 2);
-    out[i] = byte;
-  }
-  return out;
 }

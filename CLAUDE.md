@@ -35,10 +35,11 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
            access — `lib/pro` — what this installation has paid for, and the signed
            licence that says so — and `lib/ui`);
            `assets/fonts` holds the five OFL faces a caption can be set in, and
-           `assets/luts` the five .cube looks a clip can wear;
-           `tool/licence.dart` is the fulfilment side — keygen, sign, check — sharing
-           `lib/pro/licence.dart` with the app so a minted key is readable by
-           construction
+           `assets/luts` the five .cube looks a clip can wear, and `assets/packs`
+           the signed content packs it ships;
+           `tool/licence.dart` and `tool/pack.dart` are the fulfilment side — keygen,
+           sign, check, build — sharing `lib/pro/licence.dart` and `lib/pro/pack.dart`
+           with the app, so what they mint is readable by construction
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture, the open panel / drop target
                              and the one call that opens a URL in the browser
@@ -55,7 +56,9 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
            vd_engine (transport), vd_thumbnail, vd_peaks
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
-           make_luts.dart  — writes the bundled looks from the formulae in it
+           make_luts.dart  — writes every look from the formulae in it: the built-in
+                             five into app/assets/luts, a pack's into build/packs/<id>
+                             beside the manifest tool/pack.dart signs
 ```
 
 ### Commands
@@ -83,6 +86,13 @@ flutter run -d macos
 dart run tool/licence.dart sign --key <seed from tool/licence_dev_key.txt> \
     --id DEV-0001 --name "Ada Lovelace"
 dart run tool/licence.dart check VDO1.…
+
+# rebuild the shipped content pack (needed whenever a look's formula changes, and
+# whenever the signing key does — a pack is verified against the same constant):
+dart run tools/make_luts.dart                 # from the repo root
+cd app && dart run tool/pack.dart build --from ../build/packs/cinema \
+    --key <seed> --out assets/packs/cinema.vdpack
+dart run tool/pack.dart show assets/packs/cinema.vdpack
 
 # after changing any engine header:
 cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
@@ -222,6 +232,33 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   true and stops by itself when the constant is replaced — the swap is the first item
   under Packaging in PLAN.md, and forgetting it gives Pro away to anybody who reads
   GitHub.
+- **A content pack is a signed file, and a locked item changes what may be *chosen*,
+  never what is *drawn*.** `.vdpack` is a manifest — what it is, what it costs, what it
+  contains — plus the files and an Ed25519 signature over the lot; `lib/media/packs.dart`
+  reads the packs the app ships and the packs somebody installed through one function, so
+  the built-in Cinema pack and a download from 2031 arrive the same way. Every pack
+  registers with the engine at launch **whatever the tier says**, so a project graded
+  while somebody had Pro renders identically after a subscription lapses, on a machine
+  that never had one, and in an export years later. The gate is in the picker and nowhere
+  else — `ExportPlan.isPermitted`'s rule applied to content, and for the same reason: a
+  finished film must not change when a card expires. Locked looks are listed and badged
+  and pressing one opens the Pro sheet, because somebody deciding whether to buy should
+  see what is in it.
+- **A pack is signed for a different reason than a licence is.** The tier decides who may
+  *use* content, which is about money. The signature decides whose bytes reach a
+  *parser*, which is not: a `.cube` goes through forty lines of our own arithmetic in
+  `vd_lut.c`, but a pack can carry a typeface and a typeface goes to Core Text. The
+  **signed container is what is stored**, not its unpacked contents, and it is re-read at
+  every launch — loose files on disk are files anybody can replace. A user's own single
+  `.cube` still loads unsigned, which is the line: one file, one format we wrote the
+  reader for. Ids and file names inside a manifest become a directory and a file under
+  Application Support, so both are checked against a pattern rather than trusted.
+- **A pack carries looks and faces, and that is all it can carry today.** A transition is
+  a `VdTransitionPreset` — an index into `vd_transition.c`, not a file — so a pack could
+  only name one that exists; carrying a new one means parameterising transitions first. A
+  template would be a project file used as a starting point, and "new from template" does
+  not exist. `PackContentKind` says both out loud in a comment and gains a value when
+  either arrives: it crosses no boundary and is stored nowhere, so appending is free.
 - **A cancelled or failed export leaves no file.** Half a video plays, looks finished,
   and is missing its ending, which is the part nobody checks. `vd_export_destroy` removes
   anything that is not a completed export, and destroying a running one cancels it first.
