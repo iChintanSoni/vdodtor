@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../app/workspace.dart';
 import '../pro/licensing.dart';
+import 'about_dialog.dart';
 import 'licence_dialog.dart';
 import 'theme.dart';
 
@@ -169,6 +170,15 @@ class _Tier extends StatelessWidget {
                       : 'Free — the whole editor, up to 1080p, no watermark.',
                   style: const TextStyle(fontSize: 11, color: VdColors.dim),
                 ),
+              ),
+              // The one place in the app that opens the About sheet, and
+              // deliberately here rather than in the editor bar: this is the
+              // window every launch starts in, which is what "prominent
+              // notice" means for the LGPL libraries the sheet lists — and
+              // the editor's bar is for editing.
+              TextButton(
+                onPressed: () => unawaited(showAboutSheet(context)),
+                child: const Text('About…'),
               ),
               TextButton(
                 onPressed: () => unawaited(

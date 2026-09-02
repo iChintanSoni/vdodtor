@@ -36,7 +36,8 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
            licence that says so — and `lib/ui`);
            `assets/fonts` holds the five OFL faces a caption can be set in, and
            `assets/luts` the five .cube looks a clip can wear, and `assets/packs`
-           the signed content packs it ships;
+           the signed content packs it ships, and `assets/notices` what is in
+           vdodtor that we did not write and the licence it is under;
            `tool/licence.dart` and `tool/pack.dart` are the fulfilment side — keygen,
            sign, check, build — sharing `lib/pro/licence.dart` and `lib/pro/pack.dart`
            with the app, so what they mint is readable by construction
@@ -59,6 +60,8 @@ tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ff
            make_luts.dart  — writes every look from the formulae in it: the built-in
                              five into app/assets/luts, a pack's into build/packs/<id>
                              beside the manifest tool/pack.dart signs
+           make_notices.dart — writes app/assets/notices from what is vendored
+           package_mac.sh  — build, check, sign, notarize, DMG
 ```
 
 ### Commands
@@ -93,6 +96,16 @@ dart run tools/make_luts.dart                 # from the repo root
 cd app && dart run tool/pack.dart build --from ../build/packs/cinema \
     --key <seed> --out assets/packs/cinema.vdpack
 dart run tool/pack.dart show assets/packs/cinema.vdpack
+
+# a disk image. --adhoc is a build to look at; a real one needs a Developer ID
+# Application certificate and an `xcrun notarytool store-credentials` profile:
+tools/package_mac.sh --adhoc                 # from the repo root
+tools/package_mac.sh --identity "Developer ID Application: … (TEAMID)" \
+    --profile vdodtor
+
+# after re-vendoring FFmpeg, so the licence notice describes what is shipped
+# (package_mac.sh refuses to build a DMG if this would change anything):
+dart run tools/make_notices.dart
 
 # after changing any engine header:
 cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
@@ -259,6 +272,42 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   template would be a project file used as a starting point, and "new from template" does
   not exist. `PackContentKind` says both out loud in a comment and gains a value when
   either arrives: it crosses no boundary and is stored nowhere, so appending is free.
+- **The licence notice is generated, and it is compared to what actually shipped.**
+  `tools/make_notices.dart` writes `app/assets/notices/` out of
+  `third_party/ffmpeg/BUILD_INFO.txt` and the `OFL-*.txt` files — version, source URL,
+  checksum, the whole `configure` line, how to build a replacement library and drop it
+  in, and the LGPL 2.1 §3(b) written offer. Generated for `make_luts.dart`'s reason
+  turned up one notch: a notice hand-edited beside a re-vendored library says 7.1 over
+  a 9.0.1, and a licence obligation described inaccurately is the one kind of staleness
+  worse than a crash. `app/test/app/about_test.dart` reads the *shipped* file and the
+  vendored one and makes them agree, the way `vd_lut_test.c` reads the shipped cubes.
+  It is an **asset** rather than a file beside the DMG, and `showAboutSheet` is on the
+  chooser rather than in the editor bar: LGPL 2.1 §6 wants the user given prominent
+  notice, a disk image is a thing people throw away the day they mount it, and the
+  chooser is the window every launch starts in. The same two files go into the image as
+  well, because somebody deciding whether to install should not have to install first.
+- **A universal dylib has a signature per slice, and `codesign -dvv` only shows you
+  one.** On Apple Silicon the linker ad-hoc signs the arm64 binary it produces and
+  leaves a cross-built x86_64 one bare, so `lipo -create` yields a file that reports
+  itself signed — it reports the native slice — and that `codesign --sign` refuses with
+  "code object is not signed at all" when it recurses into a framework holding it. The
+  error names the *framework*, two levels up from the cause, and it only appears when
+  something signs a bundle: every `flutter run` worked while `flutter build macos
+  --release` had never once succeeded. `tools/build_ffmpeg.sh` signs each universal
+  file after lipo and verifies `--arch arm64` **and** `--arch x86_64`.
+- **Signing is inside out, and the entitlements go on the app alone.** A framework's
+  seal covers its contents, so `tools/package_mac.sh` signs the FFmpeg dylibs, then the
+  frameworks, then the app — sign them the other way round and the bundle verifies on
+  the machine that built it and is refused everywhere else. Nested code gets no
+  entitlements: the sandbox belongs to the app, and a framework carrying its own copy is
+  how "the app is not sandboxed after all" happens. Embedded libraries are checked
+  against the vendored ones on **LC_UUID**, not on bytes or cdhash — a dylib is signed
+  three times on its way into a bundle and each signature changes both, while the UUID
+  is what the linker stamped in. And `--adhoc` deliberately omits the hardened runtime:
+  it turns on library validation, which wants one Team ID across everything a process
+  maps, and an ad-hoc signature has no team — the app dies in `dyld` before it draws a
+  window. A Developer ID gives everything one team; disabling library validation to
+  make a test build launch would be turning off the thing being tested.
 - **A cancelled or failed export leaves no file.** Half a video plays, looks finished,
   and is missing its ending, which is the part nobody checks. `vd_export_destroy` removes
   anything that is not a completed export, and destroying a running one cancels it first.

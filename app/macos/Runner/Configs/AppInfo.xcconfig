@@ -11,4 +11,8 @@ PRODUCT_NAME = vdodtor
 PRODUCT_BUNDLE_IDENTIFIER = com.vdodtor.vdodtor
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.vdodtor. All rights reserved.
+// Reaches NSHumanReadableCopyright, which is what the standard About panel
+// and the Finder's Get Info both read. Mirrored by `About.copyright` in
+// lib/app/about.dart so the sheet and the bundle say the same thing;
+// test/app/about_test.dart is what makes them.
+PRODUCT_COPYRIGHT = Copyright © 2026 Chintan Soni
