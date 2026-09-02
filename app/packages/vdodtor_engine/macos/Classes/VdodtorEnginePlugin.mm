@@ -3,6 +3,7 @@
 #import <CoreVideo/CoreVideo.h>
 
 #import "VdMediaAccess.h"
+#import "VdSystem.h"
 
 #include "vdodtor/vd_engine.h"
 
@@ -48,9 +49,10 @@ static void vd_on_frame(void *context) {
   [registrar addMethodCallDelegate:instance channel:channel];
 
   // The generated registrant only knows about one plugin class per package,
-  // so the file-access half registers from here rather than growing a second
-  // entry in someone's build file.
+  // so the file-access half and the URL opener register from here rather than
+  // growing entries in someone's build file.
   [VdMediaAccess registerWithRegistrar:registrar];
+  [VdSystem registerWithRegistrar:registrar];
 }
 
 - (instancetype)initWithRegistrar:

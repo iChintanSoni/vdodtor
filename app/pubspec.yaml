@@ -35,6 +35,12 @@ dependencies:
   vdodtor_engine:
     path: packages/vdodtor_engine
 
+  # `@immutable` and friends, so that lib/pro/licence.dart can be annotated
+  # like the rest of the model without importing Flutter. It must not: the
+  # same file is compiled into `tool/licence.dart`, which runs under plain
+  # `dart run`, where `dart:ui` does not exist.
+  meta: ^1.16.0
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8

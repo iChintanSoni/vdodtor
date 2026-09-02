@@ -1,0 +1,24 @@
+# The development licence signing key.
+#
+# THIS IS NOT THE RELEASE KEY AND MUST NEVER BECOME ONE. Its private half is
+# in this file, in a public repository, which means anybody can mint a licence
+# that a build made from this source will accept. That is exactly what it is
+# for: it lets the whole purchase flow be exercised, and it lets the tests mint
+# licences without a secret in the source tree.
+#
+# Before the first signed build:
+#
+#   dart run tool/licence.dart keygen
+#
+# then paste the public half into `vdodtorSigningKey` in lib/pro/licence.dart
+# and put the private half in the fulfilment webhook's secret store — never
+# here, and never anywhere `git` can see it. Until that happens the licence
+# sheet says out loud that this build trusts a key anybody can sign for.
+#
+# Mint one for testing with:
+#
+#   dart run tool/licence.dart sign --key $(grep '^seed ' tool/licence_dev_key.txt | cut -d' ' -f2) \
+#       --id DEV-0001 --name "Ada Lovelace"
+
+seed e1874f8b33bde78bb7b8235ba8d9f2bf70fff8685c0213bdff478b7e3f8c8de9
+public 5f3cf3677bf66619b0a886221a2042ec50aab4e25b105541b17a9d9961a4957c

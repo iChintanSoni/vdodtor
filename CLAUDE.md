@@ -32,11 +32,16 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 ```
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
            `lib/media` — import, thumbnails, waveforms, bundled fonts, sandbox file
-           access — `lib/pro` — what this installation has paid for — and `lib/ui`);
+           access — `lib/pro` — what this installation has paid for, and the signed
+           licence that says so — and `lib/ui`);
            `assets/fonts` holds the five OFL faces a caption can be set in, and
-           `assets/luts` the five .cube looks a clip can wear
+           `assets/luts` the five .cube looks a clip can wear;
+           `tool/licence.dart` is the fulfilment side — keygen, sign, check — sharing
+           `lib/pro/licence.dart` with the app so a minted key is readable by
+           construction
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
-                             CMake, the preview texture and the open panel / drop target
+                             CMake, the preview texture, the open panel / drop target
+                             and the one call that opens a URL in the browser
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_transition (how one clip becomes the next),
            vd_color (five grading sliders as one matrix),
@@ -69,8 +74,15 @@ VD_UPDATE_GOLDENS=1 ctest --test-dir build/engine -R 'golden|parity'
 
 cd app
 flutter pub get && flutter test
-dart analyze --fatal-infos lib test
+dart analyze --fatal-infos lib test tool
 flutter run -d macos
+
+# mint a licence for a development build (the private half of the release key is
+# not in this repository; this is the development one, and no shipped build may
+# trust it — see the first Packaging item in PLAN.md):
+dart run tool/licence.dart sign --key <seed from tool/licence_dev_key.txt> \
+    --id DEV-0001 --name "Ada Lovelace"
+dart run tool/licence.dart check VDO1.…
 
 # after changing any engine header:
 cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
@@ -166,7 +178,50 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   a free installation with a 4K project opens on 1080p, not on a locked button — and a
   locked chip is still selectable, so the numbers under it are real and the refusal is on
   the button. `Entitlement` is a `ChangeNotifier` because buying happens while that sheet
-  is open; nothing calls `grant` yet, which is the seam licensing plugs into.
+  is open — the gate lifts under the user, keeping the 4K they had chosen — and what
+  calls `grant` is `Licensing`, which is the next entry.
+- **A licence is a signed sentence, and the signature is the whole of the check.**
+  `VDO1.<payload>.<signature>`: a few `name value` lines naming the order, the buyer,
+  the tier and — for a subscription — its date, under an Ed25519 signature.
+  `app/lib/pro/ed25519.dart` is RFC 8032 over `BigInt` with SHA-512 beside it, written
+  rather than depended on because a package in the path between somebody paying and
+  being let in is a third party who can break it, and because a pure-Dart check is one
+  `flutter test` can reach. Symmetric anything — HMAC, a hashed email, a serial with a
+  checksum — would ship the secret that mints keys inside the app that checks them;
+  public-key signing is the only arrangement where the verifier cannot also write one.
+  **The signature covers the bytes that arrived and parsing happens afterwards**, so a
+  key carrying a field this build has never heard of still opens it and a change to how
+  the writer spaces a line cannot invalidate a licence already sold. And because
+  nothing can ever be revoked — whatever is signed is true forever on every machine —
+  the payload says as little as possible: no device count, because a number nobody can
+  check only inconveniences the people who paid.
+- **The tier is settled once, at launch, and the engine never hears about any of it.**
+  `Licensing` reads the licence, decides, and grants a `Tier` to the `Entitlement`
+  widgets listen to; nothing below that line knows a licence exists, which is what
+  keeps `ExportPlan.isPermitted` the one predicate. Nothing re-checks while the app
+  runs: taking Pro away mid-export to enforce a date that passed while somebody was
+  working is the one thing this product promises not to do. `Tier` lives in its own
+  file with no Flutter import so `app/tool/licence.dart` can build payloads with the
+  same enum the app reads them back with, under plain `dart run` where `dart:ui` does
+  not exist.
+- **The checkout is an address we own, and the licence file is one the user can read.**
+  The button opens `vdodtor.app/pro`, which redirects to whichever hosted checkout is
+  current — Paddle, Lemon Squeezy, both, neither in five years — so switching provider
+  never needs a new build, and a 2026 build still sells in 2031. The licence itself is
+  one file in Application Support holding the key verbatim: not the keychain, because a
+  receipt should be findable and copyable onto the next machine, and not obfuscated,
+  because patching the tier in a hex editor is quicker than any scrambling would be to
+  write. Deactivating removes it from *this* Mac and does not use it up, and the sheet
+  says so — a deactivation that reads like a cancellation stops people doing the safe
+  thing. A lapsed licence is kept rather than deleted, with a fortnight of grace, so
+  the sheet can say whose subscription ended and when.
+- **The signing key that ships today is a development one, and the app says so.**
+  Its private half is in `app/tool/licence_dev_key.txt`, which is correct while nothing
+  is sold and is what lets the tests mint licences with no secret in the tree. The
+  licence sheet carries a warning for exactly as long as `isDevelopmentSigningKey` is
+  true and stops by itself when the constant is replaced — the swap is the first item
+  under Packaging in PLAN.md, and forgetting it gives Pro away to anybody who reads
+  GitHub.
 - **A cancelled or failed export leaves no file.** Half a video plays, looks finished,
   and is missing its ending, which is the part nobody checks. `vd_export_destroy` removes
   anything that is not a completed export, and destroying a running one cancels it first.

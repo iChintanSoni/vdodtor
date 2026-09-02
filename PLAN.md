@@ -22,8 +22,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > both clocks against one committed picture each, so "preview and export differ in the
 > clock and in nothing else" is a test rather than a sentence. **The resolution gate is
 > in too**: above 1080p needs Pro, the sheet says so in the one place in the app that
-> says no, and the tier changes what may be written and never what is written. What is
-> left in M4 is licensing, the Pro content packs and packaging.
+> says no, and the tier changes what may be written and never what is written. **And
+> licensing is in**: a licence key is a signed sentence, checked on this machine with no
+> network, no account and nothing to sign into, so the whole purchase flow works on a
+> plane. What is left in M4 is the Pro content packs and packaging.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1661,11 +1663,88 @@ look, one slow-mo moment) entirely in vdodtor.
       that is the seam the next item plugs into, and until it does every installation
       is free, which is the honest default. An editor that let 4K through because the
       licence check had not been written would be one that had to start refusing later.
-- [ ] Licensing: Paddle or Lemon Squeezy checkout; offline-friendly license validation;
+- [x] Licensing: Paddle or Lemon Squeezy checkout; offline-friendly license validation;
       restore/deactivate flow
+      **A licence key is a signed sentence, and the signature is the whole of the
+      check.** `VDO1.<payload>.<signature>`: a few lines of `name value` text
+      naming the order, the buyer, the tier and — for a subscription — the date it
+      runs out, with an Ed25519 signature over them. Verifying it is arithmetic on
+      the bytes in front of it. No server is contacted, no account exists to sign
+      into, and the editor works exactly the same on a plane as it does on a
+      desk — which is not an optimisation but the product: the brief sells an
+      editor with no account, and one that had to ask permission before letting
+      somebody export would have an account whatever the sign-up screen said.
+      **Why public-key and not a code.** Anything symmetric — a hash of the buyer's
+      email, an HMAC, a serial with a checksum — ships the secret that mints keys
+      inside the app that checks them, so the first person to look can print their
+      own. Public-key signing is the only arrangement in which the thing that
+      *verifies* a licence cannot *write* one, and that asymmetry is the entire
+      feature. `app/lib/pro/ed25519.dart` is RFC 8032 in 260 lines over `BigInt`,
+      with SHA-512 beside it; both are pinned by the RFC's own vectors and by one
+      this repository generated with OpenSSL, and the tamper test flips every one
+      of a signature's 64 bytes rather than the first. It is written rather than
+      depended on because a package in the path between somebody paying and being
+      let in is a third party who can break that path, and because a pure-Dart
+      check is one `flutter test` can reach — which is what gives the whole flow
+      tests at all, and what will give the Windows port the same ones.
+      Two decisions inside the format are worth the ink. **The signature covers the
+      bytes that arrived, and parsing happens afterwards** — verifying a
+      *re-encoding* would mean a licence stopped working the day the writer changed
+      how it spaced a field, and it would let a line this build cannot read change
+      what was checked. So a key written by a later fulfilment tool, carrying
+      something this build has never heard of, still opens it. And **the consequence
+      to design around is that a licence cannot be revoked**: whatever is signed is
+      true forever on every machine. So it says as little as possible — no device
+      count, because a number nobody can check only inconveniences the people who
+      paid.
+      **Checkout is an address we own, not the shop's.** The button opens
+      `vdodtor.app/pro`, which redirects to whichever hosted checkout we are running;
+      Paddle and Lemon Squeezy are both merchants of record and either can be behind
+      it, or both, or neither in five years. A build from 2026 has to keep working in
+      2031, and a provider's checkout URL baked into it is the part most likely to
+      have been retired by then. That is the whole of this item's "Paddle or Lemon
+      Squeezy": the app has no opinion, and switching never needs a new build.
+      **Restore and deactivate are what they can honestly be with no server.** The
+      licence is one file in Application Support holding the key exactly as it was
+      pasted — not the keychain, because a receipt is a thing people should be able
+      to find and copy out for their next machine, and not obfuscated, because
+      patching the tier in a hex editor is quicker than any scrambling would be to
+      write. Restore is the key itself: the app reads it at launch, and
+      `vdodtor.app/licence` finds it again by the email it was bought with. Deactivate
+      removes it from *this* Mac and says out loud that doing so does not use it up —
+      it is for a machine being sold, and a deactivation that read like a cancellation
+      would stop people doing the thing that is actually safe.
+      Two smaller ones. A lapsed subscription is **kept, not deleted**: "your
+      subscription ended on the 3rd of February" is an answer where "you are on the
+      free tier" is a shrug, and there is a fortnight of grace after the date because
+      a renewal receipt arriving on Tuesday must not stop an export on Monday night.
+      And the tier is settled **once**, at launch — an editor that took Pro away
+      mid-export to enforce a date that passed while somebody was working would be
+      doing the one thing this product promises not to.
+      `app/tool/licence.dart` is the fulfilment side — `keygen`, `sign`, `check` — and
+      it shares `lib/pro/licence.dart` with the app rather than reimplementing the
+      format, so a key it prints is one the app can read by construction; it refuses
+      to print one the verifier rejects, because the first failure would otherwise be
+      somebody's receipt. It is why `Tier` moved into its own file: the tool runs
+      under plain `dart run`, where `dart:ui` does not exist.
+      **The build says out loud that it trusts a key anybody can sign for.** The
+      signing key shipped today is a development one whose private half is in
+      `app/tool/licence_dev_key.txt`, which is correct while nothing is being sold and
+      is what lets the tests mint licences without a secret in the source tree. The
+      licence sheet carries a warning for exactly as long as that is true, and it
+      disappears by itself when the constant is replaced — see the Packaging item
+      below.
 - [ ] Pro content packs plumbing (LUTs, transitions, templates, fonts)
 
 ### Packaging
+- [ ] Replace the development licence signing key before the first signed build
+      `dart run tool/licence.dart keygen`, paste the public half into
+      `vdodtorSigningKey` in `app/lib/pro/licence.dart`, and put the private half in
+      the fulfilment webhook's secret store — never in this repository. Until then
+      every build trusts the key in `app/tool/licence_dev_key.txt`, which anybody can
+      sign with; the licence sheet says so on screen while that is the case, and stops
+      the moment the constant changes. Shipping without doing this gives Pro away to
+      anybody who reads GitHub.
 - [ ] Signed + notarized DMG; auto-update channel
 - [ ] Opt-in crash reporting; analytics none-or-anonymous (positioning demands restraint)
 

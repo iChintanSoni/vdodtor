@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app/workspace.dart';
+import '../pro/licensing.dart';
+import 'licence_dialog.dart';
 import 'theme.dart';
 
 /// The window before a project is open: make one, or pick up where you left
@@ -125,6 +129,8 @@ class StartScreen extends StatelessWidget {
                           ),
                         ),
                 ),
+                const Divider(height: 1, color: VdColors.line),
+                _Tier(licensing: workspace.licensing),
               ],
             ),
           ),
@@ -132,6 +138,48 @@ class StartScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One line at the bottom of the chooser saying what this installation is,
+/// and the only door to the Pro sheet that is not a refusal.
+///
+/// The sheet has to be reachable when nothing is being blocked: restoring a
+/// key on a new machine and taking one off an old one both happen when
+/// nobody is trying to export anything, and an offer that only appears at
+/// the moment of saying no is an offer somebody has to trigger a refusal to
+/// find. It is a status line rather than a banner — the promise at the head
+/// of this file is that the chooser has no upsell on it, and a sentence
+/// stating what you already have is not one.
+class _Tier extends StatelessWidget {
+  const _Tier({required this.licensing});
+
+  final Licensing licensing;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: licensing,
+        builder: (context, _) => Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  licensing.isPro
+                      ? 'vdodtor Pro'
+                      : 'Free — the whole editor, up to 1080p, no watermark.',
+                  style: const TextStyle(fontSize: 11, color: VdColors.dim),
+                ),
+              ),
+              TextButton(
+                onPressed: () => unawaited(
+                  showLicenceDialog(context, licensing: licensing),
+                ),
+                child: Text(licensing.isPro ? 'Licence…' : 'vdodtor Pro…'),
+              ),
+            ],
+          ),
+        ),
+      );
 }
 
 class _EmptyProjects extends StatelessWidget {
