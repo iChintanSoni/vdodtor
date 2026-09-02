@@ -38,8 +38,11 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > notice is generated from the files actually vendored — version, checksum, configure
 > line, the written source offer, how to build a replacement and drop it in — and shows
 > on the chooser's About sheet, because a disk image is a thing people throw away the
-> day they mount it. What is left in M4 is an update channel, crash reporting, and the
-> signing key.
+> day they mount it. **And the update question is settled**: there is no updater, on
+> purpose — vdodtor has no network entitlement, so it cannot open a socket at all, and
+> "Check for updates…" opens the download page in the browser. A promise anybody can
+> verify with `codesign -d --entitlements` is worth more than telling people about a
+> point release. What is left in M4 is crash reporting and the signing key.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1878,12 +1881,33 @@ look, one slow-mo moment) entirely in vdodtor.
       notice and a disk image is a thing people throw away the day they mount it;
       the same two files go into the image as well, beside the OFL licences, because
       somebody deciding whether to install should not have to install first.
-- [ ] Auto-update channel
-      Split off the item above because it is a different question: an editor whose
+- [x] Update channel — **decided: there is no updater, and that is the feature**
+      Split off the DMG item because it was a different question: an editor whose
       pitch is "no account, fully offline" has to decide what it is willing to ask
-      the network for, and the answer is not obvious. It is also the one piece of
-      shipping machinery that cannot be built and tested without somewhere to serve
-      an appcast from.
+      the network for. The answer is nothing. vdodtor ships with **no
+      `com.apple.security.network.client` entitlement**, so it cannot open a socket
+      at all, and "Check for updates…" in the About sheet opens `vdodtor.app/download`
+      in the **browser** — which needs no entitlement, because it is the browser doing
+      the asking.
+      **Why that is worth more than a notification.** A sandboxed app with no network
+      entitlement is *verifiably* incapable of sending anything anywhere: anybody can
+      check it in ten seconds with `codesign -d --entitlements`, where a privacy policy
+      is a claim they have to take on faith. The positioning table names CapCut's
+      "ByteDance baggage" as a weakness to exploit, and the exploit is not a better
+      promise — it is a promise somebody else can verify. Telling people about a point
+      release is not worth giving that up, and a signed appcast is also a feed we would
+      have to keep serving for as long as any build is alive.
+      **What it costs, said out loud rather than discovered.** Nobody is ever notified,
+      so people stay on the version they installed until they come back to the site. So
+      the sheet *says* there is no updater — an app that never mentions a new version is
+      unusual enough that silence reads as an updater that is broken — and the version
+      line is selectable, because with no updater the version number is a thing people
+      have to read out into a bug report.
+      Two tests hold it: `app/test/app/about_test.dart` asserts `Release.entitlements`
+      grants no network, and scans `lib/` for `HttpClient`, `WebSocket` and friends. The
+      second is the useful one — a socket added here fails inside the sandbox, which is
+      a user's bug report rather than a red test, and outside it, under `flutter run`, it
+      would appear to work perfectly.
 - [ ] Opt-in crash reporting; analytics none-or-anonymous (positioning demands restraint)
 
 **Exit criteria:** a stranger can download the DMG, edit a video, hit the 4K gate,
