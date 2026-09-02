@@ -51,6 +51,10 @@ final class Licensing extends ChangeNotifier {
 
   bool get isPro => entitlement.isPro;
 
+  /// What this installation may do, as a value. The sheet asks for the tier
+  /// rather than the yes/no when it has more than two things to say.
+  Tier get tier => entitlement.tier;
+
   /// True when this build trusts a signing key whose private half is public.
   /// Surfaced so the sheet can say so; see [vdodtorSigningKey].
   bool get isDevelopmentBuild => isDevelopmentSigningKey;

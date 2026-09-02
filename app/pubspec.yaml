@@ -80,6 +80,12 @@ flutter:
     # which is the only thing that grades. See lib/media/looks.dart.
     - assets/luts/
 
+    # The content packs the app ships inside itself. Signed `.vdpack` files,
+    # read at startup by exactly the code that reads one somebody installs
+    # later — see lib/media/packs.dart. Built by tools/make_luts.dart and
+    # tool/pack.dart; the pipeline is in CLAUDE.md.
+    - assets/packs/
+
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.

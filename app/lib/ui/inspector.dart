@@ -4,12 +4,13 @@ import 'package:flutter/material.dart';
 
 import '../commands/document_store.dart';
 import '../commands/edits.dart';
-import '../media/fonts.dart';
 import '../media/looks.dart';
+import '../media/packs.dart';
 import '../model/clip.dart';
 import '../model/media.dart';
 import '../model/time.dart';
 import '../model/track.dart';
+import '../pro/tier.dart';
 import 'theme.dart';
 import 'timeline/timeline_controller.dart';
 
@@ -19,9 +20,28 @@ import 'timeline/timeline_controller.dart';
 /// clip, and averaging four clips' rotations into one slider would be a lie
 /// that is hard to notice and harder to undo.
 class Inspector extends StatelessWidget {
-  const Inspector({super.key, required this.timeline, this.onLoadLook});
+  const Inspector({
+    super.key,
+    required this.timeline,
+    this.onLoadLook,
+    this.tier = Tier.free,
+    this.onGetPro,
+  });
 
   final TimelineController timeline;
+
+  /// What this installation may do.
+  ///
+  /// It reaches exactly two controls — the look picker and the font picker —
+  /// and only to decide whether an item out of a paid pack may be *chosen*. It
+  /// never decides what is drawn: a clip already wearing a look from a pack
+  /// goes on wearing it whatever this says. See lib/media/packs.dart.
+  final Tier tier;
+
+  /// Opens the sheet that sells Pro. Null leaves a locked item shown and
+  /// refusing, with nowhere to send anybody — which is what a build with no
+  /// window around it should do.
+  final VoidCallback? onGetPro;
 
   /// Opens a `.cube` and adds it to the user's look library, handing back the
   /// name it went in under — or null if they cancelled or it would not read.
@@ -142,6 +162,8 @@ class Inspector extends StatelessWidget {
               text: caption,
               onChanged: (t) => _setText(clip, t),
               onCommit: _commit,
+              tier: tier,
+              onGetPro: onGetPro,
             ),
           if (drawing != null)
             _ShapeControls(
@@ -165,6 +187,8 @@ class Inspector extends StatelessWidget {
               color: clip.color,
               onChanged: (c) => _setColor(clip, c),
               onCommit: _commit,
+              tier: tier,
+              onGetPro: onGetPro,
               onReset: () {
                 _commit();
                 _store.run(SetClipColor(clip.id, ClipColor.neutral));
@@ -443,11 +467,15 @@ class _TextControls extends StatefulWidget {
     required this.text,
     required this.onChanged,
     required this.onCommit,
+    required this.tier,
+    this.onGetPro,
   });
 
   final ClipText text;
   final ValueChanged<ClipText> onChanged;
   final VoidCallback onCommit;
+  final Tier tier;
+  final VoidCallback? onGetPro;
 
   @override
   State<_TextControls> createState() => _TextControlsState();
@@ -526,6 +554,8 @@ class _TextControlsState extends State<_TextControls> {
         _FontPicker(
           family: t.font,
           onChanged: (font) => _tap(t.copyWith(font: font)),
+          tier: widget.tier,
+          onGetPro: widget.onGetPro,
         ),
         const SizedBox(height: 6),
         _AlignPicker(
@@ -874,27 +904,38 @@ class _KindPicker extends StatelessWidget {
 /// whole question is what the words will look like, and the only honest answer
 /// is to show them.
 class _FontPicker extends StatelessWidget {
-  const _FontPicker({required this.family, required this.onChanged});
+  const _FontPicker({
+    required this.family,
+    required this.onChanged,
+    required this.tier,
+    this.onGetPro,
+  });
 
   /// Empty means the system's face, which is what a project made with a font
   /// this build does not have falls back to.
   final String family;
   final ValueChanged<String> onChanged;
+  final Tier tier;
+  final VoidCallback? onGetPro;
 
   @override
   Widget build(BuildContext context) {
-    final families = BundledFonts.families;
+    final available = ContentPacks.faces;
+    final families = [for (final item in available) item.name];
     // A caption whose face is not in this build still has to show which face
     // it is asking for, or changing anything else about it would silently
     // reset the font.
-    final options = <String>[
-      ...families,
-      if (family.isNotEmpty && !families.contains(family)) family,
+    final options = <ContentItem>[
+      ...available,
+      if (family.isNotEmpty && !families.contains(family))
+        ContentItem(name: family, kind: PackContentKind.font),
     ];
     if (options.isEmpty) return const SizedBox.shrink();
 
     return DropdownButtonFormField<String>(
-      initialValue: options.contains(family) ? family : options.first,
+      initialValue: options.any((o) => o.name == family)
+          ? family
+          : options.first.name,
       isDense: true,
       // The rail is 224 px and "Playfair Display" set in Playfair Display is
       // wider than that; without this the row overflows instead of eliding.
@@ -908,17 +949,24 @@ class _FontPicker extends StatelessWidget {
       items: [
         for (final option in options)
           DropdownMenuItem(
-            value: option,
-            child: Text(
-              option,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13, fontFamily: option),
+            value: option.name,
+            // Set in itself, which is the whole point of a font picker — a
+            // locked face included, because a name in Inter tells nobody
+            // whether it is worth buying.
+            child: _Option(
+              label: option.name,
+              locked: option.isLocked && !tier.isPro,
+              style: TextStyle(fontSize: 13, fontFamily: option.name),
             ),
           ),
       ],
       onChanged: (value) {
-        if (value != null) onChanged(value);
+        if (value == null) return;
+        if (ContentPacks.tierOfFace(value).isPro && !tier.isPro) {
+          onGetPro?.call();
+          return;
+        }
+        onChanged(value);
       },
     );
   }
@@ -1118,16 +1166,21 @@ class _ColorControls extends StatelessWidget {
     required this.onChanged,
     required this.onCommit,
     required this.onReset,
+    required this.tier,
     this.onLoadLook,
+    this.onGetPro,
   });
 
   final ClipColor color;
   final ValueChanged<ClipColor> onChanged;
   final VoidCallback onCommit;
   final VoidCallback onReset;
+  final Tier tier;
 
   /// Opens a `.cube` and puts it on this clip. Null hides the button.
   final VoidCallback? onLoadLook;
+
+  final VoidCallback? onGetPro;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -1224,6 +1277,8 @@ class _ColorControls extends StatelessWidget {
             look: color.look,
             onChanged: (name) => onChanged(color.withLook(name)),
             onCommit: onCommit,
+            tier: tier,
+            onGetPro: onGetPro,
           ),
           // Only once there is something to weaken. A strength slider under
           // "None" is a control that does nothing, and one that stayed put
@@ -1245,8 +1300,8 @@ class _ColorControls extends StatelessWidget {
 
 /// Which look is on this clip, if any.
 ///
-/// The list is [BundledLooks.available] rather than the engine's own
-/// catalogue, and they are the same list: `BundledLooks` is the only thing
+/// The list is [ContentPacks.looks] rather than the engine's own
+/// catalogue, and they are the same list: the app is the only thing
 /// that registers one, and reading it from this side is what lets the rail be
 /// built in a test with no engine alive. A clip wearing a look this
 /// installation does not have still shows the name it is asking for — exactly
@@ -1257,24 +1312,34 @@ class _LookPicker extends StatelessWidget {
     required this.look,
     required this.onChanged,
     required this.onCommit,
+    required this.tier,
+    this.onGetPro,
   });
 
   /// Empty for no look, which is what every clip starts with.
   final String look;
   final ValueChanged<String> onChanged;
   final VoidCallback onCommit;
+  final Tier tier;
+  final VoidCallback? onGetPro;
 
   @override
   Widget build(BuildContext context) {
-    final available = BundledLooks.available;
-    final options = <String>[
-      BundledLooks.none,
+    final available = ContentPacks.looks;
+    final names = [for (final item in available) item.name];
+    final options = <ContentItem>[
+      const ContentItem(name: BundledLooks.none, kind: PackContentKind.look),
       ...available,
-      if (look.isNotEmpty && !available.contains(look)) look,
+      // A look the document names and this build does not have still has to
+      // show, or changing anything else about the clip would silently drop it.
+      if (look.isNotEmpty && !names.contains(look))
+        ContentItem(name: look, kind: PackContentKind.look),
     ];
 
     return DropdownButtonFormField<String>(
-      initialValue: options.contains(look) ? look : BundledLooks.none,
+      initialValue: options.any((o) => o.name == look)
+          ? look
+          : BundledLooks.none,
       isDense: true,
       // The rail is 224 px and a look somebody named after their camera is
       // wider than that; without this the row overflows instead of eliding.
@@ -1288,22 +1353,55 @@ class _LookPicker extends StatelessWidget {
       items: [
         for (final option in options)
           DropdownMenuItem(
-            value: option,
-            child: Text(
-              option.isEmpty ? 'None' : option,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13),
+            value: option.name,
+            child: _Option(
+              label: option.name.isEmpty ? 'None' : option.name,
+              locked: option.isLocked && !tier.isPro,
             ),
           ),
       ],
       onChanged: (value) {
         if (value == null) return;
+        // A locked look is offered, and choosing it opens the sheet instead of
+        // grading the clip. Listing it rather than hiding it is the same
+        // decision the export sheet makes about a locked size: somebody
+        // deciding whether to buy Pro should be able to see what is in it.
+        if (ContentPacks.tierOfLook(value).isPro && !tier.isPro) {
+          onGetPro?.call();
+          return;
+        }
         onChanged(value);
         // Picking one is a whole decision, unlike a drag: the next thing the
         // user does should be its own undo step.
         onCommit();
       },
+    );
+  }
+}
+
+/// One row of a picker that can contain something locked.
+class _Option extends StatelessWidget {
+  const _Option({required this.label, required this.locked, this.style});
+
+  final String label;
+  final bool locked;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: style ?? const TextStyle(fontSize: 13),
+    );
+    if (!locked) return text;
+    return Row(
+      children: [
+        Flexible(child: text),
+        const SizedBox(width: 6),
+        const ProBadge(),
+      ],
     );
   }
 }

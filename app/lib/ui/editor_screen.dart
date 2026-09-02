@@ -21,6 +21,7 @@ import '../model/time.dart';
 import '../pro/licensing.dart';
 import 'export_dialog.dart';
 import 'inspector.dart';
+import 'licence_dialog.dart';
 import 'media_bin.dart';
 import 'shortcut_sheet.dart';
 import 'shortcuts.dart';
@@ -431,10 +432,21 @@ class _EditorScreenState extends State<EditorScreen> {
                         if (_timeline != null) ...[
                           const VerticalDivider(
                               width: 1, color: VdColors.line),
-                          Inspector(
-                            timeline: _timeline!,
-                            onLoadLook:
-                                widget.lookLibrary == null ? null : _loadLook,
+                          // Rebuilt when the tier changes, because buying Pro
+                          // while the rail is open should unlock the looks in
+                          // front of the user rather than after a restart —
+                          // the export sheet listens for the same reason.
+                          AnimatedBuilder(
+                            animation: widget.licensing.entitlement,
+                            builder: (context, _) => Inspector(
+                              timeline: _timeline!,
+                              onLoadLook:
+                                  widget.lookLibrary == null ? null : _loadLook,
+                              tier: widget.licensing.entitlement.tier,
+                              onGetPro: () => unawaited(showLicenceDialog(
+                                  context,
+                                  licensing: widget.licensing)),
+                            ),
                           ),
                         ],
                       ],

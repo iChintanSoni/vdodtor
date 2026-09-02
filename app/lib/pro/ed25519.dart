@@ -78,6 +78,23 @@ abstract final class Ed25519 {
     return _sameBytes(left, right);
   }
 
+  /// The bytes of a public key written as hex, or null if [text] is not
+  /// exactly [keyBytes] bytes of it.
+  ///
+  /// Here rather than beside either caller because both the licence reader and
+  /// the pack reader hold their trusted key as a source constant, and a key
+  /// that will not decode has one answer in both places: refuse.
+  static Uint8List? keyFromHex(String text) {
+    if (text.length != keyBytes * 2) return null;
+    final out = Uint8List(keyBytes);
+    for (var i = 0; i < keyBytes; i++) {
+      final byte = int.tryParse(text.substring(i * 2, i * 2 + 2), radix: 16);
+      if (byte == null) return null;
+      out[i] = byte;
+    }
+    return out;
+  }
+
   /// The public key a 32-byte [seed] produces.
   static Uint8List publicKeyOf(List<int> seed) {
     final scalar = _secretScalar(seed);

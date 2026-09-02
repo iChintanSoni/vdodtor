@@ -1,12 +1,28 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vdodtor/media/packs.dart';
 import 'package:vdodtor/pro/ed25519.dart';
 import 'package:vdodtor/pro/licence.dart';
 import 'package:vdodtor/pro/licence_store.dart';
 import 'package:vdodtor/pro/licensing.dart';
 import 'package:vdodtor/pro/tier.dart';
 import 'package:vdodtor/ui/licence_dialog.dart';
+import 'package:vdodtor/ui/theme.dart';
+
+/// Content goes nowhere: this file is about the sheet, and a widget test has
+/// no engine to register a `.cube` with.
+final class _Nowhere implements ContentSink {
+  const _Nowhere();
+
+  @override
+  void look(String name, Uint8List cube) {}
+
+  @override
+  void font(Uint8List data) {}
+}
 
 /// The disk, held in a variable.
 ///
@@ -49,23 +65,43 @@ String mint({String id = 'LS-1042', String name = 'Ada Lovelace', DateTime? expi
 
 void main() {
   const system = MethodChannel('vdodtor/system');
+  const access = MethodChannel('vdodtor/media_access');
   final opened = <String>[];
+  final panels = <MethodCall>[];
   late _MemoryStore store;
+  late Directory packs;
   final now = DateTime.utc(2026, 9, 2);
 
-  setUp(() {
+  // The catalogue is loaded out here rather than inside a test body: it reads
+  // the bundle and the Packs folder, and `testWidgets` runs its body under a
+  // fake clock where a `dart:io` future never completes. What installing
+  // *does* is `test/media/packs_test.dart`'s subject; this file is about what
+  // the sheet shows.
+  setUp(() async {
     opened.clear();
+    panels.clear();
     store = _MemoryStore();
+    packs = await Directory.systemTemp.createTemp('vdodtor-sheet-packs');
+    await ContentPacks.load(installed: packs, sink: const _Nowhere());
+
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(system, (call) async {
-      opened.add((call.arguments as Map)['url'] as String);
-      return true;
-    });
+      ..setMockMethodCallHandler(system, (call) async {
+        opened.add((call.arguments as Map)['url'] as String);
+        return true;
+      })
+      ..setMockMethodCallHandler(access, (call) async {
+        panels.add(call);
+        // Cancelled, which is the one answer that touches no disk.
+        return <Object?>[];
+      });
   });
 
-  tearDown(() {
+  tearDown(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(system, null);
+      ..setMockMethodCallHandler(system, null)
+      ..setMockMethodCallHandler(access, null);
+    ContentPacks.reset();
+    if (packs.existsSync()) await packs.delete(recursive: true);
   });
 
   Future<Licensing> openSheet(WidgetTester tester) async {
@@ -226,6 +262,41 @@ void main() {
         find.textContaining('does not use it up'),
         findsOneWidget,
       );
+    });
+  });
+
+  group('content packs', () {
+    testWidgets('are listed, with the one that costs money marked',
+        (tester) async {
+      await openSheet(tester);
+
+      expect(find.text('Cinema'), findsOneWidget);
+      expect(find.textContaining('print stock, cross process'), findsOneWidget);
+      expect(find.byType(ProBadge), findsOneWidget);
+    });
+
+    // The pack is on the machine either way; what is being sold is the right
+    // to use it. Hiding it until after the purchase would mean asking somebody
+    // to buy a list of names.
+    testWidgets('lose the badge once Pro is on, and stay listed',
+        (tester) async {
+      store.key = mint();
+      await openSheet(tester);
+
+      expect(find.text('Cinema'), findsOneWidget);
+      expect(find.byType(ProBadge), findsNothing);
+    });
+
+    testWidgets('can be added, through the panel', (tester) async {
+      await openSheet(tester);
+      await tester.ensureVisible(find.text('Install a pack…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Install a pack…'));
+      await tester.pumpAndSettle();
+
+      expect(panels, hasLength(1));
+      expect(panels.single.method, 'pickFiles');
+      expect((panels.single.arguments as Map)['extensions'], ['vdpack']);
     });
   });
 

@@ -13,7 +13,7 @@ import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/media_import.dart';
 import '../media/fonts.dart';
-import '../media/looks.dart';
+import '../media/packs.dart';
 import '../media/peaks.dart';
 import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
@@ -1148,7 +1148,13 @@ Future<void> runLookSelfTest(
   engine.dumpPng('${out.path}/none.png');
   final before = engine.stats;
 
-  for (final name in BundledLooks.available) {
+  // Every look the catalogue offers, the built-in five *and* the ones the
+  // Cinema pack brought — because the tier gates what may be chosen and never
+  // what is drawn, and the way to prove that is to render the locked ones on a
+  // free installation and look at the pictures.
+  final catalogue = ContentPacks.looks;
+  for (final item in catalogue) {
+    final name = item.name;
     for (final strength in const [1.0, 0.5]) {
       store.endGesture();
       store.run(SetClipColor(
@@ -1169,7 +1175,7 @@ Future<void> runLookSelfTest(
       ClipColor(
         temperature: 0.2,
         contrast: 0.2,
-        look: BundledLooks.available.first,
+        look: catalogue.first.name,
         lookStrength: 0.7,
       )));
   store.endGesture();
@@ -1177,11 +1183,14 @@ Future<void> runLookSelfTest(
   engine.dumpPng('${out.path}/corrected_then_looked.png');
 
   final after = engine.stats;
-  stdout.writeln('[selftest] looks: ${BundledLooks.available.length} looks at '
-      'two strengths on ${clip.id} at $at — layers ${before.activeLayers} '
-      'then ${after.activeLayers}, decoders ${before.openDecoders} then '
-      '${after.openDecoders}, cubes uploaded ${before.lutUploads} then '
-      '${after.lutUploads}');
+  final locked = catalogue.where((l) => l.isLocked).length;
+  stdout.writeln('[selftest] looks: ${catalogue.length} looks '
+      '($locked from packs) at two strengths on ${clip.id} at $at — '
+      'layers ${before.activeLayers} then ${after.activeLayers}, '
+      'decoders ${before.openDecoders} then ${after.openDecoders}, '
+      'cubes uploaded ${before.lutUploads} then ${after.lutUploads}');
+  stdout.writeln('[selftest] packs: '
+      '${ContentPacks.packs.map((p) => '${p.name}/${p.tier.name}').join(', ')}');
 
   // And back to the shot as it was shot, so the passes after this one see the
   // timeline they expect.
