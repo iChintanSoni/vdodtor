@@ -17,6 +17,7 @@ import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../engine/export_plan.dart';
 import '../model/project.dart';
+import '../pro/entitlement.dart';
 import 'theme.dart';
 
 /// Shows the sheet. Returns the path written, or null if nothing was.
@@ -24,25 +25,36 @@ Future<String?> showExportDialog(
   BuildContext context, {
   required Project project,
   required String projectName,
+  required Entitlement entitlement,
 }) =>
     showDialog<String>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _ExportDialog(project: project, projectName: projectName),
+      builder: (_) => _ExportDialog(
+        project: project,
+        projectName: projectName,
+        entitlement: entitlement,
+      ),
     );
 
 class _ExportDialog extends StatefulWidget {
-  const _ExportDialog({required this.project, required this.projectName});
+  const _ExportDialog({
+    required this.project,
+    required this.projectName,
+    required this.entitlement,
+  });
 
   final Project project;
   final String projectName;
+  final Entitlement entitlement;
 
   @override
   State<_ExportDialog> createState() => _ExportDialogState();
 }
 
 class _ExportDialogState extends State<_ExportDialog> {
-  late ExportPlan _plan = ExportPlan.of(widget.project);
+  late ExportPlan _plan =
+      ExportPlan.of(widget.project, tier: widget.entitlement.tier);
   Exporter? _exporter;
   String? _path;
   String? _problem;
@@ -51,7 +63,22 @@ class _ExportDialogState extends State<_ExportDialog> {
   bool get _running => _exporter?.progress.isRunning ?? false;
 
   @override
+  void initState() {
+    super.initState();
+    // Buying Pro is something that happens *while this sheet is open* — it is
+    // the sheet that told them they needed it — so the gate has to lift under
+    // them rather than waiting to be closed and reopened.
+    widget.entitlement.addListener(_onTier);
+  }
+
+  void _onTier() {
+    if (!mounted) return;
+    setState(() => _plan = _plan.copyWith(tier: widget.entitlement.tier));
+  }
+
+  @override
   void dispose() {
+    widget.entitlement.removeListener(_onTier);
     // Cancels it if it is still going, which is the right answer: the dialog
     // is the only thing that was watching.
     _exporter?.removeListener(_onProgress);
@@ -92,6 +119,9 @@ class _ExportDialogState extends State<_ExportDialog> {
   /// they have picked one would be a question about the wrong disk.
   Future<void> _start() async {
     if (_picking || _running) return;
+    // The button is already disabled; this is the check that matters, because
+    // it is the one on the path to a file rather than on the path to a pixel.
+    if (!_plan.isPermitted) return;
     setState(() {
       _picking = true;
       _problem = null;
@@ -144,18 +174,23 @@ class _ExportDialogState extends State<_ExportDialog> {
       backgroundColor: VdColors.panel,
       title: const Text('Export'),
       contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+      // Scrollable because the sheet grows: a gate panel, a disk warning and
+      // an encoder failure can all be on it at once, and a short window is
+      // not a reason to hide the button that gets out of it.
       content: SizedBox(
         width: 460,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_exporter == null) ..._settings() else _bar(),
-            if (_problem != null) ...[
-              const SizedBox(height: 16),
-              _Problem(_problem!),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_exporter == null) ..._settings() else _bar(),
+              if (_problem != null) ...[
+                const SizedBox(height: 16),
+                _Problem(_problem!),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [
@@ -164,7 +199,8 @@ class _ExportDialogState extends State<_ExportDialog> {
           child: Text(_running ? 'Stop' : 'Cancel'),
         ),
         FilledButton(
-          onPressed: _running || _picking || _plan.frameCount == 0
+          onPressed: _running || _picking || _plan.frameCount == 0 ||
+                  !_plan.isPermitted
               ? null
               : () => unawaited(_start()),
           child: const Text('Export…'),
@@ -185,7 +221,18 @@ class _ExportDialogState extends State<_ExportDialog> {
         children: [
           for (final resolution in ExportResolution.values)
             ChoiceChip(
-              label: Text(resolution.label),
+              // A locked size is still selectable, deliberately. Picking it
+              // shows exactly what it would produce — the dimensions, the
+              // bitrate, the size on disk — and the refusal is on the button
+              // underneath. A chip that could not be pressed would make the
+              // user guess what they were being sold.
+              label: _plan.needsPro(resolution)
+                  ? Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text(resolution.label),
+                      const SizedBox(width: 6),
+                      const _ProBadge(),
+                    ])
+                  : Text(resolution.label),
               selected: resolution == _plan.resolution,
               onSelected: (_) =>
                   setState(() => _plan = _plan.copyWith(resolution: resolution)),
@@ -231,6 +278,10 @@ class _ExportDialogState extends State<_ExportDialog> {
         const Text('There is nothing on the timeline to export yet.',
             style: TextStyle(fontSize: 12, color: VdColors.dim)),
       ],
+      if (!_plan.isPermitted) ...[
+        const SizedBox(height: 14),
+        _ProGate(output),
+      ],
     ];
   }
 
@@ -262,6 +313,79 @@ class _ExportDialogState extends State<_ExportDialog> {
       ],
     );
   }
+}
+
+/// The one place in the app that says no.
+///
+/// It says what is locked, what it costs and — the sentence that matters most
+/// in a product positioned against Filmora and CapCut — what is *not* locked.
+/// The free tier is the whole editor: every track, every effect, every font
+/// and no watermark on anything, ever. A gate that let people believe
+/// otherwise would cost more than the export it withheld.
+class _ProGate extends StatelessWidget {
+  const _ProGate(this.output);
+
+  final ProjectFormat output;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: VdColors.rail,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: VdColors.line),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _ProBadge(),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Exporting at ${output.width} × ${output.height} is part '
+                    'of vdodtor Pro.',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Up to 1080p stays free: every track, every effect, and '
+                    'no watermark on anything, ever.',
+                    style: TextStyle(fontSize: 12, color: VdColors.dim),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+/// The badge on a locked chip and on the gate. Small, and not red: this is a
+/// price, not an error.
+class _ProBadge extends StatelessWidget {
+  const _ProBadge();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: VdColors.accent.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: VdColors.accent.withValues(alpha: 0.5)),
+        ),
+        child: const Text(
+          'PRO',
+          style: TextStyle(
+            fontSize: 9,
+            letterSpacing: 0.6,
+            fontWeight: FontWeight.w700,
+            color: VdColors.accent,
+          ),
+        ),
+      );
 }
 
 class _Problem extends StatelessWidget {
