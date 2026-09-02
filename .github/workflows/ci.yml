@@ -84,7 +84,10 @@ jobs:
       # The golden frames fail on a picture, and a number in a log is a poor
       # way to look at one. On a red run the actual frame and an amplified
       # difference come back as an artifact, so the first question — what
-      # changed, and where — is answered without reproducing anything.
+      # changed, and where — is answered without reproducing anything. Both
+      # suites write here: vd_golden_test on the compositor, and vd_parity_test
+      # on the two drivers over it, whose failures are suffixed with the driver
+      # that produced them.
       - name: Golden frame differences
         if: failure()
         uses: actions/upload-artifact@v4

@@ -16,9 +16,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > duck it, a clip is drawn the shape and the way up its own file asks for, and the
 > keyboard reaches all of it.**
 >
-> **M4 has started, and its Export section is done bar the parity goldens: the editor
-> writes MP4s.** ⌘E, four sizes, H.264 or HEVC, a bar that moves, and a Stop that leaves
-> nothing behind.
+> **M4 has started, and its Export section is complete: the editor writes MP4s, and
+> the file agrees with the preview on pixels.** ⌘E, four sizes, H.264 or HEVC, a bar
+> that moves, and a Stop that leaves nothing behind — and one timeline rendered through
+> both clocks against one committed picture each, so "preview and export differ in the
+> clock and in nothing else" is a test rather than a sentence. What is left in M4 is the
+> Pro gate, licensing and packaging.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1567,7 +1570,54 @@ look, one slow-mo moment) entirely in vdodtor.
       which is about as easy as content gets. That is the direction the number
       should be wrong in: both its readers are a disk check and a warning, and
       both would rather be told 7 and get 4 than the other way round.
-- [ ] Preview/export parity: golden-frame tests through both drivers in CI
+- [x] Preview/export parity: golden-frame tests through both drivers in CI
+      The sentence above is a claim, and `engine/tests/vd_parity_test.c` is where
+      it stops being one. One timeline goes through both clocks — the preview's
+      `vd_engine_render_at` and the export's frame counter — and the two are
+      compared to **one committed picture each** rather than to each other,
+      because two drivers that broke the same way would agree perfectly. A
+      reference belongs to the driver that owns it: the preview approves these
+      goldens and the export is measured against them, since the preview is what
+      the user was looking at when they decided the edit was finished.
+      The scene is chosen for what only the *engine* resolves per frame — a
+      transition window worked out from a cut, an animation evaluated from an
+      offset into a clip's life, a look found by name — because a static picture
+      would notice none of it, and those are exactly the places two clocks can
+      drift. Three ticks: before the transition opens, halfway through the
+      dissolve, and past it with the incoming shot graded and wearing its look.
+      The same timeline is also exported at twice the size and compared against
+      the preview at that size, which is the assertion the 4K-from-1080p path
+      rests on.
+      The tolerance is the interesting part. A frame that went through H.264 and
+      4:2:0 and back cannot equal one that went to memory, and a bound on the
+      worst pixel would have to be enormous to be stable — chroma is stored at
+      half resolution, so every hard colour edge is reconstructed over two
+      pixels and lands tens of counts out along that seam. So the bound is on
+      the *proportion* of pixels past a sensible figure, and on the mean, and
+      neither would do alone: measured, the scenes come back at 1.0–2.0% of
+      pixels past twenty counts with a mean under 0.92, and the same scenes a
+      single frame out of step come back at 2.7–12.0% with a mean of 2.9 to 6.6.
+      A frame of drift across a *cut* moves almost every pixel a little and the
+      mean notices; a frame of drift inside a dissolve barely moves the outlier
+      count, because the blends either side of it are nearly the same picture.
+      Both bounds are checked, and the gap between 0.92 and 2.9 is where the
+      file lives.
+      **Nothing in these goldens draws a glyph or a curve**, which is the same
+      exemption `vd_text_test.c` argues for: Core Text and Core Graphics are
+      tuned in macOS releases, and a reference PNG of a sentence would go red on
+      an upgrade while the renderer was still correct. The caption gets the
+      parity check it can actually keep. The typewriter is the one animation
+      that is not a transform — it reaches into the raster, so the cache is
+      keyed on revealed characters, and the preview arrives at a tick by seeking
+      while the export arrives by counting — so the two drivers are compared to
+      *each other* on where the ink is, at three points through the reveal, plus
+      an assertion that the ink was growing so that agreement could have failed.
+      The harness is now `engine/tests/vd_golden.h`, shared by both files: there
+      is one reference set and two sets of scenes over it, and the failure output
+      says which driver disagreed and leaves its frame and an amplified
+      difference in `build/engine/tests/golden-failures/`, which CI already
+      uploads. Re-approve with
+      `VD_UPDATE_GOLDENS=1 ctest --test-dir build/engine -R 'golden|parity'`.
 
 ### Free / Pro
 - [ ] Resolution gate: 1080p free, 4K+ Pro — no watermark anywhere, ever

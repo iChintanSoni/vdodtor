@@ -62,9 +62,9 @@ cmake -S engine -B build/engine -DCMAKE_BUILD_TYPE=Release
 cmake --build build/engine
 ctest --test-dir build/engine --output-on-failure
 
-# after an intentional change to how the compositor draws, re-approve the
-# golden frames — then read `git diff` on the PNGs, which is the actual approval:
-VD_UPDATE_GOLDENS=1 ctest --test-dir build/engine -R vd_golden_test
+# after an intentional change to how the picture is drawn, re-approve the golden
+# frames — then read `git diff` on the PNGs, which is the actual approval:
+VD_UPDATE_GOLDENS=1 ctest --test-dir build/engine -R 'golden|parity'
 
 cd app
 flutter pub get && flutter test
@@ -169,11 +169,42 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   it, under the preset picker. A sentence promising 6.2 Mbps over a file written at 3.7 is
   worse than no sentence. The estimated size is **not** mirrored: nothing in the engine
   needs it, so it lives in Dart alone.
-- **The compositor is pinned by golden frames.** `engine/tests/golden/*.png` are whole
-  composited frames compared pixel for pixel, so any change to how the picture is drawn
-  turns `vd_golden_test` red — including changes that are correct. That is the point:
+- **The compositor is pinned by golden frames, and the two drivers over it are pinned
+  to the same references.** `engine/tests/golden/*.png` are whole composited frames
+  compared pixel for pixel, so any change to how the picture is drawn turns
+  `vd_golden_test` red — including changes that are correct. That is the point:
   re-approve with the command above and look at the image diff. A failing run leaves the
   actual frame and an amplified difference in `build/engine/tests/golden-failures/`.
+  `vd_golden_test.c` builds layers by hand and pins the *compositor*;
+  `vd_parity_test.c` renders one timeline through both clocks and pins the fact that
+  they agree; `vd_golden.h` is the harness both share, because there is one reference
+  set and two sets of scenes over it.
+- **A reference belongs to one driver, and that is the only one that may approve it.**
+  The preview writes the parity goldens and the export is *measured* against them —
+  `through` in `vd_golden_check` is what says which job a call is doing — because the
+  preview is what the user was looking at when they decided the edit was finished, and
+  an export that disagrees is wrong even when it is prettier. The two are never compared
+  only to each other: two drivers that broke the same way would agree perfectly, and a
+  committed picture is a third party a human approved by looking at it.
+- **Parity is measured on a proportion and a mean, never on the worst pixel.** A frame
+  that went through H.264 and 4:2:0 and back cannot equal one that went to memory:
+  chroma is stored at half resolution, so every hard colour edge is rebuilt over two
+  pixels and lands tens of counts out along that seam. A bound on the worst pixel would
+  have to be enormous to be stable and would assert nothing. Both of the other two are
+  needed and neither would do alone — a frame of drift across a *cut* moves almost every
+  pixel a little and the mean notices, and a frame of drift inside a *dissolve* barely
+  moves the outlier count because the blends either side of it are nearly the same
+  picture. The measured numbers are in `VD_PARITY_THROUGH_AN_ENCODER`; the exports there
+  are written at about a hundred times the default bitrate, because every count H.264
+  spends is a count of tolerance the test has to give away.
+- **The parity goldens draw no glyph and no curve.** Core Text's rasterisation of a
+  sentence and Core Graphics' antialiasing of a circle are both tuned in macOS releases,
+  so a reference PNG of either goes red on an upgrade while the renderer is still
+  correct — the argument at the head of `vd_text_test.c` and `vd_ink.h`, and the reason
+  text never joined the goldens. The caption gets the parity check it can keep instead:
+  the typewriter is the one animation that reaches into the raster, so the two drivers
+  are compared to *each other* on where the ink is at three points through the reveal,
+  with an assertion that the ink was growing so the agreement could have failed.
 - **The engine analyses peaks; the app owns the peak file.** `vd_peaks_analyze` returns
   a pyramid in memory and knows nothing about where it is kept.
   `app/lib/media/peaks.dart` is the only definition of the on-disk format, so there is
