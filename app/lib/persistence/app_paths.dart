@@ -40,6 +40,14 @@ final class AppPaths {
   File get recentsFile => File('${support.path}/recents.json');
   File get sessionFile => File('${support.path}/session.json');
 
+  /// The Pro licence, if this installation has one.
+  ///
+  /// Under `support` with the rest of the app's private state, and not in the
+  /// project library, because a licence belongs to the machine rather than to
+  /// any project — and because a project folder is the thing people copy to a
+  /// USB stick and hand to somebody else.
+  File get licenceFile => File('${support.path}/licence.key');
+
   /// Resolves the locations and creates them, falling back to app-private
   /// storage if `~/Movies` cannot be written — a missing library must never
   /// stop the app launching.

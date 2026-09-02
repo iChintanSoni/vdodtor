@@ -3,7 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/time.dart';
+import 'dart:io';
+
 import 'package:vdodtor/pro/entitlement.dart';
+import 'package:vdodtor/pro/licence_store.dart';
+import 'package:vdodtor/pro/licensing.dart';
 import 'package:vdodtor/ui/export_dialog.dart';
 
 import '../fixtures.dart';
@@ -31,12 +35,20 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
-  Future<Entitlement> openSheet(
+  /// A [Licensing] holding a tier and nothing else: the store is a path
+  /// nothing here reads or writes, because the sheet only ever asks what the
+  /// tier is. Where a licence *comes from* is licensing_test.dart's subject.
+  Licensing licensingAt(Tier tier) => Licensing(
+        store: FileLicenceStore(File('${Directory.systemTemp.path}/unused.key')),
+        entitlement: Entitlement(tier),
+      );
+
+  Future<Licensing> openSheet(
     WidgetTester tester,
     Project project, {
     Tier tier = Tier.free,
   }) async {
-    final entitlement = Entitlement(tier);
+    final licensing = licensingAt(tier);
     await tester.pumpWidget(MaterialApp(
       home: Builder(
         builder: (context) => Scaffold(
@@ -45,7 +57,7 @@ void main() {
               onPressed: () => showExportDialog(context,
                   project: project,
                   projectName: 'Holiday',
-                  entitlement: entitlement),
+                  licensing: licensing),
               child: const Text('open'),
             ),
           ),
@@ -54,7 +66,7 @@ void main() {
     ));
     await tester.tap(find.text('open'));
     await tester.pumpAndSettle();
-    return entitlement;
+    return licensing;
   }
 
   /// A project cut at 4K, so that the project's *own* size is the locked one.
@@ -279,16 +291,35 @@ void main() {
       expect(exportEnabled(tester), isFalse);
     });
 
+    // The gate says what is locked; the sheet it opens is the one place in
+    // the app that argues for buying it.
+    testWidgets('the gate opens the sheet that sells it', (tester) async {
+      await openSheet(tester, projectWithThreeClips());
+      await tester.tap(find.widgetWithText(ChoiceChip, '4K'));
+      await tester.pump();
+
+      // The sheet scrolls, and on a test-sized window the gate is under the
+      // fold — which is exactly what the SingleChildScrollView is there for.
+      await tester.ensureVisible(find.text('Get vdodtor Pro…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Get vdodtor Pro…'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Get vdodtor Pro'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Buy vdodtor Pro'),
+          findsOneWidget);
+    });
+
     testWidgets('buying Pro lifts the gate under the open sheet',
         (tester) async {
-      final entitlement = await openSheet(tester, projectWithThreeClips());
+      final licensing = await openSheet(tester, projectWithThreeClips());
       await tester.tap(find.widgetWithText(ChoiceChip, '4K'));
       await tester.pump();
       expect(exportEnabled(tester), isFalse);
 
       // Which is the point of the sheet listening rather than reading a tier
       // once: it is this sheet that told them they needed Pro.
-      entitlement.grant(Tier.pro);
+      licensing.entitlement.grant(Tier.pro);
       await tester.pump();
 
       expect(exportEnabled(tester), isTrue);

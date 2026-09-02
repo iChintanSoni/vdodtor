@@ -39,3 +39,4 @@ export 'src/probe.dart' show NativeProbe, VdodtorEngine;
 export 'src/looks.dart' show Looks;
 export 'src/text.dart' show TextFonts;
 export 'src/thumbnails.dart' show NativeThumbnail, Thumbnails;
+export 'src/system.dart' show SystemLinks;

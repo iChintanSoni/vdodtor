@@ -17,7 +17,8 @@ import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../engine/export_plan.dart';
 import '../model/project.dart';
-import '../pro/entitlement.dart';
+import '../pro/licensing.dart';
+import 'licence_dialog.dart';
 import 'theme.dart';
 
 /// Shows the sheet. Returns the path written, or null if nothing was.
@@ -25,7 +26,7 @@ Future<String?> showExportDialog(
   BuildContext context, {
   required Project project,
   required String projectName,
-  required Entitlement entitlement,
+  required Licensing licensing,
 }) =>
     showDialog<String>(
       context: context,
@@ -33,7 +34,7 @@ Future<String?> showExportDialog(
       builder: (_) => _ExportDialog(
         project: project,
         projectName: projectName,
-        entitlement: entitlement,
+        licensing: licensing,
       ),
     );
 
@@ -41,12 +42,15 @@ class _ExportDialog extends StatefulWidget {
   const _ExportDialog({
     required this.project,
     required this.projectName,
-    required this.entitlement,
+    required this.licensing,
   });
 
   final Project project;
   final String projectName;
-  final Entitlement entitlement;
+
+  /// Only for the tier, and for the sheet the gate opens. Everything below
+  /// [ExportPlan] is handed a [Tier] and never hears that a licence exists.
+  final Licensing licensing;
 
   @override
   State<_ExportDialog> createState() => _ExportDialogState();
@@ -54,7 +58,7 @@ class _ExportDialog extends StatefulWidget {
 
 class _ExportDialogState extends State<_ExportDialog> {
   late ExportPlan _plan =
-      ExportPlan.of(widget.project, tier: widget.entitlement.tier);
+      ExportPlan.of(widget.project, tier: widget.licensing.entitlement.tier);
   Exporter? _exporter;
   String? _path;
   String? _problem;
@@ -68,17 +72,18 @@ class _ExportDialogState extends State<_ExportDialog> {
     // Buying Pro is something that happens *while this sheet is open* — it is
     // the sheet that told them they needed it — so the gate has to lift under
     // them rather than waiting to be closed and reopened.
-    widget.entitlement.addListener(_onTier);
+    widget.licensing.entitlement.addListener(_onTier);
   }
 
   void _onTier() {
     if (!mounted) return;
-    setState(() => _plan = _plan.copyWith(tier: widget.entitlement.tier));
+    setState(() =>
+        _plan = _plan.copyWith(tier: widget.licensing.entitlement.tier));
   }
 
   @override
   void dispose() {
-    widget.entitlement.removeListener(_onTier);
+    widget.licensing.entitlement.removeListener(_onTier);
     // Cancels it if it is still going, which is the right answer: the dialog
     // is the only thing that was watching.
     _exporter?.removeListener(_onProgress);
@@ -280,7 +285,12 @@ class _ExportDialogState extends State<_ExportDialog> {
       ],
       if (!_plan.isPermitted) ...[
         const SizedBox(height: 14),
-        _ProGate(output),
+        _ProGate(
+          output,
+          onGetPro: () => unawaited(
+            showLicenceDialog(context, licensing: widget.licensing),
+          ),
+        ),
       ],
     ];
   }
@@ -323,9 +333,14 @@ class _ExportDialogState extends State<_ExportDialog> {
 /// and no watermark on anything, ever. A gate that let people believe
 /// otherwise would cost more than the export it withheld.
 class _ProGate extends StatelessWidget {
-  const _ProGate(this.output);
+  const _ProGate(this.output, {required this.onGetPro});
 
   final ProjectFormat output;
+
+  /// Opens the one sheet in the app that talks about money. The gate says
+  /// what is locked; it does not also grow a copy of the argument for buying
+  /// it, or a second place to paste a key.
+  final VoidCallback onGetPro;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -354,6 +369,18 @@ class _ProGate extends StatelessWidget {
                     'Up to 1080p stays free: every track, every effect, and '
                     'no watermark on anything, ever.',
                     style: TextStyle(fontSize: 12, color: VdColors.dim),
+                  ),
+                  const SizedBox(height: 8),
+                  // Left-aligned and quiet, under the sentence about what
+                  // stays free rather than over it: this sheet is here to
+                  // export a video, and the offer is an answer to the
+                  // refusal rather than the reason the refusal exists.
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton(
+                      onPressed: onGetPro,
+                      child: const Text('Get vdodtor Pro…'),
+                    ),
                   ),
                 ],
               ),

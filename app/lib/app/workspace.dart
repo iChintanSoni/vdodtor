@@ -15,6 +15,8 @@ import '../persistence/project_file.dart';
 import '../persistence/recents.dart';
 import '../persistence/session.dart';
 import '../pro/entitlement.dart';
+import '../pro/licence_store.dart';
+import '../pro/licensing.dart';
 
 /// What the window is showing.
 enum WorkspaceStage {
@@ -96,23 +98,33 @@ class Workspace extends ChangeNotifier {
     AppPaths? paths,
     IdGen? ids,
     FileAccess? access,
-    Entitlement? entitlement,
+    Licensing? licensing,
     Future<AppPaths> Function()? resolvePaths,
     this.autosaveDebounce = const Duration(milliseconds: 400),
   })  : _ids = ids ?? IdGen(),
         _access = access ?? const SystemFileAccess(),
-        entitlement = entitlement ?? Entitlement.free(),
         _resolvePaths = resolvePaths ?? AppPaths.resolve {
     _paths = paths;
+    _licensing = licensing;
   }
 
   final IdGen _ids;
 
-  /// What this installation has paid for. Owned here, beside the paths and
-  /// the recents list, because it is app-wide and outlives every project —
-  /// and because the licence it will be read from lives under [AppPaths] with
-  /// the rest of the app's private state.
-  final Entitlement entitlement;
+  /// The licence and the tier it grants. Owned here, beside the paths and the
+  /// recents list, because it is app-wide and outlives every project — and
+  /// because the licence is read from a file under [AppPaths] with the rest of
+  /// the app's private state.
+  ///
+  /// Valid from [WorkspaceStage.chooser] onwards, like [paths] and for the
+  /// same reason: there is nothing to read a licence out of until storage has
+  /// been resolved.
+  Licensing get licensing => _licensing!;
+
+  /// What this installation may do. The shortcut every widget uses; nothing
+  /// below this line needs to know that a licence exists.
+  Entitlement get entitlement => licensing.entitlement;
+
+  Licensing? _licensing;
 
   /// How the app gets at the user's own media. Injected so opening a project
   /// full of bookmarked footage is testable without a sandbox.
@@ -169,6 +181,13 @@ class Workspace extends ChangeNotifier {
       _library = ProjectLibrary(paths.library);
       _recents = RecentProjects(paths.recentsFile);
       _session = SessionMarker(paths.sessionFile);
+
+      // Before the chooser, so that the first window the user sees already
+      // knows the answer. Reading a licence is a signature check over a
+      // couple of hundred bytes with no network behind it, so there is
+      // nothing to wait for and nothing to show a spinner about.
+      _licensing ??= Licensing(store: FileLicenceStore(paths.licenceFile));
+      await licensing.load();
 
       final unfinished = await _session.unfinishedProjectPath();
       if (unfinished != null && File(unfinished).existsSync()) {
@@ -456,7 +475,7 @@ class Workspace extends ChangeNotifier {
       open.store.dispose();
       _open = null;
     }
-    entitlement.dispose();
+    _licensing?.dispose();
     super.dispose();
   }
 }

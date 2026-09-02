@@ -8,6 +8,11 @@ import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/time.dart';
 import 'package:vdodtor/persistence/app_paths.dart';
 import 'package:vdodtor/persistence/project_file.dart';
+import 'package:vdodtor/pro/ed25519.dart';
+import 'package:vdodtor/pro/licence.dart';
+import 'package:vdodtor/pro/licence_store.dart';
+import 'package:vdodtor/pro/licensing.dart';
+import 'package:vdodtor/pro/tier.dart';
 
 import '../fixtures.dart';
 
@@ -228,6 +233,65 @@ void main() {
 
       final second = await started();
       expect(second.recovery, isNull);
+    });
+  });
+
+  // The tier is app-wide and outlives every project, so it is settled once —
+  // here, on the way to the chooser — rather than asked for again by whatever
+  // is about to need it.
+  group('the licence', () {
+    final seed = List<int>.generate(32, (i) => (i * 17 + 2) & 0xff);
+    final verifier = LicenceVerifier(
+      publicKey: Ed25519.publicKeyOf(seed)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join(),
+    );
+
+    Workspace withLicensing() => Workspace(
+          paths: paths,
+          ids: IdGen.seeded(7),
+          autosaveDebounce: Duration.zero,
+          licensing: Licensing(
+            store: FileLicenceStore(paths.licenceFile),
+            verifier: verifier,
+          ),
+        );
+
+    test('an installation with no licence reaches the chooser free',
+        () async {
+      final w = withLicensing();
+      addTearDown(w.dispose);
+      await w.start();
+
+      expect(w.stage, WorkspaceStage.chooser);
+      expect(w.entitlement.isPro, isFalse);
+    });
+
+    test('a licence on disk is Pro before the first window', () async {
+      await FileLicenceStore(paths.licenceFile).write(signLicence(
+        seed: seed,
+        payload: licencePayload(id: 'LS-3', tier: Tier.pro),
+      ));
+
+      final w = withLicensing();
+      addTearDown(w.dispose);
+      await w.start();
+
+      expect(w.entitlement.isPro, isTrue);
+      expect(w.licensing.licence!.id, 'LS-3');
+    });
+
+    test('rubbish in the licence file does not stop the app starting',
+        () async {
+      await paths.licenceFile.writeAsString('VDO1.who.knows');
+
+      final w = withLicensing();
+      addTearDown(w.dispose);
+      await w.start();
+
+      expect(w.stage, WorkspaceStage.chooser);
+      expect(w.entitlement.isPro, isFalse);
+      expect(w.licensing.problem, LicenceProblem.unrecognised);
     });
   });
 }

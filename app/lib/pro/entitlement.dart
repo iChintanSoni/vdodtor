@@ -7,25 +7,9 @@ library;
 
 import 'package:flutter/foundation.dart';
 
-/// What this installation may do.
-///
-/// Two values rather than a bag of feature flags, because the brief sells one
-/// thing (§5): the *complete* editor is free at 1080p — no watermark, no
-/// account, no ads, ever — and Pro is 4K export plus premium packs. A tier
-/// that had to be consulted per feature would be a tier the editor was full
-/// of, and every one of those checks would be a place the free version could
-/// feel crippled. There are meant to be two: the size an export may be
-/// written at, and which packs are installed.
-enum Tier {
-  free('Free'),
-  pro('Pro');
+import 'tier.dart';
 
-  const Tier(this.label);
-
-  final String label;
-
-  bool get isPro => this == Tier.pro;
-}
+export 'tier.dart';
 
 /// This installation's tier, as something the window can listen to.
 ///
