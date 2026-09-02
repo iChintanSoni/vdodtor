@@ -147,6 +147,33 @@ abstract final class MediaAccess {
     return _filesFrom(files);
   }
 
+  /// Opens the system save panel. Returns where to write, or null if the user
+  /// cancelled — cancelling is not a failure, exactly as for [pickFiles].
+  ///
+  /// This is not a convenience over building a path. The sandbox grants the app
+  /// nothing outside its own container, and a panel is what turns the
+  /// user-selected read-write entitlement into permission to write somewhere
+  /// the user will look for the file afterwards. It also asks the overwrite
+  /// question, so by the time a path comes back the answer is yes.
+  static Future<GrantedFile?> saveFile({
+    required String name,
+    String? extension,
+    String? message,
+    String? prompt,
+  }) async {
+    final file = await _channel.invokeMapMethod<Object?, Object?>('saveFile', {
+      'name': name,
+      'extension': ?extension,
+      'message': ?message,
+      'prompt': ?prompt,
+    });
+    if (file == null) return null;
+    return GrantedFile(
+      path: file['path'] as String,
+      bookmark: file['bookmark'] as String?,
+    );
+  }
+
   /// Mints a bookmark for a file the app can already reach. Null if it cannot.
   static Future<String?> bookmark(String path) =>
       _channel.invokeMethod<String>('bookmark', {'path': path});

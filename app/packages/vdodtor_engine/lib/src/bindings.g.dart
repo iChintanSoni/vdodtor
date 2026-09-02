@@ -1795,6 +1795,28 @@ class VdEngineBindings {
   late final _vd_engine_render_now = _vd_engine_render_nowPtr
       .asFunction<int Function(ffi.Pointer<VdEngine>)>();
 
+  /// Renders exactly `position`, synchronously, on the calling thread, and leaves
+  /// the playhead where it was.
+  ///
+  /// This is the export's clock, and it is the whole of the difference between
+  /// preview and export on the picture side. Playback works out what time it is
+  /// — from the audio device, or from the wall when there is no sound — and asks
+  /// for that; an export counts frames and asks for those. Everything downstream
+  /// is the same code: the same clip list, the same decoders, the same
+  /// compositor. Nothing below this line can tell which of the two called it,
+  /// which is what makes the frame on screen a promise about the frame in the
+  /// file. See vd_export.h.
+  int vd_engine_render_at(ffi.Pointer<VdEngine> engine, int position) {
+    return _vd_engine_render_at(engine, position);
+  }
+
+  late final _vd_engine_render_atPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<VdEngine>, VdTick)>
+      >('vd_engine_render_at');
+  late final _vd_engine_render_at = _vd_engine_render_atPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>, int)>();
+
   int vd_engine_position(ffi.Pointer<VdEngine> engine) {
     return _vd_engine_position(engine);
   }
@@ -1904,6 +1926,158 @@ class VdEngineBindings {
       .asFunction<
         void Function(ffi.Pointer<VdEngine>, ffi.Pointer<VdEngineStats>)
       >();
+
+  /// H.264, default bitrates, sound included.
+  VdExportSettings vd_export_default_settings() {
+    return _vd_export_default_settings();
+  }
+
+  late final _vd_export_default_settingsPtr =
+      _lookup<ffi.NativeFunction<VdExportSettings Function()>>(
+        'vd_export_default_settings',
+      );
+  late final _vd_export_default_settings = _vd_export_default_settingsPtr
+      .asFunction<VdExportSettings Function()>();
+
+  /// Bits per second this size and rate deserve, per codec.
+  ///
+  /// Bits per pixel per frame rather than a table of presets: a table has to
+  /// guess which sizes anyone will pick, and the whole point of a resolution
+  /// nobody thought of is that nobody thought of it. HEVC gets a lower figure
+  /// because that is what it is for.
+  ///
+  /// This is the same function as `defaultVideoBitrate` in
+  /// app/lib/engine/export_plan.dart, and the two test the same table — the
+  /// `vd_time.c` / `time.dart` arrangement, and here for the reason the audio
+  /// envelopes have it: the encoder writes at this rate and the app *draws* it,
+  /// under the preset picker. A sentence promising 6.2 Mbps over a file written
+  /// at 3.7 is worse than no sentence at all. Change one and you must change the
+  /// other.
+  int vd_export_default_bitrate(
+    VdExportCodec codec,
+    int width,
+    int height,
+    VdRational frame_rate,
+  ) {
+    return _vd_export_default_bitrate(codec.value, width, height, frame_rate);
+  }
+
+  late final _vd_export_default_bitratePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int64 Function(ffi.UnsignedInt, ffi.Int32, ffi.Int32, VdRational)
+        >
+      >('vd_export_default_bitrate');
+  late final _vd_export_default_bitrate = _vd_export_default_bitratePtr
+      .asFunction<int Function(int, int, int, VdRational)>();
+
+  /// Bytes free on the volume `path` is on — the file itself need not exist, only
+  /// its parent directory. -1 when that cannot be answered, which a caller should
+  /// read as "do not warn" rather than as "no room".
+  int vd_export_free_bytes(ffi.Pointer<ffi.Char> path) {
+    return _vd_export_free_bytes(path);
+  }
+
+  late final _vd_export_free_bytesPtr =
+      _lookup<ffi.NativeFunction<ffi.Int64 Function(ffi.Pointer<ffi.Char>)>>(
+        'vd_export_free_bytes',
+      );
+  late final _vd_export_free_bytes = _vd_export_free_bytesPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Char>)>();
+
+  /// Starts writing `timeline` to `path`, and returns as soon as the file is open
+  /// and the first frame has somewhere to go.
+  ///
+  /// Everything that can be known immediately is decided before this returns —
+  /// an unwritable path, a frame rate the timebase cannot express, a timeline of
+  /// no length — so a caller gets a real error rather than a job that fails a
+  /// second later for a reason it has to poll for. What happens after that
+  /// happens on a thread of the export's own, at whatever speed the machine
+  /// manages.
+  ///
+  /// `timeline` is copied; the caller keeps its own memory.
+  ffi.Pointer<VdExport> vd_export_start(
+    ffi.Pointer<VdTimeline> timeline,
+    ffi.Pointer<ffi.Char> path,
+    VdExportSettings settings,
+    ffi.Pointer<ffi.Int32> out_result,
+  ) {
+    return _vd_export_start(timeline, path, settings, out_result);
+  }
+
+  late final _vd_export_startPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Pointer<VdExport> Function(
+            ffi.Pointer<VdTimeline>,
+            ffi.Pointer<ffi.Char>,
+            VdExportSettings,
+            ffi.Pointer<ffi.Int32>,
+          )
+        >
+      >('vd_export_start');
+  late final _vd_export_start = _vd_export_startPtr
+      .asFunction<
+        ffi.Pointer<VdExport> Function(
+          ffi.Pointer<VdTimeline>,
+          ffi.Pointer<ffi.Char>,
+          VdExportSettings,
+          ffi.Pointer<ffi.Int32>,
+        )
+      >();
+
+  /// Where it has got to. Cheap enough to call from a repainting progress bar.
+  void vd_export_progress(
+    ffi.Pointer<VdExport> handle,
+    ffi.Pointer<VdExportProgress> out,
+  ) {
+    return _vd_export_progress(handle, out);
+  }
+
+  late final _vd_export_progressPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<VdExport>,
+            ffi.Pointer<VdExportProgress>,
+          )
+        >
+      >('vd_export_progress');
+  late final _vd_export_progress = _vd_export_progressPtr
+      .asFunction<
+        void Function(ffi.Pointer<VdExport>, ffi.Pointer<VdExportProgress>)
+      >();
+
+  /// Asks it to stop. Returns immediately; the state reaches VD_EXPORT_CANCELLED
+  /// once the thread notices, which is within a frame.
+  void vd_export_cancel(ffi.Pointer<VdExport> handle) {
+    return _vd_export_cancel(handle);
+  }
+
+  late final _vd_export_cancelPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdExport>)>>(
+        'vd_export_cancel',
+      );
+  late final _vd_export_cancel = _vd_export_cancelPtr
+      .asFunction<void Function(ffi.Pointer<VdExport>)>();
+
+  /// Joins the thread and frees everything.
+  ///
+  /// **A cancelled or failed export leaves no file.** Half a video is worse than
+  /// none: it plays, it looks like the export worked, and the part that is missing
+  /// is the end — which is the part nobody checks. So the partial file is deleted
+  /// here rather than left for the user to find, and destroying an export that is
+  /// still running cancels it first.
+  void vd_export_destroy(ffi.Pointer<VdExport> handle) {
+    return _vd_export_destroy(handle);
+  }
+
+  late final _vd_export_destroyPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VdExport>)>>(
+        'vd_export_destroy',
+      );
+  late final _vd_export_destroy = _vd_export_destroyPtr
+      .asFunction<void Function(ffi.Pointer<VdExport>)>();
 
   /// Renders the frame covering `t` in `path`, scaled to fit inside
   /// `max_width` x `max_height`.
@@ -2418,6 +2592,54 @@ class VdEngineBindings {
   late final _vd_audio_renderer_pull = _vd_audio_renderer_pullPtr
       .asFunction<
         int Function(ffi.Pointer<VdAudioRenderer>, ffi.Pointer<ffi.Float>, int)
+      >();
+
+  /// Mixes `frames` of interleaved stereo for timeline position `position`,
+  /// straight into `out`, synchronously on the calling thread.
+  ///
+  /// The audio half of vd_engine_render_at, and the same bargain: no ring, no
+  /// decode thread, no clock. The device path exists to keep up with a deadline
+  /// and counts an underrun when it cannot; an export has no deadline, so it asks
+  /// the mixer what a moment sounds like and waits for the answer. Same mixer,
+  /// same envelopes, same filters, same chunk size — the difference is only who
+  /// decides when.
+  ///
+  /// Consecutive calls must advance `position` by
+  /// `vd_scale(frames, VD_TICKS_PER_SECOND, VD_AUDIO_SAMPLE_RATE)`, which is what
+  /// lets each clip carry on reading where it left off. A position that does not
+  /// follow on re-seeks the clip, and a seek resets its stretcher and its filter
+  /// — which is the click those resets exist to prevent, arriving once a chunk.
+  ///
+  /// Only for a renderer that is not playing. The decode thread mixes from the
+  /// same scratch buffers, and the two would fight over where they are.
+  int vd_audio_renderer_render_at(
+    ffi.Pointer<VdAudioRenderer> renderer,
+    int position,
+    ffi.Pointer<ffi.Float> out,
+    int frames,
+  ) {
+    return _vd_audio_renderer_render_at(renderer, position, out, frames);
+  }
+
+  late final _vd_audio_renderer_render_atPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdAudioRenderer>,
+            VdTick,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
+        >
+      >('vd_audio_renderer_render_at');
+  late final _vd_audio_renderer_render_at = _vd_audio_renderer_render_atPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<VdAudioRenderer>,
+          int,
+          ffi.Pointer<ffi.Float>,
+          int,
+        )
       >();
 
   void vd_audio_renderer_stats(
@@ -3903,6 +4125,95 @@ final class VdEngineStats extends ffi.Struct {
 
   @ffi.Int64()
   external int sticker_bytes;
+}
+
+final class VdExport extends ffi.Opaque {}
+
+/// What the picture is coded as.
+///
+/// Two, and only two, because they are the two answers to one question: H.264
+/// plays everywhere and HEVC is half the size. Anything else is a preference
+/// nobody in this product's audience has. The index crosses the FFI boundary as
+/// an integer — see `ExportCodec` in the plugin — so append only.
+enum VdExportCodec {
+  VD_CODEC_H264(0),
+  VD_CODEC_HEVC(1);
+
+  final int value;
+  const VdExportCodec(this.value);
+
+  static VdExportCodec fromValue(int value) => switch (value) {
+    0 => VD_CODEC_H264,
+    1 => VD_CODEC_HEVC,
+    _ => throw ArgumentError('Unknown value for VdExportCodec: $value'),
+  };
+}
+
+final class VdExportSettings extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int codecAsInt;
+
+  VdExportCodec get codec => VdExportCodec.fromValue(codecAsInt);
+
+  /// Bits per second for the picture. 0 asks for vd_export_default_bitrate,
+  /// which is what every preset uses — a number here is for somebody who knows
+  /// they want one.
+  @ffi.Int64()
+  external int video_bitrate;
+
+  /// Bits per second for the sound. 0 is 192 kbps, which is transparent enough
+  /// for AAC-LC at 48 kHz stereo that nobody will hear the difference and small
+  /// enough that nobody will notice the size.
+  @ffi.Int32()
+  external int audio_bitrate;
+
+  /// False writes no audio track at all. A timeline with nothing that makes a
+  /// sound gets no track either way — a silent AAC stream is not a courtesy.
+  @ffi.Bool()
+  external bool include_audio;
+}
+
+enum VdExportState {
+  VD_EXPORT_RUNNING(0),
+  VD_EXPORT_DONE(1),
+  VD_EXPORT_CANCELLED(2),
+  VD_EXPORT_FAILED(3);
+
+  final int value;
+  const VdExportState(this.value);
+
+  static VdExportState fromValue(int value) => switch (value) {
+    0 => VD_EXPORT_RUNNING,
+    1 => VD_EXPORT_DONE,
+    2 => VD_EXPORT_CANCELLED,
+    3 => VD_EXPORT_FAILED,
+    _ => throw ArgumentError('Unknown value for VdExportState: $value'),
+  };
+}
+
+final class VdExportProgress extends ffi.Struct {
+  /// VdExportState
+  @ffi.Int32()
+  external int state;
+
+  @ffi.Int64()
+  external int frames_written;
+
+  @ffi.Int64()
+  external int frames_total;
+
+  /// Where on the timeline the last written frame was. The number a progress
+  /// bar over a timeline wants, as opposed to the fraction `frames_written`
+  /// gives.
+  @VdTick()
+  external int position;
+
+  /// A negative VdResult once `state` is VD_EXPORT_FAILED, VD_OK otherwise.
+  @ffi.Int32()
+  external int error;
+
+  @ffi.Double()
+  external double elapsed_ms;
 }
 
 final class VdThumbnail extends ffi.Struct {

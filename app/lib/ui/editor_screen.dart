@@ -18,6 +18,7 @@ import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
 import '../model/media.dart';
 import '../model/time.dart';
+import 'export_dialog.dart';
 import 'inspector.dart';
 import 'media_bin.dart';
 import 'shortcut_sheet.dart';
@@ -183,6 +184,12 @@ class _EditorScreenState extends State<EditorScreen> {
         // transition is the one pass that changes what a *cut* looks like, so
         // leaving one on would change every frame the play pass dumps.
         await runTransitionSelfTest(engine, _store);
+        // After every pass that edits, because it is the only one that reads
+        // the *finished* timeline: what it writes should be the edit with the
+        // caption, the shape, the sticker and the transition all in it, and a
+        // pass running after this one would be exporting a different film from
+        // the one the frames above were dumped from.
+        await runExportSelfTest(engine, _store);
         unawaited(runSelfTest(engine, _store.project));
       }
     } catch (error) {
@@ -265,6 +272,25 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  /// The export sheet. Nothing here knows how an export works — it hands the
+  /// document over and gets a path back, or nothing if it was cancelled.
+  ///
+  /// The preview is paused first. Both engines would otherwise be decoding the
+  /// same files at once, and the one the user can see would be the one that
+  /// loses — an export that makes playback stutter reads as an export that has
+  /// broken something.
+  Future<void> _export(BuildContext context) async {
+    if (_engine == null) return;
+    _engine?.pause();
+    final path = await showExportDialog(
+      context,
+      project: _store.project,
+      projectName: widget.open.name,
+    );
+    if (!mounted || path == null) return;
+    setState(() => _notice = 'Exported to $path');
+  }
+
   void _place(MediaAsset asset) {
     _store.endGesture();
     _importer.place(_store, asset);
@@ -319,6 +345,7 @@ class _EditorScreenState extends State<EditorScreen> {
         EditorAction.undo: _store.undo,
         EditorAction.redo: _store.redo,
         EditorAction.import: () => unawaited(_importFromPicker()),
+        EditorAction.export: () => unawaited(_export(context)),
         EditorAction.closeProject: widget.onClose,
         EditorAction.showShortcuts: () => ShortcutSheet.toggle(context),
       };
@@ -360,6 +387,8 @@ class _EditorScreenState extends State<EditorScreen> {
                     open: widget.open,
                     onClose: widget.onClose,
                     onImport: () => unawaited(_importFromPicker()),
+                    onExport:
+                        engine == null ? null : () => unawaited(_export(context)),
                   ),
                   if (_notice != null)
                     _NoticeBar(
@@ -558,11 +587,16 @@ class _EditorBar extends StatelessWidget {
     required this.open,
     required this.onClose,
     required this.onImport,
+    required this.onExport,
   });
 
   final OpenProject open;
   final VoidCallback onClose;
   final VoidCallback onImport;
+
+  /// Null until the engine is up: there is nothing to export from yet, and a
+  /// button that throws is worse than one that waits.
+  final VoidCallback? onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -600,6 +634,12 @@ class _EditorBar extends StatelessWidget {
             onPressed: onImport,
             icon: const Icon(Icons.download_outlined, size: 16),
             label: const Text('Import'),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: onExport,
+            icon: const Icon(Icons.ios_share, size: 16),
+            label: const Text('Export'),
           ),
           const Spacer(),
           IconButton(

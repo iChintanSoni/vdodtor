@@ -670,6 +670,31 @@ VdTick vd_audio_renderer_position(const VdAudioRenderer* r) {
 
 // --- the device's side -----------------------------------------------------
 
+int32_t vd_audio_renderer_render_at(VdAudioRenderer* r, VdTick position,
+                                    float* out, int32_t frames) {
+  if (!r || !out || frames < 0) return VD_ERR_INVALID_ARG;
+  if (frames == 0) return VD_OK;
+
+  pthread_mutex_lock(&r->lock);
+  // In the chunks the decode thread uses, not in one go, and not because the
+  // scratch buffers are that size — though they are. A clip's stretcher and
+  // its filter both carry state across a chunk boundary, so the chunking is
+  // part of what the mix *is*; asking for 48000 frames at once would be a
+  // different sound from the one that played, quietly.
+  int32_t done = 0;
+  while (done < frames) {
+    int32_t chunk = frames - done;
+    if (chunk > VD_AUDIO_CHUNK_FRAMES) chunk = VD_AUDIO_CHUNK_FRAMES;
+    mix_at(r, position, out + (size_t)done * VD_AUDIO_CHANNELS, chunk);
+    // The same advance mix_at itself uses to set `expected_position`, which is
+    // what keeps every clip reading on rather than re-seeking each chunk.
+    position += vd_scale(chunk, VD_TICKS_PER_SECOND, VD_AUDIO_SAMPLE_RATE);
+    done += chunk;
+  }
+  pthread_mutex_unlock(&r->lock);
+  return VD_OK;
+}
+
 int32_t vd_audio_renderer_pull(VdAudioRenderer* r, float* out, int32_t frames) {
   if (!r || !out || frames <= 0) return 0;
 

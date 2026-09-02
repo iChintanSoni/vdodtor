@@ -42,6 +42,7 @@ enum EditorAction {
   undo,
   redo,
   import,
+  export,
   closeProject,
   showShortcuts,
 }
@@ -171,6 +172,9 @@ const List<ShortcutSpec> editorShortcuts = [
   ShortcutSpec(EditorAction.import,
       [SingleActivator(LogicalKeyboardKey.keyI, meta: true)],
       'Import media…', ShortcutGroup.project),
+  ShortcutSpec(EditorAction.export,
+      [SingleActivator(LogicalKeyboardKey.keyE, meta: true)],
+      'Export…', ShortcutGroup.project),
   ShortcutSpec(EditorAction.closeProject,
       [SingleActivator(LogicalKeyboardKey.keyW, meta: true)],
       'Close the project', ShortcutGroup.project),

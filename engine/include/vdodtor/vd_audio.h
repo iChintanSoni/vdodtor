@@ -165,6 +165,28 @@ VD_EXPORT bool vd_audio_renderer_clock_valid(const VdAudioRenderer* renderer);
 VD_EXPORT int32_t vd_audio_renderer_pull(VdAudioRenderer* renderer, float* out,
                                          int32_t frames);
 
+// Mixes `frames` of interleaved stereo for timeline position `position`,
+// straight into `out`, synchronously on the calling thread.
+//
+// The audio half of vd_engine_render_at, and the same bargain: no ring, no
+// decode thread, no clock. The device path exists to keep up with a deadline
+// and counts an underrun when it cannot; an export has no deadline, so it asks
+// the mixer what a moment sounds like and waits for the answer. Same mixer,
+// same envelopes, same filters, same chunk size — the difference is only who
+// decides when.
+//
+// Consecutive calls must advance `position` by
+// `vd_scale(frames, VD_TICKS_PER_SECOND, VD_AUDIO_SAMPLE_RATE)`, which is what
+// lets each clip carry on reading where it left off. A position that does not
+// follow on re-seeks the clip, and a seek resets its stretcher and its filter
+// — which is the click those resets exist to prevent, arriving once a chunk.
+//
+// Only for a renderer that is not playing. The decode thread mixes from the
+// same scratch buffers, and the two would fight over where they are.
+VD_EXPORT int32_t vd_audio_renderer_render_at(VdAudioRenderer* renderer,
+                                              VdTick position, float* out,
+                                              int32_t frames);
+
 typedef struct {
   int64_t frames_rendered;
   // Times the device asked for audio that had not been decoded yet. Any

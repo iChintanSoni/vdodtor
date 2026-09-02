@@ -204,6 +204,8 @@ static NSDictionary *vd_file_entry(NSURL *url) {
                   result:(FlutterResult)result {
   if ([call.method isEqualToString:@"pickFiles"]) {
     [self pickFiles:call result:result];
+  } else if ([call.method isEqualToString:@"saveFile"]) {
+    [self saveFile:call result:result];
   } else if ([call.method isEqualToString:@"bookmark"]) {
     NSString *path = call.arguments[@"path"];
     if (![path isKindOfClass:[NSString class]] || path.length == 0) {
@@ -295,6 +297,61 @@ static NSDictionary *vd_file_entry(NSURL *url) {
   // Never runModal: it spins its own run loop on the platform thread, and
   // everything Flutter needs to do — including drawing the window the panel is
   // attached to — happens on that thread.
+  NSWindow *window = _view.window;
+  if (window) {
+    [panel beginSheetModalForWindow:window completionHandler:finish];
+  } else {
+    [panel beginWithCompletionHandler:finish];
+  }
+}
+
+// The save panel, which is how an export gets somewhere to write.
+//
+// The sandbox grants the app nothing outside its own container, and the
+// user-selected read-write entitlement is what a panel turns into permission.
+// So an export cannot be handed a path the app made up — even one under
+// ~/Movies — and the panel is not a convenience here but the mechanism.
+//
+// It is also where "overwrite?" is asked and answered, which is why
+// vd_export_start removes an existing file rather than refusing one.
+- (void)saveFile:(FlutterMethodCall *)call result:(FlutterResult)result {
+  if (_panelOpen) {
+    result(nil);
+    return;
+  }
+
+  NSSavePanel *panel = [NSSavePanel savePanel];
+  NSString *name = call.arguments[@"name"];
+  if ([name isKindOfClass:[NSString class]] && name.length > 0) {
+    panel.nameFieldStringValue = name;
+  }
+  NSString *extension = call.arguments[@"extension"];
+  if ([extension isKindOfClass:[NSString class]] && extension.length > 0) {
+    UTType *type = [UTType typeWithFilenameExtension:extension];
+    if (type != nil) panel.allowedContentTypes = @[ type ];
+  }
+  NSString *message = call.arguments[@"message"];
+  if ([message isKindOfClass:[NSString class]]) panel.message = message;
+  NSString *prompt = call.arguments[@"prompt"];
+  if ([prompt isKindOfClass:[NSString class]]) panel.prompt = prompt;
+  // The extension is the container and the container is not a detail: a file
+  // saved as "cut" rather than "cut.mp4" opens in nothing.
+  panel.canCreateDirectories = YES;
+  panel.extensionHidden = NO;
+
+  _panelOpen = YES;
+  __weak VdMediaAccess *weakSelf = self;
+  void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+    VdMediaAccess *strongSelf = weakSelf;
+    if (strongSelf) strongSelf->_panelOpen = NO;
+    if (response != NSModalResponseOK || panel.URL == nil) {
+      // Cancelling is not an error, exactly as for the open panel.
+      result(nil);
+      return;
+    }
+    result(vd_file_entry(panel.URL));
+  };
+
   NSWindow *window = _view.window;
   if (window) {
     [panel beginSheetModalForWindow:window completionHandler:finish];

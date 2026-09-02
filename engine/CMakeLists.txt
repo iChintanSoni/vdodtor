@@ -70,7 +70,7 @@ if(APPLE)
 
   list(APPEND VD_EXTRA_SOURCES "${VD_METAL_EMBED}" src/vd_compositor.mm
        src/vd_raster.c src/vd_text.mm src/vd_shape.c
-       src/vd_sticker.c)
+       src/vd_sticker.c src/vd_export.mm)
 endif()
 
 # --- engine -----------------------------------------------------------------
@@ -104,7 +104,7 @@ if(APPLE)
     "-framework CoreVideo" "-framework CoreMedia"
     "-framework VideoToolbox" "-framework Metal" "-framework CoreFoundation"
     "-framework CoreGraphics" "-framework CoreText" "-framework ImageIO"
-    "-framework QuartzCore"
+    "-framework QuartzCore" "-framework AVFoundation"
     "-framework Foundation" "-framework AudioToolbox")
 endif()
 
