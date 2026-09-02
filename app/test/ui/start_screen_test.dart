@@ -158,6 +158,76 @@ void main() {
     expect(relaunched!.recovery, isNull);
   });
 
+  testWidgets('offers a problem report from the run that hit one',
+      (tester) async {
+    // The other half of the offer above. A hard exit takes the project back
+    // to the chooser; a Dart fault leaves a file on the disk, and the chooser
+    // is the window that gets to mention it — nobody was told at the time,
+    // because nothing is sent anywhere.
+    final workspace = await tester.runAsync(() async {
+      final crashed = Workspace(paths: paths, autosaveDebounce: Duration.zero);
+      await crashed.start();
+      crashed.crashes.record(
+        StateError('the compositor said no'),
+        null,
+        context: 'while building a widget',
+      );
+      crashed.dispose();
+
+      final next = Workspace(paths: paths, autosaveDebounce: Duration.zero);
+      await next.start();
+      return next;
+    });
+    await pumpStart(tester, workspace!);
+
+    expect(find.textContaining('sent nowhere'), findsOneWidget);
+
+    await tester.tap(find.text('Dismiss'));
+    await settleIo(tester);
+    expect(find.textContaining('sent nowhere'), findsNothing);
+
+    // Dismissed, not deleted, and not offered again: the report is the only
+    // account of the fault that exists anywhere, and the About sheet is where
+    // it stays reachable.
+    final relaunched = await tester.runAsync(() async {
+      final next = Workspace(paths: paths, autosaveDebounce: Duration.zero);
+      await next.start();
+      return next;
+    });
+    expect(relaunched!.crashes.hasUnseen, isFalse);
+    expect(relaunched.crashes.count, 1);
+  });
+
+  testWidgets('showing the report does not repaint the banner under it',
+      (tester) async {
+    // The regression the crash reporter caught about itself, on its first run
+    // in the real app. Opening the sheet marks the offer seen, the banner is
+    // an AnimatedBuilder listening to the same notifier, and the sheet's
+    // `initState` runs inside the build that pushes its route — so notifying
+    // from there is "setState() called during build" on the widget
+    // underneath. It only happens when the banner and the sheet are in one
+    // tree, which is why neither of their own test files could see it.
+    final workspace = await tester.runAsync(() async {
+      final crashed = Workspace(paths: paths, autosaveDebounce: Duration.zero);
+      await crashed.start();
+      crashed.crashes.record(StateError('boom'), null, context: 'x');
+      crashed.dispose();
+
+      final next = Workspace(paths: paths, autosaveDebounce: Duration.zero);
+      await next.start();
+      return next;
+    });
+    await pumpStart(tester, workspace!);
+
+    await tester.tap(find.text('Show report'));
+    await settleIo(tester);
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Problem reports'), findsOneWidget);
+    // And the offer is over, which is what the notification was for.
+    expect(workspace.crashes.hasUnseen, isFalse);
+  });
+
   testWidgets('the chooser is where the licences are reachable from',
       (tester) async {
     // The About sheet is opened from here and nowhere else, which is what

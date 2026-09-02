@@ -60,6 +60,16 @@ abstract final class About {
   /// asking.
   static final download = Uri.parse('https://vdodtor.app/download');
 
+  /// Where a problem gets reported, by a person, on purpose.
+  ///
+  /// The other half of [download]'s bargain. vdodtor writes a problem report
+  /// to a file on the user's own disk and sends it nowhere — it has no socket
+  /// to send it down — so the only route one takes to us is somebody reading
+  /// it and pasting it in here. See `lib/app/crash.dart` for why that is the
+  /// strongest form of "opt-in" available rather than the weakest, and why
+  /// there are no analytics of any kind for the same reason.
+  static final bugs = Uri.parse('https://vdodtor.app/bugs');
+
   /// What is in here that we did not write, and on what terms. Markdown, shown
   /// as it is: this is the file that ships, and a prettier rendering of it
   /// would be a second document to keep true.

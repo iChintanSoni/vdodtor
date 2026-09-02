@@ -42,7 +42,12 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > purpose — vdodtor has no network entitlement, so it cannot open a socket at all, and
 > "Check for updates…" opens the download page in the browser. A promise anybody can
 > verify with `codesign -d --entitlements` is worth more than telling people about a
-> point release. What is left in M4 is crash reporting and the signing key.
+> point release. **And crash reporting is settled the same way**: a Dart fault is
+> written to a file on the user's own disk with every absolute path scrubbed out of it,
+> the chooser offers it at the next launch, and it reaches us only if somebody reads it
+> and pastes it — which is what opt-in means for an app that cannot open a socket, and
+> the end of the analytics question too: none, not even a count. Its first catch in the
+> running app was itself. What is left in M4 is the signing key and two calls to Apple.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1908,7 +1913,51 @@ look, one slow-mo moment) entirely in vdodtor.
       second is the useful one — a socket added here fails inside the sandbox, which is
       a user's bug report rather than a red test, and outside it, under `flutter run`, it
       would appear to work perfectly.
-- [ ] Opt-in crash reporting; analytics none-or-anonymous (positioning demands restraint)
+- [x] Crash reporting — **opt-in, and the opting in is a person pressing paste**
+      Analytics: **none**, which resolves the "none-or-anonymous" this line used to offer
+      a choice between. Both answers fall out of the update-channel item above rather
+      than being decided again: vdodtor has no `com.apple.security.network.client`
+      entitlement, so every design that begins "the app uploads a report" or "the app
+      counts a launch" is unavailable before it is evaluated, and even an anonymous
+      counter would cost the one claim `codesign -d --entitlements` can settle in ten
+      seconds.
+      So a Dart fault is written to a text file in Application Support, the chooser
+      offers it at the **next** launch, and the About sheet grows a third tab showing it
+      verbatim with Copy, Delete, and a button to the bug page in the browser. That is
+      opt-in in the strongest form the word has: the usual version is a checkbox beside a
+      server, and it asks the user to believe the box does what it says; here the consent
+      *is* the paste.
+      **The redaction is the part that needed work, and it runs before the write.**
+      Absolute paths become `<path>`, keeping the extension — `<path>.mov` — because the
+      diagnostic value of a path in a crash is almost always "it was a `.mov`", and
+      everything else in it is the user's account name, their folder layout and the names
+      of their footage. `package:` and `dart:` URIs survive untouched, which is what
+      keeps a stack trace worth reading, and it falls out of a path having to begin at a
+      boundary. Scrubbing on the way to the *disk* rather than on the way to the *screen*
+      is deliberate: there is then no unscrubbed copy anywhere for anything later to
+      find. `app/test/app/crash_test.dart` holds the whole rule as a table, and the rows
+      that keep something are as load-bearing as the rows that remove something — a
+      redactor that ate the stack trace would be perfectly private and perfectly useless.
+      **What it cannot see, said out loud rather than left to be discovered.** A signal in
+      the C engine kills the process before Dart gets another turn, and macOS writes that
+      one to `~/Library/Logs/DiagnosticReports`, which a sandboxed app is not granted. So
+      the sheet says where those live instead of pretending the list is complete — and
+      the project half of a hard exit was already covered from the other end by the
+      session marker, which offers the project back.
+      `about_test.dart` gains the analytics half of the no-network guard: no telemetry
+      SDK may be a **dependency**, because a crash-reporting package brings its own
+      socket, its own background upload and its own opinion about what counts as
+      anonymous, and none of that appears in the existing grep of `lib/` for
+      `HttpClient`.
+      **Found by doing this — by the reporter itself, on its first run in the real app.**
+      Opening the sheet marks the offer seen, the chooser's banner listens to the same
+      notifier, and a dialog's `initState` runs inside the build that pushes its route,
+      so the first thing the new crash reporter ever recorded was a `setState() called
+      during build` caused by the new crash reporter. It is why `record` never notifies
+      at all — it runs inside `FlutterError.onError`, in the middle of a frame that is
+      already failing — and why `markSeen` from the sheet is deferred to after the frame.
+      The regression test lives in `start_screen_test.dart` rather than beside either
+      piece, because it only appears when the banner and the sheet are in one tree.
 
 **Exit criteria:** a stranger can download the DMG, edit a video, hit the 4K gate,
 buy Pro, and export 4K — with no help.

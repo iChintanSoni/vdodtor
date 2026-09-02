@@ -33,7 +33,8 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
            `lib/media` — import, thumbnails, waveforms, bundled fonts, sandbox file
            access — `lib/pro` — what this installation has paid for, and the signed
-           licence that says so — and `lib/ui`);
+           licence that says so — `lib/app` — what this build is, and what went wrong
+           on this machine that nobody was told about — and `lib/ui`);
            `assets/fonts` holds the five OFL faces a caption can be set in, and
            `assets/luts` the five .cube looks a clip can wear, and `assets/packs`
            the signed content packs it ships, and `assets/notices` what is in
@@ -286,6 +287,25 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   notice, a disk image is a thing people throw away the day they mount it, and the
   chooser is the window every launch starts in. The same two files go into the image as
   well, because somebody deciding whether to install should not have to install first.
+- **A crash report is written, never sent, and scrubbed on the way to the disk.**
+  The entitlement above decides this one too: nothing can upload a report and nothing
+  can count a launch, so `lib/app/crash.dart` writes a Dart fault to a file in
+  Application Support, the chooser offers it at the **next** launch, and the About
+  sheet's third tab shows it verbatim with Copy beside it. That is the strongest form
+  of opt-in available — there is no server to consent to and the consent *is* the
+  paste — and it is also the whole of the analytics answer: none, because an anonymous
+  counter would cost the claim in the entry below. `CrashReport.redact` replaces
+  absolute paths with `<path>` **before the file is written**, keeping the extension
+  (`<path>.mov`) because that is the diagnostic half and the rest is the user's account
+  name and the names of their footage; `package:` and `dart:` URIs survive, which is
+  what keeps a stack trace worth reading. Scrubbing before the write rather than before
+  the display is the point: there is then no unscrubbed copy for anything later to
+  find. A signal in the C engine is *not* in here — it kills the process before Dart
+  gets a turn, and macOS puts it somewhere the sandbox cannot read — so the sheet says
+  where it lives instead. And `record` **never notifies**: it runs inside
+  `FlutterError.onError`, in the middle of a frame that is already failing, and a
+  repaint scheduled from there is a second failure on top of the first. That is not a
+  theory — it is what the reporter caught about itself on its first run.
 - **The app cannot open a socket, and that is a feature rather than a gap.** There is
   no `com.apple.security.network.client` entitlement in `Release.entitlements`, so
   nothing in vdodtor can reach the network — including an updater, which is why there
