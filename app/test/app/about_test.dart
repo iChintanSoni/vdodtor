@@ -183,6 +183,36 @@ void main() {
       expect(entitlements, isNot(contains('com.apple.security.network')));
     });
 
+    test('and there is no telemetry package to do it for us', () {
+      // The analytics half of the same promise, and the failure it guards is
+      // a line in a pubspec rather than a line in `lib`: an analytics or
+      // crash-reporting SDK brings its own socket, its own background upload
+      // and its own opinion about what counts as anonymous, and none of that
+      // appears in a grep for `HttpClient`. The answer for this product is
+      // none — not an anonymous count, not a first-run ping — because the
+      // entitlement one would need is what the claim above is made of. See
+      // lib/app/crash.dart for what vdodtor does instead: writes the fault to
+      // a file and lets the user decide whether to send it.
+      const telemetry = [
+        'sentry',
+        'firebase',
+        'crashlytics',
+        'posthog',
+        'amplitude',
+        'mixpanel',
+        'segment',
+        'datadog',
+        'bugsnag',
+        'appcenter',
+        'google_analytics',
+      ];
+
+      final pubspec = File('pubspec.yaml').readAsStringSync().toLowerCase();
+      for (final name in telemetry) {
+        expect(pubspec, isNot(contains(name)), reason: '$name is a dependency');
+      }
+    });
+
     test('and nothing in the app so much as tries', () {
       // The entitlement is what *stops* it; this is what stops somebody
       // spending an afternoon on an updater before finding out. A socket in

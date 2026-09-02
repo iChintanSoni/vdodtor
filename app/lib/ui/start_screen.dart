@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app/crash.dart';
 import '../app/workspace.dart';
 import '../pro/licensing.dart';
 import 'about_dialog.dart';
@@ -44,6 +45,39 @@ class StartScreen extends StatelessWidget {
                 const Text('A video editor that gets out of the way.',
                     style: TextStyle(color: VdColors.dim)),
                 const SizedBox(height: 28),
+                // Listening to the reporter rather than to the workspace: it
+                // is the thing that changes when the offer is dismissed, and
+                // it deliberately does not notify from inside a failing frame
+                // — see lib/app/crash.dart.
+                AnimatedBuilder(
+                  animation: workspace.crashes,
+                  builder: (context, _) => workspace.crashes.hasUnseen
+                      ? Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _Banner(
+                            icon: Icons.bug_report_outlined,
+                            tint: VdColors.warn,
+                            message: 'vdodtor hit a problem it could not '
+                                'handle. A report was written on this machine '
+                                'and sent nowhere.',
+                            actions: [
+                              TextButton(
+                                onPressed: workspace.crashes.markSeen,
+                                child: const Text('Dismiss'),
+                              ),
+                              FilledButton(
+                                onPressed: () => unawaited(showAboutSheet(
+                                  context,
+                                  reports: workspace.crashes,
+                                  initial: AboutTab.reports,
+                                )),
+                                child: const Text('Show report'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
                 if (workspace.recovery != null) ...[
                   _Banner(
                     icon: Icons.restore,
@@ -131,7 +165,10 @@ class StartScreen extends StatelessWidget {
                         ),
                 ),
                 const Divider(height: 1, color: VdColors.line),
-                _Tier(licensing: workspace.licensing),
+                _Tier(
+                  licensing: workspace.licensing,
+                  crashes: workspace.crashes,
+                ),
               ],
             ),
           ),
@@ -152,9 +189,14 @@ class StartScreen extends StatelessWidget {
 /// of this file is that the chooser has no upsell on it, and a sentence
 /// stating what you already have is not one.
 class _Tier extends StatelessWidget {
-  const _Tier({required this.licensing});
+  const _Tier({required this.licensing, required this.crashes});
 
   final Licensing licensing;
+
+  /// Handed to the About sheet so the problem reports stay reachable after
+  /// the banner has been dismissed. One sheet with two doors rather than two
+  /// views of one text file.
+  final CrashReporter crashes;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
@@ -177,7 +219,8 @@ class _Tier extends StatelessWidget {
               // notice" means for the LGPL libraries the sheet lists — and
               // the editor's bar is for editing.
               TextButton(
-                onPressed: () => unawaited(showAboutSheet(context)),
+                onPressed: () =>
+                    unawaited(showAboutSheet(context, reports: crashes)),
                 child: const Text('About…'),
               ),
               TextButton(

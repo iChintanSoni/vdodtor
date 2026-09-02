@@ -17,6 +17,7 @@ import '../persistence/session.dart';
 import '../pro/entitlement.dart';
 import '../pro/licence_store.dart';
 import '../pro/licensing.dart';
+import 'crash.dart';
 
 /// What the window is showing.
 enum WorkspaceStage {
@@ -99,10 +100,12 @@ class Workspace extends ChangeNotifier {
     IdGen? ids,
     FileAccess? access,
     Licensing? licensing,
+    CrashReporter? crashes,
     Future<AppPaths> Function()? resolvePaths,
     this.autosaveDebounce = const Duration(milliseconds: 400),
   })  : _ids = ids ?? IdGen(),
         _access = access ?? const SystemFileAccess(),
+        crashes = crashes ?? CrashReporter(),
         _resolvePaths = resolvePaths ?? AppPaths.resolve {
     _paths = paths;
     _licensing = licensing;
@@ -125,6 +128,13 @@ class Workspace extends ChangeNotifier {
   Entitlement get entitlement => licensing.entitlement;
 
   Licensing? _licensing;
+
+  /// Dart faults, written down and kept. Owned here beside [licensing] and
+  /// the paths for the same reason — it is app-wide, it outlives every
+  /// project, and its directory is under [AppPaths] — but constructed in
+  /// `main` and handed in, because the handlers have to be installed before
+  /// there is a workspace to fail.
+  final CrashReporter crashes;
 
   /// How the app gets at the user's own media. Injected so opening a project
   /// full of bookmarked footage is testable without a sandbox.
@@ -178,6 +188,11 @@ class Workspace extends ChangeNotifier {
   Future<void> start() async {
     try {
       _paths ??= await _resolvePaths();
+      // First, so that anything which went wrong before storage was reachable
+      // — and anything that goes wrong in the rest of this method — is on
+      // disk rather than in a list that dies with the process.
+      crashes.attach(paths.reports);
+
       _library = ProjectLibrary(paths.library);
       _recents = RecentProjects(paths.recentsFile);
       _session = SessionMarker(paths.sessionFile);
@@ -476,6 +491,7 @@ class Workspace extends ChangeNotifier {
       _open = null;
     }
     _licensing?.dispose();
+    crashes.dispose();
     super.dispose();
   }
 }

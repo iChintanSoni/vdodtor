@@ -11,6 +11,7 @@ final class AppPaths {
     required this.support,
     required this.library,
     required this.peaks,
+    required this.reports,
   });
 
   /// App-private state: the recents list, the session marker, caches. Nothing
@@ -36,6 +37,15 @@ final class AppPaths {
   /// once between them, and a project copied to another machine should not
   /// carry megabytes of something that machine can work out for itself.
   final Directory peaks;
+
+  /// Problem reports: what went wrong, written down and sent nowhere.
+  ///
+  /// Under `support` with the rest of the app's private state, and pointedly
+  /// **not** beside [peaks] in spirit even though it is beside it on disk: a
+  /// cache may be thrown away by anything that needs the space, and a report
+  /// is evidence — it is the only account of a fault that exists anywhere,
+  /// because there is no server holding a copy. See `lib/app/crash.dart`.
+  final Directory reports;
 
   File get recentsFile => File('${support.path}/recents.json');
   File get sessionFile => File('${support.path}/session.json');
@@ -82,6 +92,8 @@ final class AppPaths {
       support: support,
       library: await _canonical(library),
       peaks: await Directory('${support.path}/Peaks').create(recursive: true),
+      reports:
+          await Directory('${support.path}/Reports').create(recursive: true),
     );
   }
 

@@ -4,6 +4,7 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app/crash.dart';
 import 'app/workspace.dart';
 import 'dev/self_test.dart';
 import 'media/fonts.dart';
@@ -15,8 +16,13 @@ import 'ui/start_screen.dart';
 import 'ui/theme.dart';
 
 void main() {
+  // Before anything else, including the bindings: a fault while Flutter is
+  // starting up is exactly the one nobody can reproduce, and the handlers cost
+  // two assignments. Nothing is sent anywhere — see lib/app/crash.dart.
+  final crashes = CrashReporter()..install();
+
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(VdodtorApp(workspace: Workspace()));
+  runApp(VdodtorApp(workspace: Workspace(crashes: crashes)));
 }
 
 /// The window. It shows exactly one of two things — the project chooser or an
