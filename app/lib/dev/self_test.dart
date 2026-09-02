@@ -77,7 +77,16 @@ Future<void> runExportSelfTest(PreviewEngine engine, DocumentStore store) async 
     return;
   }
 
+  // Free, like a fresh installation — which is what makes the line below a
+  // check on the gate and not a way around it. The self-test project is
+  // 1080p, so the gate lets it through; a 4K one would stop here, which is
+  // the point.
   final plan = ExportPlan.of(project);
+  if (!plan.isPermitted) {
+    stdout.writeln('[selftest] export: '
+        '${plan.outputFormat.width}x${plan.outputFormat.height} needs Pro');
+    return;
+  }
   final path = '${Directory.systemTemp.path}/vdodtor_selftest_export.mp4';
   final file = File(path);
   if (file.existsSync()) file.deleteSync();

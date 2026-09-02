@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/engine/export_plan.dart';
 import 'package:vdodtor/model/project.dart';
 import 'package:vdodtor/model/time.dart';
+import 'package:vdodtor/pro/entitlement.dart';
 import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../fixtures.dart';
@@ -184,6 +185,124 @@ void main() {
       final timeline = planFor(project).timelineFor(project);
       expect(timeline.width, project.format.width);
       expect(timeline.height, project.format.height);
+    });
+  });
+
+  group('the resolution gate', () {
+    /// A project cut above the free tier, which is the case the gate is
+    /// easiest to get wrong on: nothing has to be *picked* for the output to
+    /// be 4K.
+    Project uhdProject() => Project.empty(
+          id: 'pr-uhd',
+          name: 'Big',
+          format: const ProjectFormat(
+              width: 3840, height: 2160, frameRate: FrameRates.fps30),
+          mainTrackId: mainTrackId,
+          audioTrackId: audioTrackId,
+        ).addMedia(videoAsset('m1')).updateTrack(
+              mainTrackId,
+              (t) => t.withClips([
+                clipOf('a', 'm1', start: Tick.zero, duration: secs(2)),
+              ]),
+            );
+
+    test('free may write 1080p and below, Pro may write anything', () {
+      final free = ExportPlan.of(projectWithThreeClips());
+      expect(free.tier, Tier.free);
+      expect(free.isPermitted, isTrue);
+      expect(free.copyWith(resolution: ExportResolution.hd720).isPermitted,
+          isTrue);
+      expect(free.copyWith(resolution: ExportResolution.hd1080).isPermitted,
+          isTrue);
+      expect(free.copyWith(resolution: ExportResolution.uhd4k).isPermitted,
+          isFalse);
+
+      final pro = free.copyWith(tier: Tier.pro);
+      for (final resolution in ExportResolution.values) {
+        expect(pro.copyWith(resolution: resolution).isPermitted, isTrue,
+            reason: '$resolution should be permitted for Pro');
+      }
+    });
+
+    test('the gate is on the pixels, not on which chip is lit', () {
+      // "Same as project" on a 4K project is a 4K file, and asking for the
+      // project's own size is the one way to reach 4K without pressing 4K.
+      final plan = ExportPlan.of(uhdProject(), tier: Tier.pro);
+      expect(plan.resolution, ExportResolution.matchProject);
+      expect(plan.isAboveFreeTier, isTrue);
+      expect(plan.copyWith(tier: Tier.free).isPermitted, isFalse);
+    });
+
+    test('a free sheet opens on the biggest size it can actually write', () {
+      final free = ExportPlan.of(uhdProject());
+      expect(free.resolution, ExportResolution.hd1080);
+      expect(free.isPermitted, isTrue);
+      expect(free.outputFormat.width, 1920);
+      expect(free.outputFormat.height, 1080);
+
+      // And a Pro sheet on the same project opens on the project itself.
+      expect(ExportPlan.of(uhdProject(), tier: Tier.pro).resolution,
+          ExportResolution.matchProject);
+    });
+
+    test('a 1080p project opens on its own size either way', () {
+      expect(ExportPlan.of(projectWithThreeClips()).resolution,
+          ExportResolution.matchProject);
+      expect(ExportPlan.of(projectWithThreeClips(), tier: Tier.pro).resolution,
+          ExportResolution.matchProject);
+    });
+
+    test('the tier changes what may be written and never what is written', () {
+      // The product promise, as an assertion: no watermark, no shortened
+      // export, no quieter encode, nothing. Free and Pro hand the engine the
+      // same render list and the same settings — the tier is a yes or a no on
+      // the way to the file and reaches nothing below it.
+      final project = projectWithThreeClips();
+      final free = ExportPlan.of(project);
+      final pro = free.copyWith(tier: Tier.pro);
+
+      final a = free.timelineFor(project);
+      final b = pro.timelineFor(project);
+      expect(a.width, b.width);
+      expect(a.height, b.height);
+      expect(a.frameRateNumerator, b.frameRateNumerator);
+      expect(a.frameRateDenominator, b.frameRateDenominator);
+      expect(a.clips.length, b.clips.length);
+      expect(free.videoBitrate, pro.videoBitrate);
+      expect(free.estimatedBytes, pro.estimatedBytes);
+      expect(free.frameCount, pro.frameCount);
+      expect(free.settings.codec, pro.settings.codec);
+      expect(free.settings.includeAudio, pro.settings.includeAudio);
+    });
+
+    test('a locked size still says exactly what it would produce', () {
+      // The chip is selectable and the numbers are real; the refusal is on
+      // the button. Somebody deciding whether to buy Pro should be able to see
+      // what they would be buying.
+      final locked = ExportPlan.of(projectWithThreeClips())
+          .copyWith(resolution: ExportResolution.uhd4k);
+      expect(locked.isPermitted, isFalse);
+      expect(locked.outputFormat.width, 3840);
+      expect(locked.videoBitrate, greaterThan(0));
+      expect(locked.estimatedBytes, greaterThan(0));
+    });
+
+    test('a badge is offered for what this installation cannot write', () {
+      final free = ExportPlan.of(projectWithThreeClips());
+      expect(free.needsPro(ExportResolution.matchProject), isFalse);
+      expect(free.needsPro(ExportResolution.hd720), isFalse);
+      expect(free.needsPro(ExportResolution.hd1080), isFalse);
+      expect(free.needsPro(ExportResolution.uhd4k), isTrue);
+
+      final pro = free.copyWith(tier: Tier.pro);
+      for (final resolution in ExportResolution.values) {
+        expect(pro.needsPro(resolution), isFalse);
+      }
+
+      // On a 4K project the project's own size is what carries the badge.
+      expect(
+          ExportPlan.of(uhdProject()).needsPro(ExportResolution.matchProject),
+          isTrue);
     });
   });
 

@@ -18,6 +18,7 @@ import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
 import '../model/media.dart';
 import '../model/time.dart';
+import '../pro/entitlement.dart';
 import 'export_dialog.dart';
 import 'inspector.dart';
 import 'media_bin.dart';
@@ -40,6 +41,7 @@ class EditorScreen extends StatefulWidget {
     required this.open,
     required this.onClose,
     required this.access,
+    required this.entitlement,
     this.prober = const EngineMediaProber(),
     this.peakCache,
     this.lookLibrary,
@@ -47,6 +49,10 @@ class EditorScreen extends StatefulWidget {
 
   final OpenProject open;
   final VoidCallback onClose;
+
+  /// What this installation has paid for. Read by exactly one thing — the
+  /// export sheet — which is the whole of the free/Pro line in the editor.
+  final Entitlement entitlement;
 
   /// How the app gets at the user's files: the panel, drops and bookmarks.
   final FileAccess access;
@@ -286,6 +292,7 @@ class _EditorScreenState extends State<EditorScreen> {
       context,
       project: _store.project,
       projectName: widget.open.name,
+      entitlement: widget.entitlement,
     );
     if (!mounted || path == null) return;
     setState(() => _notice = 'Exported to $path');

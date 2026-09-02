@@ -134,6 +134,7 @@ class _VdodtorAppState extends State<VdodtorApp> {
           key: ValueKey(open.path),
           open: open,
           access: workspace.fileAccess,
+          entitlement: workspace.entitlement,
           peakCache: workspace.paths.peaks,
           lookLibrary: BundledLooks.libraryOf(workspace.paths.support),
           onClose: () => unawaited(workspace.close()),

@@ -12,6 +12,7 @@ import 'package:vdodtor_engine/vdodtor_engine.dart';
 
 import '../model/project.dart';
 import '../model/time.dart';
+import '../pro/entitlement.dart';
 import 'timeline_sync.dart';
 
 /// The size an export is written at.
@@ -71,12 +72,26 @@ class ExportPlan {
     this.resolution = ExportResolution.matchProject,
     this.codec = ExportCodec.h264,
     this.includeAudio = true,
+    this.tier = Tier.free,
   });
 
-  /// The plan for [project] at its own size, which is what the sheet opens on.
-  factory ExportPlan.of(Project project) => ExportPlan(
+  /// The plan the sheet opens on: the project's own size, unless this
+  /// installation may not write one that big.
+  ///
+  /// **The sheet opens on the largest size it can actually write.** A free
+  /// installation with a 4K project would otherwise open on a choice it has to
+  /// refuse, so the first thing the user saw would be a locked button — which
+  /// is the upsell-first behaviour this product exists in opposition to. It
+  /// opens on 1080p instead, with the project's own size sitting one chip away
+  /// wearing a badge. Nothing is hidden and nothing is silently substituted:
+  /// the line under the picker always says the size that will be written.
+  factory ExportPlan.of(Project project, {Tier tier = Tier.free}) => ExportPlan(
         format: project.format,
         duration: project.duration,
+        tier: tier,
+        resolution: tier.isPro || !project.format.isAboveFreeTier
+            ? ExportResolution.matchProject
+            : ExportResolution.hd1080,
       );
 
   /// The *project's* format, not the export's — see [outputFormat].
@@ -87,10 +102,19 @@ class ExportPlan {
   final ExportCodec codec;
   final bool includeAudio;
 
+  /// What this installation may write — see [isPermitted].
+  ///
+  /// It is on the plan and not read from a notifier deeper down so that the
+  /// gate is a property of the *decision*, testable with no widget and no
+  /// engine, in the file that already owns every other consequence of the four
+  /// choices in the sheet.
+  final Tier tier;
+
   ExportPlan copyWith({
     ExportResolution? resolution,
     ExportCodec? codec,
     bool? includeAudio,
+    Tier? tier,
   }) =>
       ExportPlan(
         format: format,
@@ -98,6 +122,7 @@ class ExportPlan {
         resolution: resolution ?? this.resolution,
         codec: codec ?? this.codec,
         includeAudio: includeAudio ?? this.includeAudio,
+        tier: tier ?? this.tier,
       );
 
   /// What the file will be.
@@ -110,7 +135,28 @@ class ExportPlan {
 
   /// Whether this export needs Pro. Product brief §5: the free editor exports
   /// at 1080p, with no watermark, ever.
+  ///
+  /// Measured on [outputFormat] and never on which chip is lit, because 4K is
+  /// not the only way to ask for 4K: "same as project" on a project that was
+  /// cut at 4K is the same file. The gate is on the number of pixels leaving
+  /// the machine, so there is one rule and no second place to get it wrong.
   bool get isAboveFreeTier => outputFormat.isAboveFreeTier;
+
+  /// Whether this export may be written at all.
+  ///
+  /// **The gate is the whole mechanism.** There is no watermark, no
+  /// shortened export, no reduced quality and no silent downscale — a file
+  /// that came out smaller than the one that was asked for is worse than a
+  /// refusal, because nobody re-checks the dimensions of a render they
+  /// watched finish. Above the free tier without Pro, nothing is written and
+  /// the sheet says so; below it, the tier changes nothing whatsoever about
+  /// the file, which is what [timelineFor] and [settings] not mentioning it
+  /// is the proof of.
+  bool get isPermitted => tier.isPro || !isAboveFreeTier;
+
+  /// Whether picking [resolution] would need Pro, for badging the chips.
+  bool needsPro(ExportResolution resolution) =>
+      !tier.isPro && resolution.formatFor(format).isAboveFreeTier;
 
   /// Frames the export will write. Rounded up, on the engine's terms: a
   /// timeline that ends part-way through a frame still gets that frame.

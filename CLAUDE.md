@@ -32,8 +32,9 @@ the project chooser and import are in; the timeline is not. See PLAN.md.
 ```
 app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/engine`,
            `lib/media` — import, thumbnails, waveforms, bundled fonts, sandbox file
-           access — and `lib/ui`); `assets/fonts` holds the five OFL faces a caption
-           can be set in, and `assets/luts` the five .cube looks a clip can wear
+           access — `lib/pro` — what this installation has paid for — and `lib/ui`);
+           `assets/fonts` holds the five OFL faces a caption can be set in, and
+           `assets/luts` the five .cube looks a clip can wear
   packages/vdodtor_engine/   FFI plugin — ffigen bindings, the macOS podspec that drives
                              CMake, the preview texture and the open panel / drop target
 engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
@@ -150,6 +151,22 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   **timeline's** own `width`/`height` — a 4K export of a 1080p edit is one number
   changing, since nothing in a render list is measured in pixels — so there is no second
   place to write a resolution down.
+- **The resolution gate is on the pixels, and the tier reaches nothing below it.**
+  `ExportPlan.isPermitted` is the whole of free/Pro in the editor, and it is measured on
+  `outputFormat.isAboveFreeTier` rather than on which chip is lit: "same as project" on a
+  4K project is a 4K file, so a gate attached to the picker would have its one hole at the
+  default selection. Above 1080p without Pro, **nothing is written** — no watermark, no
+  shortened export, no silent downscale, since a file that came out smaller than the one
+  asked for is worse than a refusal. Below it the tier changes nothing whatsoever about
+  the file, which is what `timelineFor` and `settings` not mentioning it is the proof of,
+  and what `app/test/engine/export_plan_test.dart` asserts by handing both tiers the same
+  project and comparing the render lists. The engine never hears about any of it:
+  `vd_export` takes a width and a height, and who is allowed to ask for them is a product
+  decision that lives in the app. The sheet opens on the biggest size it *can* write —
+  a free installation with a 4K project opens on 1080p, not on a locked button — and a
+  locked chip is still selectable, so the numbers under it are real and the refusal is on
+  the button. `Entitlement` is a `ChangeNotifier` because buying happens while that sheet
+  is open; nothing calls `grant` yet, which is the seam licensing plugs into.
 - **A cancelled or failed export leaves no file.** Half a video plays, looks finished,
   and is missing its ending, which is the part nobody checks. `vd_export_destroy` removes
   anything that is not a completed export, and destroying a running one cancels it first.

@@ -20,8 +20,10 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > the file agrees with the preview on pixels.** ⌘E, four sizes, H.264 or HEVC, a bar
 > that moves, and a Stop that leaves nothing behind — and one timeline rendered through
 > both clocks against one committed picture each, so "preview and export differ in the
-> clock and in nothing else" is a test rather than a sentence. What is left in M4 is the
-> Pro gate, licensing and packaging.
+> clock and in nothing else" is a test rather than a sentence. **The resolution gate is
+> in too**: above 1080p needs Pro, the sheet says so in the one place in the app that
+> says no, and the tier changes what may be written and never what is written. What is
+> left in M4 is licensing, the Pro content packs and packaging.
 >
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
@@ -1620,7 +1622,45 @@ look, one slow-mo moment) entirely in vdodtor.
       `VD_UPDATE_GOLDENS=1 ctest --test-dir build/engine -R 'golden|parity'`.
 
 ### Free / Pro
-- [ ] Resolution gate: 1080p free, 4K+ Pro — no watermark anywhere, ever
+- [x] Resolution gate: 1080p free, 4K+ Pro — no watermark anywhere, ever
+      Everything the brief sells is in one predicate — `ExportPlan.isPermitted` — and
+      the interesting part is what it is measured on. **The gate is on the pixels
+      leaving the machine, not on which chip is lit.** 4K is not the only way to ask
+      for 4K: "same as project" on a project that was cut at 4K is the same file, so a
+      gate attached to the picker would have exactly one hole in it and that hole would
+      be the default selection. It is `outputFormat.isAboveFreeTier`, once, and there
+      is no second place to get it wrong.
+      **The tier changes what may be written and never what is written.** No watermark,
+      no shortened export, no quieter encode, no silent downscale — a file that came
+      out smaller than the one that was asked for is worse than a refusal, because
+      nobody re-checks the dimensions of a render they watched finish. `timelineFor`
+      and `settings` do not mention the tier and the test asserts that the two tiers
+      hand the engine the same render list, the same bitrate and the same settings.
+      That is the closest a test can get to "no watermark, ever": the free path and the
+      paid path are the same path, and the tier is a yes or a no on the way to it.
+      The engine never hears about any of this. `vd_export` takes a width and a height
+      and writes them; what a person is allowed to ask for is a product decision, and
+      it lives in the app where the sheet that asks the question is.
+      Two decisions about the sheet. **It opens on the biggest size it can actually
+      write** — a free installation with a 4K project opens on 1080p, not on a locked
+      button, because the first thing anybody sees being a refusal is the upsell-first
+      behaviour this product exists in opposition to. Nothing is hidden and nothing is
+      substituted behind their back: the project's own size is one chip away wearing a
+      badge, and the line under the picker always says the size that will be written.
+      And **a locked chip is still selectable**: pressing 4K shows exactly what 4K
+      would produce — 3840 × 2160, 25 Mbps, 60 frames, about 6.4 MB — and the refusal
+      is on the button underneath. Somebody deciding whether to buy Pro should be able
+      to see what they would be buying. The gate panel says the other half out loud,
+      which is the sentence that matters most in a product positioned against the
+      watermark-and-account editors: up to 1080p stays free, every track, every effect,
+      and no watermark on anything, ever.
+      `Entitlement` is a `ChangeNotifier` and not a value read once, because buying Pro
+      happens *while the sheet is open* — it is the sheet that told them they needed it
+      — so the gate lifts under them, keeping the 4K they had chosen, rather than
+      waiting to be closed and reopened. Nothing in the shipping app calls `grant` yet:
+      that is the seam the next item plugs into, and until it does every installation
+      is free, which is the honest default. An editor that let 4K through because the
+      licence check had not been written would be one that had to start refusing later.
 - [ ] Licensing: Paddle or Lemon Squeezy checkout; offline-friendly license validation;
       restore/deactivate flow
 - [ ] Pro content packs plumbing (LUTs, transitions, templates, fonts)

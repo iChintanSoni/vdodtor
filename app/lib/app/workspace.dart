@@ -14,6 +14,7 @@ import '../persistence/library.dart';
 import '../persistence/project_file.dart';
 import '../persistence/recents.dart';
 import '../persistence/session.dart';
+import '../pro/entitlement.dart';
 
 /// What the window is showing.
 enum WorkspaceStage {
@@ -95,15 +96,23 @@ class Workspace extends ChangeNotifier {
     AppPaths? paths,
     IdGen? ids,
     FileAccess? access,
+    Entitlement? entitlement,
     Future<AppPaths> Function()? resolvePaths,
     this.autosaveDebounce = const Duration(milliseconds: 400),
   })  : _ids = ids ?? IdGen(),
         _access = access ?? const SystemFileAccess(),
+        entitlement = entitlement ?? Entitlement.free(),
         _resolvePaths = resolvePaths ?? AppPaths.resolve {
     _paths = paths;
   }
 
   final IdGen _ids;
+
+  /// What this installation has paid for. Owned here, beside the paths and
+  /// the recents list, because it is app-wide and outlives every project —
+  /// and because the licence it will be read from lives under [AppPaths] with
+  /// the rest of the app's private state.
+  final Entitlement entitlement;
 
   /// How the app gets at the user's own media. Injected so opening a project
   /// full of bookmarked footage is testable without a sandbox.
@@ -447,6 +456,7 @@ class Workspace extends ChangeNotifier {
       open.store.dispose();
       _open = null;
     }
+    entitlement.dispose();
     super.dispose();
   }
 }
