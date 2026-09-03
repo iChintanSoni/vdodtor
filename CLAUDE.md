@@ -38,7 +38,8 @@ app/       Flutter app (`lib/model`, `lib/commands`, `lib/persistence`, `lib/eng
            `assets/fonts` holds the five OFL faces a caption can be set in, and
            `assets/luts` the five .cube looks a clip can wear, and `assets/packs`
            the signed content packs it ships, and `assets/notices` what is in
-           vdodtor that we did not write and the licence it is under;
+           vdodtor that we did not write and the licence it is under, and
+           `assets/sample` the footage the sample project is cut from;
            `tool/licence.dart` and `tool/pack.dart` are the fulfilment side — keygen,
            sign, check, build — sharing `lib/pro/licence.dart` and `lib/pro/pack.dart`
            with the app, so what they mint is readable by construction
@@ -62,6 +63,9 @@ tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ff
                              five into app/assets/luts, a pack's into build/packs/<id>
                              beside the manifest tool/pack.dart signs
            make_notices.dart — writes app/assets/notices from what is vendored
+           make_sample.sh  — writes app/assets/sample: the three shots and the
+                             bed the sample project is cut from, generated for
+                             make_luts.dart's reason
            package_mac.sh  — build, check, sign, notarize, DMG
 ```
 
@@ -97,6 +101,15 @@ dart run tools/make_luts.dart                 # from the repo root
 cd app && dart run tool/pack.dart build --from ../build/packs/cinema \
     --key <seed> --out assets/packs/cinema.vdpack
 dart run tool/pack.dart show assets/packs/cinema.vdpack
+
+# regenerate the sample project's footage (needed when its palette, its length
+# or its frame rate changes; the edit over it lives in
+# app/lib/media/sample_project.dart and needs no regenerating at all):
+tools/make_sample.sh                          # from the repo root
+
+# what the sample looks like on somebody's first launch, in the running app —
+# the one self-test pass that edits nothing:
+VD_SELFTEST=sample app/build/macos/Build/Products/Debug/vdodtor.app/Contents/MacOS/vdodtor
 
 # a disk image. --adhoc is a build to look at; a real one needs a Developer ID
 # Application certificate and an `xcrun notarytool store-credentials` profile:
@@ -287,6 +300,40 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   notice, a disk image is a thing people throw away the day they mount it, and the
   chooser is the window every launch starts in. The same two files go into the image as
   well, because somebody deciding whether to install should not have to install first.
+- **The sample project is code, and its footage is copied rather than pointed at.**
+  An empty editor teaches nobody anything, so the chooser offers a fifteen-second
+  edit beside New Project — but it is **not** a shipped `.vdo`: a project file
+  asset would carry absolute paths wrong on every machine but the one that wrote
+  it and would go stale, silently, the moment the document model moved.
+  `lib/media/sample_project.dart` builds it from the model through the **real
+  importer and the real probe**, so it is exactly as current as the model is and
+  it is a project somebody could have made. That is `make_luts.dart`'s "generated,
+  not vendored" applied to a document, and `tools/make_sample.sh` applies the same
+  rule to the footage for the harder reason: what ships inside a product sold
+  without an account has to be something we may sell. The files are **copied into
+  `<library>/Sample Media`** — the decision `BundledLooks.install` makes for a
+  user's own `.cube`, and here because a file inside the app bundle is readable
+  and **cannot be bookmarked at all**, so a project pointing into the bundle is
+  one no scope could ever be minted for. Asking for the sample again reopens
+  *theirs*: a button that quietly made "Sample project 2" would shelve somebody's
+  work without deleting it. And it is deliberately not a template *system* — a
+  template is what `PackContentKind` defers, and one template is a mechanism with
+  no second user.
+- **The tour points at the real panels, and it is offered once.** `lib/ui/tour.dart`
+  sits at the top of the editor's own `Stack` rather than in a route, because a
+  dialog would put a barrier between the card and the thing it describes — and
+  because the editor underneath stays live, so pressing space during the first
+  stop plays the film, which is that stop's own instruction working. The hole is
+  **re-measured after every frame**: the things being pointed at move for reasons
+  the tour cannot see (a resized window, an engine that finishes starting and
+  replaces a spinner with a preview, a lane that appears), and a highlight left
+  behind the thing it highlights is worse than none. `TourAnchors` is a record so
+  a stop naming an anchor nobody declared is a compile error; that it is
+  *attached* is checked by reading `editor_screen.dart`, because that widget
+  builds a real `PreviewEngine` and cannot be pumped in a widget test. Skipping
+  and finishing are the same outcome — both mean "do not show this again" — and
+  `CallbackShortcuts` goes **outside** the `Focus`, not inside it: it handles keys
+  that bubble *through* it, so the focused node has to be a descendant.
 - **A crash report is written, never sent, and scrubbed on the way to the disk.**
   The entitlement above decides this one too: nothing can upload a report and nothing
   can count a launch, so `lib/app/crash.dart` writes a Dart fault to a file in

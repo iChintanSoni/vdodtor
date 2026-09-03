@@ -157,6 +157,40 @@ void main() {
   });
 
   group('the sheet', () {
+    testWidgets('offers the tour again, and closes before running it',
+        (tester) async {
+      // The tour points at the panels *behind* this sheet, so running it with
+      // the sheet still up would highlight a window nobody can see. It is
+      // offered here rather than from a menu because this is already the "how
+      // does this work" surface: a tour skipped on the first day and findable
+      // on the second is worth more than one that only ever runs once.
+      var asked = 0;
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () =>
+                ShortcutSheet.toggle(context, onTakeTour: () => asked++),
+            child: const Text('open'),
+          ),
+        ),
+      ));
+
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.byType(ShortcutSheet), findsOneWidget);
+
+      await tester.tap(find.text('Take the tour'));
+      await tester.pumpAndSettle();
+      expect(asked, 1);
+      expect(find.byType(ShortcutSheet), findsNothing);
+    });
+
+    testWidgets('says nothing about a tour when there is none to take',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: ShortcutSheet()));
+      expect(find.text('Take the tour'), findsNothing);
+    });
+
     testWidgets('lists every shortcut under its heading', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: ShortcutSheet()));
 

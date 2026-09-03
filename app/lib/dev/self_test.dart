@@ -28,6 +28,17 @@ import '../ui/timeline/timeline_painter.dart';
 /// True when the app was launched to measure itself rather than to be used.
 bool get selfTestRequested => Platform.environment['VD_SELFTEST'] == '1';
 
+/// True when it was launched to look at the *sample* project instead.
+///
+/// A separate mode rather than another pass over the synthetic project,
+/// because the two ask opposite questions. Everything else in this file builds
+/// a timeline in order to measure the engine under it; this one is handed a
+/// timeline somebody will actually be shown on their first launch and asks
+/// whether it came out looking like an edit. There is nothing to build and
+/// nothing to put back afterwards — it only looks.
+bool get sampleSelfTestRequested =>
+    Platform.environment['VD_SELFTEST'] == 'sample';
+
 /// The project the self test owns, and the only one it may touch.
 const selfTestProjectName = 'Self test';
 
@@ -54,6 +65,93 @@ Future<void> openSelfTestProject(Workspace workspace) async {
     aspect: ProjectAspect.landscape16x9,
     frameRate: FrameRates.fps30,
   );
+}
+
+/// Looks at the sample project the way a first launch does, and says what it
+/// found.
+///
+/// The document half of the first-run experience has unit tests — the shape of
+/// the edit is asserted in `test/media/sample_project_test.dart` with a fake
+/// probe — and none of them can answer the only question that matters about a
+/// sample project, which is whether it looks like anything. So this dumps the
+/// five frames the arrangement was designed around: the title over the first
+/// shot, the middle of the dissolve, the graded shot on its own, the middle of
+/// the wipe, and the closing caption over the last one.
+///
+/// It edits nothing. That is the difference between this and every other pass
+/// in this file, and it is the point: the frames it writes are the frames the
+/// user gets.
+Future<void> runSampleSelfTest(PreviewEngine engine, DocumentStore store) async {
+  final project = store.project;
+  final clips = project.mainTrack.clips;
+  stdout.writeln('[selftest] sample: ${project.format}, '
+      '${clips.length} shots, '
+      '${project.tracks.length} lanes, '
+      '${project.media.length} files, '
+      '${(project.duration.raw / Timebase.project.ticksPerSecond)
+          .toStringAsFixed(2)}s');
+
+  for (final clip in clips) {
+    stdout.writeln('[selftest] sample:   shot ${clip.label} '
+        'in=${clip.transition.preset.name} '
+        'look=${clip.color.look.isEmpty ? '-' : clip.color.look}'
+        '@${clip.color.lookStrength.toStringAsFixed(2)} '
+        'anim=${clip.animation.inPreset.name}/${clip.animation.outPreset.name}');
+  }
+  for (final track in project.tracks.where((t) => t.kind == TrackKind.text)) {
+    for (final clip in track.clips) {
+      stdout.writeln('[selftest] sample:   ${track.name} '
+          '${clip.isText ? '"${clip.text!.text}" ${clip.text!.font}' : 'shape '
+              '${clip.shape!.kind.name}'} '
+          'at ${(clip.start.raw / Timebase.project.ticksPerSecond)
+              .toStringAsFixed(2)}s');
+    }
+  }
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_sample_');
+  final seconds = <String, double>{
+    'title': 2.5,
+    'dissolve': 5.0,
+    'graded': 7.5,
+    'wipe': 10.0,
+    'closing': 12.5,
+  };
+
+  // A seek nobody looks at, first. The engine has been alive for a few
+  // milliseconds at this point and its decoders have not opened a file yet, so
+  // the first frame asked for arrives after the dump rather than before it —
+  // which came out as three identical black PNGs and a pass that looked like
+  // it had found a bug in the compositor.
+  engine.seek(0);
+  await Future<void>.delayed(const Duration(milliseconds: 600));
+
+  for (final entry in seconds.entries) {
+    engine.seek((entry.value * Timebase.project.ticksPerSecond).round());
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final path = '${out.path}/${entry.key}.png';
+    engine.dumpPng(path);
+    stdout.writeln('[selftest] sample: ${entry.key} at ${entry.value}s -> '
+        '$path');
+  }
+
+  // Played rather than only seeked, because the bed is half of what the
+  // sample is demonstrating and a silent first launch would look identical in
+  // every frame above.
+  engine.seek(0);
+  final before = engine.stats;
+  engine.play();
+  await Future<void>.delayed(const Duration(seconds: 3));
+  final playing = engine.stats;
+  engine.pause();
+  stdout.writeln('[selftest] sample: played 3s '
+      'fps=${playing.presentFps.toStringAsFixed(1)} '
+      'gpu=${playing.compositeMsAvg.toStringAsFixed(2)}ms '
+      'layers=${playing.activeLayers} '
+      'decoders=${playing.openDecoders} '
+      'audio=${playing.audioAvailable} '
+      'underruns=${playing.audioUnderruns} '
+      'rasters=${playing.textRasters - before.textRasters} '
+      'lut_uploads=${playing.lutUploads - before.lutUploads}');
 }
 
 /// The whole edit, written to a file, while the preview is still open.

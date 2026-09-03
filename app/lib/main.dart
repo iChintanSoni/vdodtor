@@ -40,6 +40,14 @@ class VdodtorApp extends StatefulWidget {
 class _VdodtorAppState extends State<VdodtorApp> {
   late final AppLifecycleListener _lifecycle;
 
+  /// Whether this machine has yet to be shown the sixty-second tour.
+  ///
+  /// Read once at launch and kept here rather than asked again per project:
+  /// the editor is rebuilt whenever a different project is opened, and a
+  /// question answered off the disk each time would run the tour again for
+  /// anybody who closed a project before finishing it.
+  bool _tourPending = false;
+
   @override
   void initState() {
     super.initState();
@@ -73,10 +81,25 @@ class _VdodtorAppState extends State<VdodtorApp> {
               ContentPacks.libraryOf(widget.workspace.paths.support));
     }
 
-    if (selfTestRequested &&
-        widget.workspace.stage == WorkspaceStage.chooser) {
-      await openSelfTestProject(widget.workspace);
+    if (widget.workspace.stage != WorkspaceStage.failed && mounted) {
+      setState(() => _tourPending = widget.workspace.firstRun.tourPending);
     }
+
+    if (widget.workspace.stage == WorkspaceStage.chooser) {
+      if (sampleSelfTestRequested) {
+        await widget.workspace.openSample();
+      } else if (selfTestRequested) {
+        await openSelfTestProject(widget.workspace);
+      }
+    }
+  }
+
+  /// The tour has been finished or skipped; there is no difference. Written
+  /// down here rather than in the editor, because it is a fact about the
+  /// installation — see `lib/persistence/first_run.dart`.
+  void _finishTour() {
+    setState(() => _tourPending = false);
+    unawaited(widget.workspace.firstRun.markTourSeen());
   }
 
   /// ⌘Q and the red button both land here. Autosave has already written every
@@ -138,6 +161,7 @@ class _VdodtorAppState extends State<VdodtorApp> {
             child: StartScreen(
               workspace: workspace,
               onNewProject: () => unawaited(_newProject(context)),
+              onOpenSample: () => unawaited(workspace.openSample()),
             ),
           ),
         );
@@ -153,6 +177,13 @@ class _VdodtorAppState extends State<VdodtorApp> {
           licensing: workspace.licensing,
           peakCache: workspace.paths.peaks,
           lookLibrary: BundledLooks.libraryOf(workspace.paths.support),
+          // Whatever project this is. The chooser steers a first launch at the
+          // sample, so that is what it will usually be pointing at — but
+          // somebody whose first act was New Project is the person who needs
+          // the tour most, and a rule that only toured the sample would leave
+          // them with no tour at all.
+          showTour: _tourPending,
+          onTourFinished: _finishTour,
           onClose: () => unawaited(workspace.close()),
         );
     }
