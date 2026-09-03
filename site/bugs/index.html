@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report a problem with vdodtor</title>
+<meta name="description" content="How to report a bug in vdodtor, including where the crash report is written and what has been scrubbed out of it before you send it.">
+<link rel="icon" href="/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/style.css">
+<meta property="og:title" content="Report a problem with vdodtor">
+<meta property="og:description" content="Nothing is sent automatically. Here is how to send it yourself.">
+<meta property="og:image" content="https://vdodtor.app/icon.png">
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/icon.png" alt=""> vdodtor</a>
+    <nav>
+      <a href="/download">Download</a>
+      <a href="/pro">Pro</a>
+      <a href="/bugs" aria-current="page">Support</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <h1>Something went wrong</h1>
+    <p class="lead">vdodtor never sends anything anywhere, including when it
+      breaks. So a problem reaches us only if you send it — which is what
+      opt-in means for an app with no socket to open.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/iChintanSoni/vdodtor/issues/new">Open an issue on GitHub</a>
+      <a class="btn quiet" href="mailto:bugs@vdodtor.app">Email it instead</a>
+    </div>
+  </section>
+
+  <h2>What to include</h2>
+  <ul>
+    <li>The version, from <strong>vdodtor → About vdodtor</strong>. That line is
+      selectable so it can be pasted.</li>
+    <li>What you were doing, and what happened instead.</li>
+    <li>The crash report, if there is one.</li>
+  </ul>
+
+  <h2>Finding the crash report</h2>
+  <p>If vdodtor hits a fault it writes a report to your own disk and offers it
+    on the chooser the <em>next</em> time you launch. You can also always read
+    it in <strong>About vdodtor → Problem report</strong>, where there is a
+    <strong>Copy</strong> button beside it.</p>
+  <p>The file itself is here, and it is plain text:</p>
+<pre><code>~/Library/Application Support/vdodtor/crash.txt</code></pre>
+
+  <div class="panel">
+    <h2>What has already been taken out of it</h2>
+    <p>Every absolute path is replaced with <code>&lt;path&gt;</code>
+      <strong>before the file is written</strong>, keeping only the extension —
+      so <code>&lt;path&gt;.mov</code> survives and the names of your footage,
+      and your account name, do not. There is no unscrubbed copy anywhere for
+      anything to find later.</p>
+    <p><code>package:</code> and <code>dart:</code> locations are kept, because
+      those are ours and they are what makes a stack trace worth reading. Read
+      the whole thing before you send it — that is rather the point of it being
+      shown to you.</p>
+  </div>
+
+  <h2>If the app quit without leaving a report</h2>
+  <p>A fault deep in the video engine can stop the process before vdodtor gets a
+    turn to write anything. macOS records those itself, and they are not in a
+    place vdodtor is allowed to read:</p>
+<pre><code>~/Library/Logs/DiagnosticReports/</code></pre>
+  <p>Look for the most recent file whose name starts with <code>vdodtor</code>.
+    Those reports are Apple's rather than ours, so <strong>we have not scrubbed
+    them</strong> — read one before sending it.</p>
+
+  <h2>Feature requests</h2>
+  <p>Also welcome, in the same place. What is planned and what has deliberately
+    been left out are both in
+    <a href="https://github.com/iChintanSoni/vdodtor/blob/master/PLAN.md">PLAN.md</a>.</p>
+
+</main>
+
+<footer class="wrap">
+  <nav>
+    <a href="/download">Download</a>
+    <a href="/pro">Pro</a>
+    <a href="/licence">Licence keys</a>
+    <a href="/bugs">Report a problem</a>
+    <a href="/source">Open source notices</a>
+    <a href="https://github.com/iChintanSoni/vdodtor">GitHub</a>
+  </nav>
+  <p>Copyright © 2026 Chintan Soni.</p>
+</footer>
+
+</body>
+</html>

@@ -634,27 +634,56 @@ int _crc32(Uint8List bytes) {
 
 const String _defaultOut =
     'app/macos/Runner/Assets.xcassets/AppIcon.appiconset';
+const String _defaultSite = 'site';
 
 /// What the file for a given size is called, which `Contents.json` has to
 /// agree with and `app/test/app/icon_test.dart` checks that it does.
 String iconFileName(int size) => 'app_icon_$size.png';
 
+/// The two the website wears, and the size each is drawn at.
+///
+/// The site gets its mark from *this* generator rather than from a PNG somebody
+/// exported and dropped in `site/`, for the reason the icon is generated at all
+/// — except sharper here, because the app and the site are two artefacts that
+/// ship separately and a visitor who sees one mark on the download page and
+/// another in their Dock has been told, quietly, that they are two products.
+/// `app/test/app/icon_test.dart` draws both again and compares.
+const Map<String, int> siteIcons = <String, int>{
+  'favicon.png': 32,
+  'icon.png': 512,
+};
+
 void main(List<String> args) {
   var out = _defaultOut;
+  var site = _defaultSite;
   for (var i = 0; i < args.length; i++) {
     if (args[i] == '--out' && i + 1 < args.length) out = args[i + 1];
+    if (args[i] == '--site' && i + 1 < args.length) site = args[i + 1];
   }
 
-  final directory = Directory(out);
-  if (!directory.existsSync()) {
-    stderr.writeln('no such directory: $out');
-    stderr.writeln('run this from the repository root, or pass --out');
-    exit(2);
+  for (final directory in <String>[out, site]) {
+    if (!Directory(directory).existsSync()) {
+      stderr.writeln('no such directory: $directory');
+      stderr.writeln('run this from the repository root, or pass --out/--site');
+      exit(2);
+    }
   }
+
+  // Rendered once per size and written wherever that size is wanted, so the
+  // two destinations cannot be drawn from different geometry even for one run.
+  final drawn = <int, Uint8List>{
+    for (final size in <int>{...iconSizes, ...siteIcons.values})
+      size: encodePng(size, renderIcon(size)),
+  };
 
   for (final size in iconSizes) {
     final file = File('$out/${iconFileName(size)}');
-    file.writeAsBytesSync(encodePng(size, renderIcon(size)));
+    file.writeAsBytesSync(drawn[size]!);
+    stdout.writeln('${file.path}  ${file.lengthSync()} bytes');
+  }
+  for (final entry in siteIcons.entries) {
+    final file = File('$site/${entry.key}');
+    file.writeAsBytesSync(drawn[entry.value]!);
     stdout.writeln('${file.path}  ${file.lengthSync()} bytes');
   }
 }

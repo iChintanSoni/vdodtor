@@ -13,6 +13,7 @@ No watermark, no account, no ads, fully offline. *"The Affinity of video editors
 app/       Flutter desktop app — document model, commands/undo, UI
   packages/vdodtor_engine/   FFI plugin: Dart bindings + the macOS build glue
 engine/    Native engine (C, CMake) — FFmpeg demux/decode + Metal compositor
+site/      vdodtor.app — static pages serving the addresses the app opens
 tools/     Build scripts, including the vendored FFmpeg build
 docs/      Product brief, spike notes, design docs
 spikes/    M0 throwaway code. Do not build on it.

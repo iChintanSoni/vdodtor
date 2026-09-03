@@ -62,6 +62,19 @@ void main(List<String> args) {
   stdout.writeln('wrote ${out.path}/THIRD_PARTY_NOTICES.md '
       '(ffmpeg ${build.version}, ${libraries.length} libraries, '
       '${faces.length} faces)');
+
+  // And the same two files at vdodtor.app/source, because the notice this
+  // generator writes *names that address* as where the source is kept — so a
+  // page there restating any of this in its own words would be a second copy
+  // of a licence obligation, which is the one kind of duplicate worth going
+  // to trouble to avoid. The site serves the bytes that shipped.
+  final site = Directory('$root/site/source');
+  if (site.existsSync()) {
+    for (final name in const ['LGPL-2.1.txt', 'THIRD_PARTY_NOTICES.md']) {
+      File('${out.path}/$name').copySync('${site.path}/$name');
+    }
+    stdout.writeln('wrote ${site.path}/THIRD_PARTY_NOTICES.md');
+  }
 }
 
 /// What `tools/build_ffmpeg.sh` recorded about the build it produced.

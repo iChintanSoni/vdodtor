@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find and use your vdodtor licence key</title>
+<meta name="description" content="How to find a vdodtor Pro licence key, enter it, move it to another Mac, and what to do if it is lost. No account required.">
+<link rel="icon" href="/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/style.css">
+<meta property="og:title" content="vdodtor licence keys">
+<meta property="og:description" content="Finding, entering and moving a vdodtor Pro licence key.">
+<meta property="og:image" content="https://vdodtor.app/icon.png">
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/icon.png" alt=""> vdodtor</a>
+    <nav>
+      <a href="/download">Download</a>
+      <a href="/pro">Pro</a>
+      <a href="/bugs">Support</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <h1>Your licence key</h1>
+    <p class="lead">There is no account to recover, so the receipt is the thing
+      to find. This page is what "restore purchases" is for a product that never
+      asked you to sign in.</p>
+  </section>
+
+  <h2>What it looks like</h2>
+  <p>A vdodtor key is one long line beginning <code>VDO1.</code> — a short,
+    signed sentence naming the order, the buyer and the tier. It arrived in the
+    email that confirmed your purchase.</p>
+
+  <h2>Entering it</h2>
+  <ul>
+    <li>Open vdodtor and choose <strong>vdodtor → Pro…</strong> from the menu,
+      or press the <span class="tag">PRO</span> badge anywhere you meet one.</li>
+    <li>Paste the whole key, including the <code>VDO1.</code> at the front, and
+      press <strong>Activate</strong>.</li>
+    <li>It is checked on the spot, on your Mac, with no network. If you are in
+      the middle of an export sheet when you activate, the 4K you had already
+      chosen stays chosen.</li>
+  </ul>
+
+  <h2>Lost it?</h2>
+  <p>Email <a href="mailto:keys@vdodtor.app">keys@vdodtor.app</a> from the
+    address you bought with, or with the order number, and we will send it
+    again. There is nothing to reset and no password involved.</p>
+
+  <h2>Moving to another Mac</h2>
+  <p>Enter the same key. The licence is stored as <strong>one ordinary file</strong>
+    in <code>~/Library/Application Support/vdodtor</code>, holding the key
+    verbatim — not in the keychain, and not scrambled — so you can also just
+    copy it across. A receipt should be something you can find and read.</p>
+  <p><strong>Deactivating does not use the key up.</strong> It removes the
+    licence from that Mac and frees nothing, because nothing was ever counted.</p>
+
+  <div class="panel">
+    <h2>Why a key and not an account</h2>
+    <p>The key carries an Ed25519 signature, and checking that signature is the
+      whole of the check. The half of the key pair that can <em>write</em> a
+      licence is not in the app, which is why the app can verify one without
+      being able to mint one, and why none of this needs a server.</p>
+    <p>It also means nothing can ever be revoked: whatever was signed is true
+      forever, on every machine. So the key says as little as possible about
+      you — no device count, no hashed email, nothing that would only
+      inconvenience the people who paid.</p>
+  </div>
+
+  <h2>Subscriptions that have lapsed</h2>
+  <p>A lapsed licence is kept rather than deleted, with a fortnight of grace,
+    and the Pro panel says whose subscription ended and when. Renewing puts the
+    same machine straight back where it was.</p>
+
+</main>
+
+<footer class="wrap">
+  <nav>
+    <a href="/download">Download</a>
+    <a href="/pro">Pro</a>
+    <a href="/licence">Licence keys</a>
+    <a href="/bugs">Report a problem</a>
+    <a href="/source">Open source notices</a>
+    <a href="https://github.com/iChintanSoni/vdodtor">GitHub</a>
+  </nav>
+  <p>Copyright © 2026 Chintan Soni.</p>
+</footer>
+
+</body>
+</html>

@@ -56,8 +56,13 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > from the numbers in `tools/make_icon.dart` rather than exported from a design
 > tool, in three levels of detail so that 16 px is a drawing rather than a
 > scaled-down one. `app/test/app/icon_test.dart` draws it again and compares,
-> which is the licence notice's rule pointed at a picture. What is left of OQ-4
-> is a website. And the
+> which is the licence notice's rule pointed at a picture. **And the site is in
+> the repository** — `site/`, six plain static pages, there because the app
+> hard-codes six `vdodtor.app` addresses into a build that can never update
+> itself, so a renamed page is a dead buy button in every copy ever installed.
+> `site_test.dart` reads `lib/` for every one of those addresses and fails if
+> the site has no page for it. OQ-4 is closed; what is left is a domain and a
+> host, which are not code. And the
 > chooser offers a sample project beside New Project — a fifteen-second edit,
 > cut from three gradient shots this repository generates rather than licenses,
 > with a title, a rule, a strapline, a dissolve, a wipe, a look on the middle
@@ -248,6 +253,29 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > M0 (complete) measured on Apple M3 Pro: 4K60 preview at 60 fps with 3 composite layers
 > (~1.5 ms GPU), 4 concurrent 4K60 decoders at ~34% CPU, scrub p50 13 ms, timeline at
 > 121 fps with 1002 clips. Findings: [docs/spike-notes.md](docs/spike-notes.md).
+
+## What is left
+
+**Every remaining item needs something only the owner can supply** — a
+certificate, a key, a token, a domain, or a judgment. The code is not the
+blocker on any of them, which is why they are listed here together rather than
+found one at a time. Roughly in the order they unblock each other:
+
+| # | Step | Needs | Where |
+|---|---|---|---|
+| 1 | Publish `site/` at `vdodtor.app` | The domain, and a static host. No build step. | M5 |
+| 2 | Replace the development licence signing key | A `keygen` run, and somewhere that is not this repository to keep the private half. Re-sign the shipped packs in the same change. | Packaging |
+| 3 | Developer ID certificate + `notarytool` profile | An Apple Developer account. | Packaging |
+| 4 | Run `tools/package_mac.sh` for real | 2 and 3. Everything else in it has been run. | Packaging |
+| 5 | Cut the first release | 4, then a GitHub release tagged `v<version>` carrying the DMG, so `/download`'s button resolves. | M5 |
+| 6 | Wire a checkout behind `/pro` | OQ-2 (pricing) and a merchant account; then `/pro` becomes a redirect and the webhook mints keys. | M5 |
+| 7 | Register the CI runner | A GitHub runner registration token. `tools/setup_ci_runner.sh` does the rest. **The workflow has never run**, so expect to fix it once. | M1 |
+| 8 | The two owner checks | Hands: drop files on the window, and scrub the timeline to decide whether it feels good. | M0 / M2 |
+| 9 | Private beta, then launch | 1–6. | M5 |
+
+Nothing above is waiting on a decision that has been deferred; the deferrals
+that remain are recorded where they belong — parameterised transitions before a
+pack can carry one, "new from template" before it can carry that.
 
 ---
 
@@ -2004,55 +2032,72 @@ buy Pro, and export 4K — with no help.
 
 ## M5 — Launch
 
-- [~] Resolve OQ-4: name/branding final; icon; website with direct download
-      **The name is settled — vdodtor ships — and the icon is drawn.** What is
-      left of OQ-4 is the website with a direct download, which is the same
-      address `Checkout.buy` and `About.download` already point at and has
-      nothing in this repository to build.
+- [x] Resolve OQ-4: name/branding final; icon; website with direct download
+      **The name ships, the icon is drawn, and the site is in this repository.**
       The icon is **generated, not vendored**, which is `tools/make_luts.dart`'s
       argument arriving at the last asset that had escaped it. A `.png` exported
-      from a design tool is a file nobody can argue with: it cannot be
-      re-rendered at a size Apple adds next year, it cannot be re-tinted when
-      `VdColors` moves, and the source it came out of lives on somebody's
+      from a design tool cannot be re-rendered at a size Apple adds next year,
+      cannot be re-tinted when `VdColors` moves, and has its source on somebody's
       machine rather than in the repository. `tools/make_icon.dart` holds the
-      geometry, writes every file `AppIcon.appiconset/Contents.json` names, and
-      `app/test/app/icon_test.dart` draws it again and compares — which is
-      `about_test.dart`'s rule pointed at a picture: generated, and then checked
-      against what actually shipped.
+      geometry, writes every file `AppIcon.appiconset/Contents.json` names plus
+      the two the site wears, and `app/test/app/icon_test.dart` draws it again
+      and compares — `about_test.dart`'s rule pointed at a picture.
       **The mark is the app's own timeline**: three clip bars in the colours
-      `VdColors` paints tracks with, cut under the playhead, drawn as the
-      line-and-triangle `TimelinePainter._paintPlayhead` draws. So the icon is a
-      picture of what the product *is* — multi-track — rather than a play
-      triangle, which would fit every competitor in the brief's positioning
-      table equally well. The hues are the timeline's own one step brighter,
-      because `VdColors` is muted on purpose to sit beside footage and an icon
-      is seen at 32 px against a Finder window where muted reads as grey; the
-      playhead alone is `VdColors.playhead` **exactly**, since the one thing in
-      this product allowed to be loud should be the same loud everywhere. The
-      test says that in those words rather than as a byte offset.
+      `VdColors` paints tracks with, cut under the playhead, drawn as
+      `TimelinePainter._paintPlayhead` draws it. So the icon is a picture of what
+      the product *is* — multi-track — rather than a play triangle, which would
+      fit every competitor in the brief's positioning table equally well. The
+      hues are the timeline's own one step brighter, because `VdColors` is muted
+      on purpose to sit beside footage and an icon is seen at 32 px against a
+      Finder window where muted reads as grey; the playhead alone is
+      `VdColors.playhead` **exactly**, since the one thing in this product
+      allowed to be loud should be the same loud everywhere.
       **It is three drawings, not one scaled.** One geometry taken down to 16 px
       is Apple's own "don't" and it is right: the 40-unit cut is a third of a
       pixel there, so the detail is not lost, it is *noise*. Under 64 px the
       overlay lane and the cut go; under 32 px the playhead's head goes too, its
       line roughly doubles, the shape grows to fill nearly the whole canvas and
-      the drop shadow is dropped — a shadow at 16 px is one blurred pixel of
-      grey laid over a mark seven pixels tall, and the margin it was making room
-      for is a fifth of the width.
+      the drop shadow is dropped.
       Two things written rather than depended on, both for
-      `lib/pro/ed25519.dart`'s reason. The **PNG writer** is sixty lines, because
-      a package in the path between this repository and the icon of the thing it
-      ships is a third party who can change it. And the **rasteriser** is a
-      shape reduced to an inside-test and a bounding box, area-sampled with the
-      sample count rising as the icon shrinks — so a 16 px icon is the exact
-      area-average of the design without ever allocating a large one, every
-      shape is antialiased by construction, and a new shape costs one function
-      with no path builder, no edge list and no winding rule to get wrong. The
-      whole set renders in 1.6 s.
-      Checked without building the app, which on a clean machine would want ten
-      minutes of FFmpeg first: `xcrun actool` compiles the catalogue exactly as
-      the Xcode phase does — no notices, no warnings — and the `AppIcon.icns` it
-      emits, which is the file the Dock and the Finder actually read, carries
-      the mark. What was there until now was the one `flutter create` wrote.
+      `lib/pro/ed25519.dart`'s reason: a sixty-line **PNG writer**, and a
+      **rasteriser** in which a shape is an inside-test and a bounding box,
+      area-sampled with the sample count rising as the icon shrinks — so a small
+      icon is the exact area-average of the design without ever allocating a
+      large one, and every shape is antialiased by construction. The whole set
+      renders in 1.6 s.
+      **The disk image wears the same icon**, copied out of the built bundle at
+      the name `CFBundleIconFile` gives rather than made again. The flag that
+      makes a volume use it lives on the *volume root*, which does not exist
+      until there is a volume, so `package_mac.sh` builds read/write, marks it
+      with `xattr` and compresses afterwards. `SetFile -a C` writes the same 32
+      bytes and was not used: it is deprecated and comes from Xcode, and a
+      packaging script that breaks on an Xcode upgrade breaks on release day.
+      **The site is in `site/`, and it is there for a reason that is not
+      marketing.** The app hard-codes six addresses — `/`, `/download`, `/pro`,
+      `/licence`, `/bugs`, `/source` — into a build that **can never update
+      itself**, on purpose. There is no remote config, no phone-home and no
+      socket, so a page renamed on the site is a dead button in every copy ever
+      installed, permanently; and `Checkout.buy` is the worst of them, because it
+      fails at exactly the moment somebody had decided to pay. That makes the app
+      and the site two sides of one boundary that has to agree, which is the
+      `vd_time.c`/`time.dart` arrangement pointed at hyperlinks —
+      `app/test/app/site_test.dart` reads `lib/` for every `vdodtor.app` address
+      and fails if the site has no page for it, so the drift is red rather than
+      discovered by a stranger. It also checks the site's internal links, that
+      the download page offers the version `pubspec.yaml` would build, and that
+      every page has a title, a description, a language and a viewport.
+      **Plain static HTML, no build step and no framework** — six pages, one
+      stylesheet in the app's own palette, and `<page>/index.html` so every host
+      serves `/download` with no rewrite rule. Two files are *not* written by
+      hand: `site/source/` carries the **byte-identical** notice and LGPL text
+      the app ships, because the shipped notice names `vdodtor.app/source` as
+      where the source is kept, and a page restating a licence obligation in its
+      own words is the one kind of duplicate worth going to trouble to avoid.
+      `tools/make_notices.dart` writes both places and the test compares them.
+      The landing page also carries the "no watermark video editor for Mac"
+      wording OQ-5 asks for, so that page exists rather than being a launch task.
+      What is left of OQ-4 is **nothing in this repository** — a domain and a
+      host, which are the first two entries under "What is left" above.
 - [x] First-run experience: bundled sample project + 60-second tour
       **An editor's first window is the hardest one.** Nothing is on the
       timeline, so nothing on screen does anything, every control is greyed out,
@@ -2126,9 +2171,26 @@ buy Pro, and export 4K — with no help.
       one pass in `lib/dev/self_test.dart` that **edits nothing** — every other
       builds a timeline in order to measure the engine under it, and this one is
       handed the timeline a stranger gets.
+- [ ] **Publish `site/` at vdodtor.app** — needs the domain and a static host
+      (GitHub Pages, Netlify, Cloudflare Pages: `site/` is a plain directory
+      with no build step, so any of them is a one-time setup). **Until this is
+      done every address in the shipped app is dead**, including the buy button.
+      Then check the six live URLs by hand once; `site_test.dart` proves the
+      pages exist, and nothing but a request proves the host serves them.
+- [ ] **Wire the checkout behind `/pro`** — needs OQ-2 (pricing) and a merchant
+      account. Then `site/pro/index.html` becomes a redirect to the hosted
+      checkout, and the fulfilment webhook mints keys with
+      `dart run tool/licence.dart sign`. The app never learns any of this: it
+      opens an address we own, which is the whole reason `Checkout.buy` is not
+      the provider's URL.
+- [ ] **Cut the first release** so the download button resolves — needs the
+      signed DMG (Packaging, above), then a GitHub release tagged `v<version>`
+      carrying `vdodtor-<version>.dmg`. `site_test.dart` already makes the page
+      offer the version `app/pubspec.yaml` would build.
 - [ ] Private beta; fix the top reported issues
-- [ ] Launch: Product Hunt, r/videoediting, YouTube reviewer outreach,
-      "no watermark video editor" SEO page (resolves OQ-5)
+- [ ] Launch: Product Hunt, r/videoediting, YouTube reviewer outreach
+      (the "no watermark video editor" SEO page is `site/index.html`, done above,
+      which resolves OQ-5's page half; where the first 1,000 come from is still open)
 
 **Exit criteria:** v1.0 public; first-1,000-users plan in motion.
 

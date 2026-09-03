@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open source in vdodtor, and how to get it</title>
+<meta name="description" content="The LGPL written offer for the FFmpeg libraries vdodtor ships, the third-party notices, and how to build a replacement library and drop it in.">
+<link rel="icon" href="/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/style.css">
+<meta property="og:title" content="Open source in vdodtor">
+<meta property="og:description" content="The LGPL written offer, the notices, and how to replace a library yourself.">
+<meta property="og:image" content="https://vdodtor.app/icon.png">
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/icon.png" alt=""> vdodtor</a>
+    <nav>
+      <a href="/download">Download</a>
+      <a href="/pro">Pro</a>
+      <a href="/bugs">Support</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <h1>Open source in vdodtor</h1>
+    <p class="lead">vdodtor carries unmodified <strong>FFmpeg</strong> libraries
+      under the LGPL 2.1, and five typefaces under the SIL Open Font Licence.
+      Everything else — the editor, the engine, the compositor and the colour
+      looks — is our own.</p>
+    <div class="actions">
+      <a class="btn primary" href="/source/THIRD_PARTY_NOTICES.md">The full notices</a>
+      <a class="btn quiet" href="/source/LGPL-2.1.txt">LGPL 2.1</a>
+    </div>
+    <p class="note">These are the same two files that ship inside the app and on
+      the disk image — the very bytes, not a retelling of them.</p>
+  </section>
+
+  <div class="panel">
+    <h2>Written offer — LGPL 2.1 §3(b)</h2>
+    <p>For at least three years from the date you received your copy of vdodtor,
+      we will give any third party, for no more than the cost of physically
+      performing the distribution, a complete machine-readable copy of the
+      corresponding source code for the FFmpeg libraries it ships, under the
+      terms of LGPL 2.1 §3(b).</p>
+    <p>Write to <a href="mailto:source@vdodtor.app">source@vdodtor.app</a>.</p>
+  </div>
+
+  <h2>The exact build</h2>
+  <p>The notices name the precise upstream tarball, its SHA-256 and the full
+    <code>configure</code> line the libraries were built with. That file is
+    <strong>generated from the libraries actually vendored</strong> rather than
+    written by hand, and the app's own test suite compares what ships against
+    what was built — so a notice that describes a version we are no longer
+    carrying is a red build rather than a quiet inaccuracy.</p>
+  <p>The script that does the vendoring is
+    <a href="https://github.com/iChintanSoni/vdodtor/blob/master/tools/build_ffmpeg.sh"><code>tools/build_ffmpeg.sh</code></a>,
+    and it <em>refuses to finish</em> if the configuration it produced has
+    <code>CONFIG_GPL</code>, <code>CONFIG_NONFREE</code> or
+    <code>CONFIG_VERSION3</code> set.</p>
+
+  <h2>Replacing a library yourself</h2>
+  <p>LGPL 2.1 §6 exists so you can run a version of the library you built. The
+    libraries are <strong>dynamically linked</strong> and ship as separate files
+    inside the app bundle, at:</p>
+<pre><code>vdodtor.app/Contents/Frameworks/vdodtor_engine.framework/Versions/A/Frameworks</code></pre>
+  <p>Build a replacement with the same <code>soname</code> — the install name
+    has to stay <code>@rpath/&lt;file&gt;</code> — and copy it over the one
+    there. macOS refuses to launch an app whose signature no longer matches its
+    contents, so re-sign the bundle afterwards:</p>
+<pre><code>codesign --force --deep --sign - /Applications/vdodtor.app</code></pre>
+  <p>That replaces our signature with an ad-hoc one. The app runs; it is no
+    longer notarized, so the first launch needs the right-click → Open route.
+    The <a href="/source/THIRD_PARTY_NOTICES.md">notices</a> carry the same
+    instructions, with the exact <code>configure</code> line.</p>
+
+  <h2>vdodtor's own source</h2>
+  <p>The editor is not open source, but it is readable:
+    <a href="https://github.com/iChintanSoni/vdodtor">github.com/iChintanSoni/vdodtor</a>.
+    Anything in there you would like the licence terms for, ask at
+    <a href="mailto:source@vdodtor.app">source@vdodtor.app</a>.</p>
+
+</main>
+
+<footer class="wrap">
+  <nav>
+    <a href="/download">Download</a>
+    <a href="/pro">Pro</a>
+    <a href="/licence">Licence keys</a>
+    <a href="/bugs">Report a problem</a>
+    <a href="/source">Open source notices</a>
+    <a href="https://github.com/iChintanSoni/vdodtor">GitHub</a>
+  </nav>
+  <p>Copyright © 2026 Chintan Soni.</p>
+</footer>
+
+</body>
+</html>
