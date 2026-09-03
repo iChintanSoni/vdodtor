@@ -49,7 +49,15 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > the end of the analytics question too: none, not even a count. Its first catch in the
 > running app was itself. What is left in M4 is the signing key and two calls to Apple.
 >
-> **And M5 has started: the first window is no longer an empty one.** The
+> **And M5 has started: the app has its own name and its own face, and the
+> first window is no longer an empty one.** OQ-4's name half is settled —
+> vdodtor ships — and the icon is no longer the one `flutter create` wrote:
+> it is the app's own timeline, three clip bars cut under the playhead, drawn
+> from the numbers in `tools/make_icon.dart` rather than exported from a design
+> tool, in three levels of detail so that 16 px is a drawing rather than a
+> scaled-down one. `app/test/app/icon_test.dart` draws it again and compares,
+> which is the licence notice's rule pointed at a picture. What is left of OQ-4
+> is a website. And the
 > chooser offers a sample project beside New Project — a fifteen-second edit,
 > cut from three gradient shots this repository generates rather than licenses,
 > with a title, a rule, a strapline, a dissolve, a wipe, a look on the middle
@@ -1900,6 +1908,22 @@ look, one slow-mo moment) entirely in vdodtor.
       notice and a disk image is a thing people throw away the day they mount it;
       the same two files go into the image as well, beside the OFL licences, because
       somebody deciding whether to install should not have to install first.
+      **And the volume wears the app's icon.** The DMG window is the first thing a
+      stranger sees of vdodtor — before the app has ever been launched — and a
+      generic white disk beside an `/Applications` alias is the look of a download
+      nobody vouched for. `.VolumeIcon.icns` is **copied out of the built bundle**,
+      at the name `CFBundleIconFile` gives, rather than made again: there is then one
+      place an icon comes from and no way for the two to drift, which is the same
+      argument as generating the icon in the first place, one step further along.
+      Two things needed and neither enough alone — the file at the volume root and
+      `kHasCustomIcon` on the root's Finder info — and the flag is why the image is
+      now built read/write, marked and *then* compressed: the flag lives on a volume
+      root, which does not exist until there is a volume, and `hdiutil` does not
+      carry the staging folder's own attributes across. It is set with `xattr` rather
+      than `SetFile -a C`, which is the same 32 bytes: `SetFile` has been deprecated
+      for years and comes from Xcode, and a packaging script that stops working on an
+      Xcode upgrade fails on release day. Everything survives the compress, which was
+      checked rather than assumed.
 - [x] Update channel — **decided: there is no updater, and that is the feature**
       Split off the DMG item because it was a different question: an editor whose
       pitch is "no account, fully offline" has to decide what it is willing to ask
@@ -1980,7 +2004,55 @@ buy Pro, and export 4K — with no help.
 
 ## M5 — Launch
 
-- [ ] Resolve OQ-4: name/branding final; icon; website with direct download
+- [~] Resolve OQ-4: name/branding final; icon; website with direct download
+      **The name is settled — vdodtor ships — and the icon is drawn.** What is
+      left of OQ-4 is the website with a direct download, which is the same
+      address `Checkout.buy` and `About.download` already point at and has
+      nothing in this repository to build.
+      The icon is **generated, not vendored**, which is `tools/make_luts.dart`'s
+      argument arriving at the last asset that had escaped it. A `.png` exported
+      from a design tool is a file nobody can argue with: it cannot be
+      re-rendered at a size Apple adds next year, it cannot be re-tinted when
+      `VdColors` moves, and the source it came out of lives on somebody's
+      machine rather than in the repository. `tools/make_icon.dart` holds the
+      geometry, writes every file `AppIcon.appiconset/Contents.json` names, and
+      `app/test/app/icon_test.dart` draws it again and compares — which is
+      `about_test.dart`'s rule pointed at a picture: generated, and then checked
+      against what actually shipped.
+      **The mark is the app's own timeline**: three clip bars in the colours
+      `VdColors` paints tracks with, cut under the playhead, drawn as the
+      line-and-triangle `TimelinePainter._paintPlayhead` draws. So the icon is a
+      picture of what the product *is* — multi-track — rather than a play
+      triangle, which would fit every competitor in the brief's positioning
+      table equally well. The hues are the timeline's own one step brighter,
+      because `VdColors` is muted on purpose to sit beside footage and an icon
+      is seen at 32 px against a Finder window where muted reads as grey; the
+      playhead alone is `VdColors.playhead` **exactly**, since the one thing in
+      this product allowed to be loud should be the same loud everywhere. The
+      test says that in those words rather than as a byte offset.
+      **It is three drawings, not one scaled.** One geometry taken down to 16 px
+      is Apple's own "don't" and it is right: the 40-unit cut is a third of a
+      pixel there, so the detail is not lost, it is *noise*. Under 64 px the
+      overlay lane and the cut go; under 32 px the playhead's head goes too, its
+      line roughly doubles, the shape grows to fill nearly the whole canvas and
+      the drop shadow is dropped — a shadow at 16 px is one blurred pixel of
+      grey laid over a mark seven pixels tall, and the margin it was making room
+      for is a fifth of the width.
+      Two things written rather than depended on, both for
+      `lib/pro/ed25519.dart`'s reason. The **PNG writer** is sixty lines, because
+      a package in the path between this repository and the icon of the thing it
+      ships is a third party who can change it. And the **rasteriser** is a
+      shape reduced to an inside-test and a bounding box, area-sampled with the
+      sample count rising as the icon shrinks — so a 16 px icon is the exact
+      area-average of the design without ever allocating a large one, every
+      shape is antialiased by construction, and a new shape costs one function
+      with no path builder, no edge list and no winding rule to get wrong. The
+      whole set renders in 1.6 s.
+      Checked without building the app, which on a clean machine would want ten
+      minutes of FFmpeg first: `xcrun actool` compiles the catalogue exactly as
+      the Xcode phase does — no notices, no warnings — and the `AppIcon.icns` it
+      emits, which is the file the Dock and the Finder actually read, carries
+      the mark. What was there until now was the one `flutter create` wrote.
 - [x] First-run experience: bundled sample project + 60-second tour
       **An editor's first window is the hardest one.** Nothing is on the
       timeline, so nothing on screen does anything, every control is greyed out,

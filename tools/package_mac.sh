@@ -63,9 +63,10 @@ step() { echo; echo "==> $*"; }
 # ---- preflight -------------------------------------------------------------
 step "preflight"
 
-for tool in flutter dart xcrun hdiutil codesign shasum; do
+for tool in flutter dart xcrun hdiutil codesign shasum xattr; do
   command -v "$tool" >/dev/null || die "missing required tool: $tool"
 done
+[[ -x /usr/libexec/PlistBuddy ]] || die "missing required tool: PlistBuddy"
 
 [[ -f "$FFMPEG_LIB/libavcodec.dylib" ]] ||
   die "no vendored FFmpeg. Run tools/build_ffmpeg.sh."
@@ -123,6 +124,24 @@ step "building"
 
 APP="$APP_DIR/build/macos/Build/Products/Release/vdodtor.app"
 [[ -d "$APP" ]] || die "no app at $APP"
+
+# The icon the disk image will wear, taken out of the app rather than made
+# again. actool compiles app/macos/Runner/Assets.xcassets into this .icns and
+# writes its name into Info.plist, so reading the name back is what makes the
+# volume's icon the app's icon *by construction*: there is no second place to
+# put an icon and therefore no way for the two to drift. Which matters here
+# more than it looks — the DMG window is the first thing a stranger sees of
+# vdodtor, before the app has ever been launched.
+ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' \
+  "$APP/Contents/Info.plist" 2>/dev/null || true)"
+[[ -n "$ICON_NAME" ]] ||
+  die "the built app has no CFBundleIconFile, so it has no icon.
+  Check ASSETCATALOG_COMPILER_APPICON_NAME in the Xcode project and that
+  app/macos/Runner/Assets.xcassets/AppIcon.appiconset is populated —
+  dart run tools/make_icon.dart"
+[[ "$ICON_NAME" == *.icns ]] || ICON_NAME="$ICON_NAME.icns"
+APP_ICNS="$APP/Contents/Resources/$ICON_NAME"
+[[ -f "$APP_ICNS" ]] || die "Info.plist names $ICON_NAME and it is not in Resources"
 
 # ---- what actually got embedded --------------------------------------------
 #
@@ -234,6 +253,8 @@ done < <(find "$APP/Contents" -type f -perm +111 -print0)
 # away.
 mkdir -p "$OUT"
 STAGE="$OUT/.stage"
+MOUNT="$OUT/.mnt"
+RW="$OUT/.rw.dmg"
 DMG="$OUT/vdodtor-$VERSION.dmg"
 
 build_dmg() {
@@ -241,6 +262,11 @@ build_dmg() {
   mkdir -p "$STAGE/Licences"
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
+
+  # The volume's icon. Two halves, and neither works alone: the file, which
+  # has to be called exactly this and sit at the root, and a flag on the root
+  # folder saying to look for it.
+  cp "$APP_ICNS" "$STAGE/.VolumeIcon.icns"
 
   # The same two documents the About sheet shows, beside the app as well as
   # inside it: somebody deciding whether to install should not have to install
@@ -250,9 +276,39 @@ build_dmg() {
   cp "$APP_DIR/assets/notices/LGPL-2.1.txt" "$STAGE/Licences/"
   cp "$APP_DIR"/assets/fonts/OFL-*.txt "$STAGE/Licences/"
 
-  rm -f "$DMG"
+  # Built read/write and then compressed, rather than straight to UDZO, and
+  # only because of that flag: it lives in the *volume root's* Finder info,
+  # which exists only once there is a volume. hdiutil does not carry the
+  # staging folder's own attributes onto the volume it makes from it, so the
+  # image has to be attached and the root marked in place. Everything survives
+  # the compress.
+  rm -f "$DMG" "$RW"
   hdiutil create -quiet -volname "vdodtor $VERSION" -srcfolder "$STAGE" \
-    -ov -format UDZO "$DMG"
+    -ov -format UDRW "$RW"
+
+  # A run interrupted between the attach and the detach below leaves the image
+  # sitting there; detaching a path with nothing on it fails harmlessly.
+  hdiutil detach "$MOUNT" -quiet 2>/dev/null || true
+  mkdir -p "$MOUNT"
+  hdiutil attach "$RW" -nobrowse -noautoopen -mountpoint "$MOUNT" -quiet
+
+  # kHasCustomIcon, which is bit 10 of the Finder flags at offset 8 of the
+  # 32-byte FinderInfo. This is what `SetFile -a C` sets, written directly
+  # because SetFile has been deprecated for years and comes from Xcode, while
+  # xattr is part of the system — and a packaging script that stops working on
+  # an Xcode upgrade fails at the worst possible moment, which is release day.
+  if ! xattr -wx com.apple.FinderInfo \
+       '00 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00' "$MOUNT"; then
+    hdiutil detach "$MOUNT" -quiet || true
+    die "could not mark the volume as having a custom icon"
+  fi
+
+  hdiutil detach "$MOUNT" -quiet
+  rmdir "$MOUNT" 2>/dev/null || true
+
+  hdiutil convert "$RW" -quiet -format UDZO -ov -o "$DMG"
+  rm -f "$RW"
   rm -rf "$STAGE"
   [[ $ADHOC -eq 1 ]] || codesign --force --sign "$IDENTITY" --timestamp "$DMG"
 }

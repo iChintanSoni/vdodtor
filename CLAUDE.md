@@ -62,6 +62,9 @@ tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ff
            make_luts.dart  — writes every look from the formulae in it: the built-in
                              five into app/assets/luts, a pack's into build/packs/<id>
                              beside the manifest tool/pack.dart signs
+           make_icon.dart  — draws the app icon into the macOS asset catalogue:
+                             the timeline as a mark, three levels of detail,
+                             its own rasteriser and its own PNG writer
            make_notices.dart — writes app/assets/notices from what is vendored
            make_sample.sh  — writes app/assets/sample: the three shots and the
                              bed the sample project is cut from, generated for
@@ -101,6 +104,11 @@ dart run tools/make_luts.dart                 # from the repo root
 cd app && dart run tool/pack.dart build --from ../build/packs/cinema \
     --key <seed> --out assets/packs/cinema.vdpack
 dart run tool/pack.dart show assets/packs/cinema.vdpack
+
+# redraw the app icon (needed whenever its geometry or the palette it borrows
+# from lib/ui/theme.dart changes; app/test/app/icon_test.dart draws it again and
+# compares, so a change made and not run turns that red):
+dart run tools/make_icon.dart                 # from the repo root
 
 # regenerate the sample project's footage (needed when its palette, its length
 # or its frame rate changes; the edit over it lives in
@@ -300,6 +308,26 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   notice, a disk image is a thing people throw away the day they mount it, and the
   chooser is the window every launch starts in. The same two files go into the image as
   well, because somebody deciding whether to install should not have to install first.
+- **The icon is drawn, and it is a picture of the timeline.** `tools/make_icon.dart`
+  holds the geometry and writes every file `AppIcon.appiconset/Contents.json` names;
+  `app/test/app/icon_test.dart` draws it again and compares **pixels**, not bytes,
+  because what ships is the picture and the bytes around it are whatever deflate
+  produced for the zlib in whichever SDK ran the generator. That is `make_luts.dart`'s
+  "generated, not vendored" reaching the last asset that had escaped it — a `.png`
+  exported from a design tool cannot be re-rendered at a size Apple adds next year, nor
+  re-tinted when `VdColors` moves. The mark is three clip bars in the timeline's own
+  track colours, cut under the playhead, drawn as `TimelinePainter._paintPlayhead` draws
+  it; the hues are one step brighter than `VdColors` because those are muted to sit
+  beside footage and an icon is seen at 32 px on a Finder window, but the playhead is
+  `VdColors.playhead` **exactly** — the one loud thing in the product is the same loud
+  everywhere. And it is **three drawings rather than one scaled**: under 64 px the
+  overlay lane and the cut go, under 32 px the head and the shadow go and the line
+  doubles. A 40-unit cut is a third of a pixel at 16 px, where detail is not lost but
+  becomes noise. The **disk image wears the same icon**, copied out of the built
+  bundle at the name `CFBundleIconFile` gives rather than made again, so there is one
+  place an icon comes from; the flag that makes a volume use it lives on the volume
+  root, which is why `package_mac.sh` now builds read/write, marks it and compresses
+  afterwards.
 - **The sample project is code, and its footage is copied rather than pointed at.**
   An empty editor teaches nobody anything, so the chooser offers a fifteen-second
   edit beside New Project — but it is **not** a shipped `.vdo`: a project file
