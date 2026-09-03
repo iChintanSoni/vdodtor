@@ -14,8 +14,13 @@
 /// sold direct will land in, and that is not work a product this size can do
 /// itself.
 ///
-/// The domain is not final — OQ-4 in PLAN.md is still open — and this is the
-/// one file it is written down in.
+/// The domain is settled (OQ-4), and the pages behind these two are in `site/`
+/// in this repository — not because a marketing site belongs beside an engine,
+/// but because there is **no updater**: a build from 2026 opens the URL that
+/// was compiled into it and can never be told otherwise. So the app and the
+/// site are two sides of one boundary that has to agree, and
+/// `test/app/site_test.dart` is what makes them, the way `about_test.dart`
+/// makes the licence notice agree with the libraries that shipped.
 library;
 
 abstract final class Checkout {

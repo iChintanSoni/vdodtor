@@ -58,6 +58,9 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_raster (the frame a drawn source draws into), vd_text (Core Text
            captions), vd_shape (rect/ellipse/line/arrow), vd_audio_*,
            vd_engine (transport), vd_thumbnail, vd_peaks
+site/      vdodtor.app — six plain static pages (no build step) and one
+           stylesheet, serving the addresses the app opens; `source/` carries
+           the byte-identical notice and LGPL text the app ships
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
            make_luts.dart  — writes every look from the formulae in it: the built-in
                              five into app/assets/luts, a pack's into build/packs/<id>
@@ -65,7 +68,8 @@ tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ff
            make_icon.dart  — draws the app icon into the macOS asset catalogue:
                              the timeline as a mark, three levels of detail,
                              its own rasteriser and its own PNG writer
-           make_notices.dart — writes app/assets/notices from what is vendored
+           make_notices.dart — writes app/assets/notices from what is vendored,
+                             and copies the same two files into site/source
            make_sample.sh  — writes app/assets/sample: the three shots and the
                              bed the sample project is cut from, generated for
                              make_luts.dart's reason
@@ -107,8 +111,14 @@ dart run tool/pack.dart show assets/packs/cinema.vdpack
 
 # redraw the app icon (needed whenever its geometry or the palette it borrows
 # from lib/ui/theme.dart changes; app/test/app/icon_test.dart draws it again and
-# compares, so a change made and not run turns that red):
+# compares, so a change made and not run turns that red). It writes the macOS
+# asset catalogue *and* the two icons the website wears:
 dart run tools/make_icon.dart                 # from the repo root
+
+# the website is plain files — no build step. To look at it, serve site/ as a
+# root, because the pages use absolute paths and file:// resolves those to the
+# filesystem root:
+python3 -m http.server 8000 --bind 127.0.0.1 --directory site
 
 # regenerate the sample project's footage (needed when its palette, its length
 # or its frame rate changes; the edit over it lives in
@@ -328,6 +338,19 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   place an icon comes from; the flag that makes a volume use it lives on the volume
   root, which is why `package_mac.sh` now builds read/write, marks it and compresses
   afterwards.
+- **The site is in this repository because the app cannot be updated.** vdodtor
+  hard-codes six `vdodtor.app` addresses — `/`, `/download`, `/pro`, `/licence`,
+  `/bugs`, `/source` — into a build with no updater, no remote config and no socket, so
+  a page renamed on the site is a dead button in every copy ever installed, permanently;
+  `Checkout.buy` is the worst of them, since it fails at the moment somebody decided to
+  pay. That makes the app and the site two sides of one boundary that must agree, which
+  is the `vd_time.c`/`time.dart` arrangement pointed at hyperlinks:
+  `app/test/app/site_test.dart` reads `lib/` for every such address and fails if the
+  site has no `<path>/index.html`, checks the site's own internal links, and makes the
+  download page offer the version `pubspec.yaml` would build. `site/source/` holds the
+  **byte-identical** notice and LGPL text the app ships rather than a retelling — the
+  shipped notice names that address as where the source is, and a licence obligation
+  restated in a second set of words is a second thing that can be wrong.
 - **The sample project is code, and its footage is copied rather than pointed at.**
   An empty editor teaches nobody anything, so the chooser offers a fifteen-second
   edit beside New Project — but it is **not** a shipped `.vdo`: a project file

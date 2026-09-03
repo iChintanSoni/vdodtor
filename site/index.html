@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vdodtor — a no-watermark video editor for Mac</title>
+<meta name="description" content="A full multi-track video editor for macOS with no watermark, no account and no ads. It has no network access at all, and you can verify that in ten seconds. Free at 1080p.">
+<link rel="icon" href="/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/icon.png">
+<link rel="stylesheet" href="/style.css">
+<meta property="og:title" content="vdodtor — a no-watermark video editor for Mac">
+<meta property="og:description" content="Full multi-track editing. No watermark, no account, no ads, and no network access at all.">
+<meta property="og:image" content="https://vdodtor.app/icon.png">
+<meta property="og:type" content="website">
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/icon.png" alt=""> vdodtor</a>
+    <nav>
+      <a href="/download">Download</a>
+      <a href="/pro">Pro</a>
+      <a href="/bugs">Support</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <img class="mark" src="/icon.png" alt="The vdodtor icon: three clip lanes under a playhead">
+    <h1>The video editor that asks you for nothing</h1>
+    <p class="lead">vdodtor is a full multi-track video editor for the Mac.
+      <strong>No watermark. No account. No ads.</strong> It cannot go online at
+      all — and unlike everyone else who tells you that, you can check.</p>
+    <div class="actions">
+      <a class="btn primary" href="/download">Download for macOS</a>
+      <a class="btn quiet" href="/pro">What Pro adds</a>
+    </div>
+    <p class="note">Free at 1080p, forever. macOS 12 or later, Apple Silicon and Intel.</p>
+  </section>
+
+  <section class="panel">
+    <h2 style="margin-top:0">It cannot phone home, and that is checkable</h2>
+    <p>vdodtor is sandboxed and ships with <strong>no network entitlement</strong>.
+      Not "we promise not to" — the operating system will not let it open a
+      socket. There is no telemetry, no analytics, not even a count of launches,
+      because there is nothing to count them with.</p>
+    <p>Anyone can verify it, on their own copy, in about ten seconds:</p>
+<pre><code>codesign -d --entitlements - /Applications/vdodtor.app</code></pre>
+    <p>There is no <code>com.apple.security.network.client</code> in the list.
+      A privacy policy is a sentence you have to believe; this is a fact you can
+      run.</p>
+  </section>
+
+  <h2>What it does</h2>
+
+  <div class="grid">
+    <div>
+      <h3>Real multi-track</h3>
+      <p>A magnetic main track, three overlay lanes, audio lanes and eight lanes
+        for text. Trim, split, ripple, snap — with the keyboard, if you like.</p>
+    </div>
+    <div>
+      <h3>Words and shapes</h3>
+      <p>Captions in five bundled typefaces with fill, outline, shadow and a
+        background box; rectangles, ellipses, lines and arrows beside them.</p>
+    </div>
+    <div>
+      <h3>Stickers</h3>
+      <p>Drop in an animated GIF, WebP or APNG. It keeps its own frame rate
+        whatever the project runs at, and it loops.</p>
+    </div>
+    <div>
+      <h3>Transitions and animation</h3>
+      <p>Dissolve, slide, push, wipe, and a dip to black or white. Nine ways for
+        a clip to arrive and leave, including a typewriter for captions.</p>
+    </div>
+    <div>
+      <h3>Colour</h3>
+      <p>Brightness, contrast, saturation, temperature and tint per clip, plus
+        <code>.cube</code> looks — five bundled, and any of your own.</p>
+    </div>
+    <div>
+      <h3>Speed and sound</h3>
+      <p>Retime a clip with the pitch kept or the pitch shifted. Fades with a
+        shape, a volume line you can draw on, and EQ presets.</p>
+    </div>
+  </div>
+
+  <h2>Free and Pro</h2>
+
+  <p>The free version is the whole editor. Pro is a bigger export and more
+    content — never a feature taken away, and never a watermark.</p>
+
+  <table>
+    <tr><th>&nbsp;</th><th>Free</th><th>Pro</th></tr>
+    <tr><td>The full multi-track editor</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+    <tr><td>Export up to 1080p</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+    <tr><td>Watermark</td><td class="no">Never</td><td class="no">Never</td></tr>
+    <tr><td>Account required</td><td class="no">None</td><td class="no">None</td></tr>
+    <tr><td>Export at 4K</td><td class="no">—</td><td class="yes">Yes</td></tr>
+    <tr><td>Premium content packs</td><td class="no">—</td><td class="yes">Yes</td></tr>
+  </table>
+
+  <p>A film graded with Pro content goes on rendering exactly as it did if a
+    subscription lapses, on a machine that never had one, and in an export years
+    later. Paying changes what you may <em>choose</em>, never what gets
+    <em>drawn</em>. <a href="/pro">More about Pro</a>.</p>
+
+  <h2>Things worth knowing before you download</h2>
+
+  <h3>There is no updater</h3>
+  <p>The same decision as the one above: an app that cannot open a socket cannot
+    check for a new version either. Nobody will be nagged, and nobody will be
+    told. Come back to <a href="/download">the download page</a> when you feel
+    like it — the app's About panel shows which version you are on.</p>
+
+  <h3>Nothing is ever sent, including when it breaks</h3>
+  <p>If vdodtor hits a fault it writes a report to a file on your own disk, with
+    every file path scrubbed out of it, and offers it to you the next time you
+    launch. It reaches us only if you read it and paste it in.
+    <a href="/bugs">How to do that</a>.</p>
+
+  <h3>Your projects are ordinary files</h3>
+  <p>Projects live in <code>~/Movies/vdodtor</code> as plain JSON, and your
+    footage stays exactly where you put it. There is no library to be locked
+    into and nothing to export before you leave.</p>
+
+</main>
+
+<footer class="wrap">
+  <nav>
+    <a href="/download">Download</a>
+    <a href="/pro">Pro</a>
+    <a href="/licence">Licence keys</a>
+    <a href="/bugs">Report a problem</a>
+    <a href="/source">Open source notices</a>
+    <a href="https://github.com/iChintanSoni/vdodtor">GitHub</a>
+  </nav>
+  <p>Copyright © 2026 Chintan Soni. vdodtor is not affiliated with any of the
+    products it is compared to.</p>
+</footer>
+
+</body>
+</html>
