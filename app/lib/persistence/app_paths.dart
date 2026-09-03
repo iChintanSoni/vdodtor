@@ -50,6 +50,10 @@ final class AppPaths {
   File get recentsFile => File('${support.path}/recents.json');
   File get sessionFile => File('${support.path}/session.json');
 
+  /// Set once the sixty-second tour has been shown — see
+  /// `lib/persistence/first_run.dart`, which is the only thing that reads it.
+  File get tourSeenFile => File('${support.path}/tour-seen');
+
   /// The Pro licence, if this installation has one.
   ///
   /// Under `support` with the rest of the app's private state, and not in the

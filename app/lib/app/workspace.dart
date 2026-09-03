@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../commands/document_store.dart';
+import '../engine/media_probe.dart';
 import '../media/file_access.dart';
+import '../media/sample_project.dart';
 import '../model/ids.dart';
 import '../model/project.dart';
 import '../model/time.dart';
 import '../persistence/app_paths.dart';
 import '../persistence/autosave.dart';
+import '../persistence/first_run.dart';
 import '../persistence/library.dart';
 import '../persistence/project_file.dart';
 import '../persistence/recents.dart';
@@ -99,12 +102,14 @@ class Workspace extends ChangeNotifier {
     AppPaths? paths,
     IdGen? ids,
     FileAccess? access,
+    MediaProber? prober,
     Licensing? licensing,
     CrashReporter? crashes,
     Future<AppPaths> Function()? resolvePaths,
     this.autosaveDebounce = const Duration(milliseconds: 400),
   })  : _ids = ids ?? IdGen(),
         _access = access ?? const SystemFileAccess(),
+        _prober = prober ?? const EngineMediaProber(),
         crashes = crashes ?? CrashReporter(),
         _resolvePaths = resolvePaths ?? AppPaths.resolve {
     _paths = paths;
@@ -139,6 +144,11 @@ class Workspace extends ChangeNotifier {
   /// How the app gets at the user's own media. Injected so opening a project
   /// full of bookmarked footage is testable without a sandbox.
   final FileAccess _access;
+
+  /// What reads a media file's facts. The chooser needs one because the sample
+  /// project is imported before an editor exists — the editor has its own, for
+  /// the drops and the panel, and neither is the other's.
+  final MediaProber _prober;
 
   /// Paths whose security scope this run has opened, to be closed when the
   /// project does. Not a leak worth ignoring: macOS caps how many a process
@@ -179,6 +189,11 @@ class Workspace extends ChangeNotifier {
   Object? get failure => _failure;
 
   AppPaths get paths => _paths!;
+
+  /// What this installation has already been shown. Valid from
+  /// [WorkspaceStage.chooser] onwards, like [paths], because it is a file
+  /// under them.
+  FirstRun get firstRun => FirstRun(paths.tourSeenFile);
 
   /// How the app reaches the user's own media. The editor imports through it.
   FileAccess get fileAccess => _access;
@@ -252,6 +267,49 @@ class Workspace extends ChangeNotifier {
       await _adopt(file, project);
     } catch (error) {
       _notice = 'Could not create "$trimmed": $error';
+      notifyListeners();
+    }
+  }
+
+  /// Opens the sample project, making it on the first ask.
+  ///
+  /// Opens the one that is already there rather than making a second, because
+  /// the sample is meant to be pulled apart: somebody who spent ten minutes
+  /// re-cutting it and came back to the chooser wants their version, and a
+  /// button that quietly makes "Sample project 2" would have thrown their work
+  /// out of the way without deleting it. Getting a fresh one back is deleting
+  /// the old one, which is a thing they can see how to do.
+  Future<void> openSample() async {
+    for (final entry in _projects) {
+      if (entry.exists && entry.name == SampleProject.name) {
+        await openAt(entry.path);
+        return;
+      }
+    }
+
+    if (_open != null) await close();
+    _notice = null;
+
+    try {
+      final media = await SampleProject.stage(paths.library);
+      final project = await SampleProject.build(
+        media: media,
+        // 1080p at 30, which is the footage's own rate and — not by accident —
+        // under the free tier: a first launch that ends in the resolution gate
+        // would be an editor whose sample project it cannot export.
+        format: ProjectFormat.fromAspect(
+          ProjectAspect.landscape16x9,
+          frameRate: FrameRates.fps30,
+        ),
+        ids: _ids,
+        prober: _prober,
+        access: _access,
+      );
+      final file = ProjectFile(_library.pathFor(SampleProject.name));
+      await file.save(project);
+      await _adopt(file, project);
+    } catch (error) {
+      _notice = 'Could not open the sample project: $error';
       notifyListeners();
     }
   }

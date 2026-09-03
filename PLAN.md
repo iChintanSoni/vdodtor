@@ -49,6 +49,20 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > the end of the analytics question too: none, not even a count. Its first catch in the
 > running app was itself. What is left in M4 is the signing key and two calls to Apple.
 >
+> **And M5 has started: the first window is no longer an empty one.** The
+> chooser offers a sample project beside New Project — a fifteen-second edit,
+> cut from three gradient shots this repository generates rather than licenses,
+> with a title, a rule, a strapline, a dissolve, a wipe, a look on the middle
+> shot and a chord bed faded under the lot — and the first editor window this
+> machine ever opens runs a six-stop tour over the real panels. The sample is
+> **code rather than a shipped `.vdo`**, so it is exactly as current as the
+> document model is, and its footage is **copied into the library** rather than
+> referred to inside the bundle, because a bundle resource is readable and
+> cannot be bookmarked. Measured in the running app: 30.0 fps, 1.7 ms GPU, no
+> underruns, zero text rasters and zero LUT uploads across three seconds of
+> playback, and the whole thing exports at 6.0x realtime with the preview still
+> alive.
+>
 > **M3's build items are all done, and its exit criteria are one edit by hand: the editor
 > can put words on the picture, draw shapes beside them, drop animated stickers over them,
 > make them all arrive, join one shot to the next, grade the colour of any of them, put a
@@ -1967,7 +1981,79 @@ buy Pro, and export 4K — with no help.
 ## M5 — Launch
 
 - [ ] Resolve OQ-4: name/branding final; icon; website with direct download
-- [ ] First-run experience: bundled sample project + 60-second tour
+- [x] First-run experience: bundled sample project + 60-second tour
+      **An editor's first window is the hardest one.** Nothing is on the
+      timeline, so nothing on screen does anything, every control is greyed out,
+      and the advice "drop some footage on it" assumes the user already has
+      some to hand. So the chooser offers a **sample project** beside New
+      Project — a fifteen-second edit that is already cut, already graded and
+      already has words on it — and the first editor window this machine ever
+      opens runs a **six-stop tour** over the real panels.
+      **The footage is generated, not vendored**, which is
+      `tools/make_luts.dart`'s argument about the looks applied to media: what
+      ships inside a product sold without an account has to be something we may
+      sell, and stock footage almost never is. `tools/make_sample.sh` writes
+      three gradient shots and a chord bed with the ffmpeg CLI, the way
+      `engine/tests/media/generate.sh` already writes the probe fixtures. They
+      total under 800 KB — a gradient is the most compressible picture there
+      is, which is the other half of why they are gradients, and they are the
+      shots a *look* reads most clearly on.
+      **The project is code, not a `.vdo` asset.** A shipped project file would
+      carry absolute paths that are wrong on every machine but the one that
+      wrote it, and would go stale the moment the document format moved —
+      silently, because nothing reads a sample project until a stranger opens
+      it. Built from the model it is exactly as current as the model is. The
+      consequence worth saying out loud: this is **not** a template system. A
+      template is a project file used as a starting point, which is the thing
+      `PackContentKind` names and defers, and building the mechanism now for one
+      template would be a mechanism with no second user.
+      The footage is **copied** into `<library>/Sample Media` — the decision
+      `BundledLooks.install` already makes for a user's own `.cube`, and here
+      for a harder reason: a file inside the app bundle is readable but cannot
+      be **bookmarked at all**, so a project pointing into the bundle is one the
+      importer could never mint a scope for. In the library it is granted whole
+      by entitlement and behaves exactly like the user's own footage, which is
+      the point — the sample must not be a special case the rest of the app
+      knows about. It is imported through the real importer and the real probe
+      for the same reason, and asking again reopens **theirs** rather than
+      making "Sample project 2": somebody who spent ten minutes re-cutting it
+      wants their version back.
+      **The tour points at the real panels rather than at pictures of them**,
+      from the top of the editor's own `Stack` rather than from a route: a
+      dialog would put a barrier between the card and the thing it is talking
+      about, and the editor underneath stays live, so pressing space during the
+      first stop plays the film — which is that stop's own instruction working.
+      Six stops at about ten seconds each, and every one says something the
+      editor cannot say by looking like itself: which lane is magnetic, that
+      there is no import dialog to go and find, that 1080p carries no watermark,
+      that the app cannot open a socket. The hole is **re-measured after every
+      frame**, because the things being pointed at move for reasons the tour
+      cannot see — a resized window, an engine that finishes starting and
+      replaces a spinner with a preview, a lane that appears — and a highlight
+      left behind the thing it highlights is worse than no highlight. Skipping
+      and finishing are the **same outcome**: both mean "do not show this
+      again", and a product that reads Skip as unfinished business shows the
+      tour twice. It is offered once per machine, marked by a file under
+      Application Support, and reachable afterwards from the shortcut sheet —
+      the surface that is already "how does this work".
+      Found by doing this: `CallbackShortcuts` handles keys that *bubble
+      through* it, so the focused node has to be one of its descendants. Wrapped
+      the other way round the bindings sit above the node the event starts at
+      and never see it; Escape and Enter silently did nothing, and only the
+      widget test said so.
+      Measured in the running app, on the sample as a stranger gets it: 1920x1080
+      at 30, three shots, five lanes, four files, 15.00s — **30.0 fps, 1.7 ms
+      GPU, four layers, three decoders, no audio underruns, and across three
+      seconds of playback zero text rasters and zero LUT uploads.** The five
+      frames the arrangement was designed around are all right: the title in
+      Anton over a rule with the strapline in Inter under it, the middle of the
+      dissolve, the middle shot with Teal & Orange at 0.65 on it and its
+      neighbours ungraded, a hard-edged wipe at exactly half, and the closing
+      line in Playfair Display. Exported at **6.0x realtime** with the preview
+      still alive. `VD_SELFTEST=sample` is the pass that says so, and it is the
+      one pass in `lib/dev/self_test.dart` that **edits nothing** — every other
+      builds a timeline in order to measure the engine under it, and this one is
+      handed the timeline a stranger gets.
 - [ ] Private beta; fix the top reported issues
 - [ ] Launch: Product Hunt, r/videoediting, YouTube reviewer outreach,
       "no watermark video editor" SEO page (resolves OQ-5)

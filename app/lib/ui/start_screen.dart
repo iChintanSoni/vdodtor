@@ -12,15 +12,26 @@ import 'theme.dart';
 /// The window before a project is open: make one, or pick up where you left
 /// off. No account, no template gallery, no upsell — the product brief's
 /// promise starts here.
+///
+/// The sample project is not a template gallery and the distinction is worth
+/// keeping: a gallery is a shop with a shape it wants your film to take, and
+/// this is one project, offered once, that exists because an empty editor
+/// teaches nobody anything. It sits beside New Project rather than in front of
+/// it, so somebody who came here to work is never routed through a demo.
 class StartScreen extends StatelessWidget {
   const StartScreen({
     super.key,
     required this.workspace,
     required this.onNewProject,
+    required this.onOpenSample,
   });
 
   final Workspace workspace;
   final VoidCallback onNewProject;
+
+  /// Opens the sample, making it on the first ask — see
+  /// [Workspace.openSample].
+  final VoidCallback onOpenSample;
 
   @override
   Widget build(BuildContext context) {
@@ -112,17 +123,28 @@ class StartScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                 ],
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton.icon(
-                    onPressed: onNewProject,
-                    icon: const Icon(Icons.add),
-                    label: const Text('New project'),
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 18),
+                Row(
+                  children: [
+                    FilledButton.icon(
+                      onPressed: onNewProject,
+                      icon: const Icon(Icons.add),
+                      label: const Text('New project'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 18),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 12),
+                    OutlinedButton.icon(
+                      onPressed: onOpenSample,
+                      icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                      label: const Text('Open the sample'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 18),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 32),
                 Row(
@@ -152,7 +174,7 @@ class StartScreen extends StatelessWidget {
                 const SizedBox(height: 8),
                 Expanded(
                   child: projects.isEmpty
-                      ? const _EmptyProjects()
+                      ? _EmptyProjects(onOpenSample: onOpenSample)
                       : ListView.separated(
                           itemCount: projects.length,
                           separatorBuilder: (_, _) =>
@@ -235,18 +257,41 @@ class _Tier extends StatelessWidget {
       );
 }
 
+/// What the list says before there is a list.
+///
+/// This is the one screen a first launch is guaranteed to see, so it is where
+/// the sample is actually offered — the button above is for the second time
+/// somebody wants it. A first-time user with no footage to hand has nothing to
+/// do in a new project, and "make a project and drop some footage on it" is
+/// advice that assumes they already have some.
 class _EmptyProjects extends StatelessWidget {
-  const _EmptyProjects();
+  const _EmptyProjects({required this.onOpenSample});
+
+  final VoidCallback onOpenSample;
 
   @override
-  Widget build(BuildContext context) => const Align(
-        alignment: Alignment.topLeft,
-        child: Padding(
-          padding: EdgeInsets.only(top: 12),
-          child: Text(
-            'Nothing here yet. Make a project and drop some footage on it.',
-            style: TextStyle(color: VdColors.dim),
-          ),
+  Widget build(BuildContext context) => SingleChildScrollView(
+        // Scrolls rather than overflows. This sits under however many banners
+        // a bad previous run left behind — a crash report and a recovery offer
+        // at once, on a short window — and an empty state that turns into a
+        // stripe of overflow warnings would be the app's own error handling
+        // reporting a layout bug.
+        padding: const EdgeInsets.only(top: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Nothing here yet. Make a project and drop some footage on it '
+              '— or open the sample, a finished edit you can take apart.',
+              style: TextStyle(color: VdColors.dim),
+            ),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: onOpenSample,
+              child: const Text('Open the sample project'),
+            ),
+          ],
         ),
       );
 }

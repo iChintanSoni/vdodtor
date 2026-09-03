@@ -14,6 +14,7 @@ import '../engine/timeline_sync.dart';
 import '../media/file_access.dart';
 import '../media/looks.dart';
 import '../media/media_import.dart';
+import '../media/sample_project.dart';
 import '../media/thumbnails.dart';
 import '../media/waveforms.dart';
 import '../model/media.dart';
@@ -29,6 +30,7 @@ import 'theme.dart';
 import 'timecode.dart';
 import 'timeline/timeline_controller.dart';
 import 'timeline/timeline_view.dart';
+import 'tour.dart';
 
 /// The editor: one open document, synced to the engine, playing through the
 /// real compositor.
@@ -46,10 +48,23 @@ class EditorScreen extends StatefulWidget {
     this.prober = const EngineMediaProber(),
     this.peakCache,
     this.lookLibrary,
+    this.showTour = false,
+    this.onTourFinished,
   });
 
   final OpenProject open;
   final VoidCallback onClose;
+
+  /// Whether to run the sixty-second tour as soon as the editor is up.
+  ///
+  /// Decided by the app shell rather than here, because "has this machine been
+  /// shown it" is a fact about the installation and the editor is a thing that
+  /// gets built once per project. The editor owns the *mechanism*, which is
+  /// where the anchors are.
+  final bool showTour;
+
+  /// Called once, when the tour ends however it ends. See [TourOverlay].
+  final VoidCallback? onTourFinished;
 
   /// What this installation has paid for. Read by exactly one thing — the
   /// export sheet — which is the whole of the free/Pro line in the editor.
@@ -87,6 +102,13 @@ class _EditorScreenState extends State<EditorScreen> {
   late final WaveformCache _waveforms =
       WaveformCache(directory: widget.peakCache);
   StreamSubscription<MediaDrop>? _drops;
+
+  /// Where the tour points. Made once per editor, because a GlobalKey may not
+  /// be attached to two widgets at a time and rebuilding them would detach the
+  /// panels mid-tour.
+  final TourAnchors _anchors = makeTourAnchors();
+  late bool _tourRunning = widget.showTour;
+
   bool _importing = false;
   bool _syncQueued = false;
   String? _notice;
@@ -127,6 +149,15 @@ class _EditorScreenState extends State<EditorScreen> {
       _statsTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
         if (mounted) setState(() => _stats = _engine?.stats);
       });
+
+      // Looks at the sample and changes nothing, which is why it is not in
+      // the block below: everything there builds a timeline in order to
+      // measure the engine under it, and this is handed the one a stranger
+      // gets on their first launch.
+      if (sampleSelfTestRequested && SampleProject.isSample(_store.project)) {
+        await runSampleSelfTest(engine, _store);
+        await runExportSelfTest(engine, _store);
+      }
 
       // Its own project and no other. The passes below edit the document they
       // are given, so a self-test build opening a project somebody made by
@@ -355,7 +386,8 @@ class _EditorScreenState extends State<EditorScreen> {
         EditorAction.import: () => unawaited(_importFromPicker()),
         EditorAction.export: () => unawaited(_export(context)),
         EditorAction.closeProject: widget.onClose,
-        EditorAction.showShortcuts: () => ShortcutSheet.toggle(context),
+        EditorAction.showShortcuts: () =>
+            ShortcutSheet.toggle(context, onTakeTour: _startTour),
       };
 
   void _togglePlayback() {
@@ -393,6 +425,7 @@ class _EditorScreenState extends State<EditorScreen> {
                 children: [
                   _EditorBar(
                     open: widget.open,
+                    exportKey: _anchors.export,
                     onClose: widget.onClose,
                     onImport: () => unawaited(_importFromPicker()),
                     onExport:
@@ -407,6 +440,7 @@ class _EditorScreenState extends State<EditorScreen> {
                     child: Row(
                       children: [
                         MediaBin(
+                          key: _anchors.bin,
                           assets: _store.project.media.values.toList(),
                           thumbnails: _thumbnails,
                           unreachable: widget.open.unreachableMediaIds,
@@ -423,6 +457,7 @@ class _EditorScreenState extends State<EditorScreen> {
                                   ? const Center(
                                       child: CircularProgressIndicator())
                                   : _Stage(
+                                      key: _anchors.preview,
                                       engine: engine,
                                       store: _store,
                                       onImport: () =>
@@ -439,6 +474,7 @@ class _EditorScreenState extends State<EditorScreen> {
                           AnimatedBuilder(
                             animation: widget.licensing.entitlement,
                             builder: (context, _) => Inspector(
+                              key: _anchors.inspector,
                               timeline: _timeline!,
                               onLoadLook:
                                   widget.lookLibrary == null ? null : _loadLook,
@@ -459,6 +495,7 @@ class _EditorScreenState extends State<EditorScreen> {
                       timeline: _timeline!,
                     ),
                     SizedBox(
+                      key: _anchors.timeline,
                       height: timelineHeightFor(_store.project.tracks.length),
                       child: TimelineView(
                         controller: _timeline!,
@@ -470,11 +507,32 @@ class _EditorScreenState extends State<EditorScreen> {
                 ],
               ),
               const _DropOverlay(),
+              // Last, so it is over the drop highlight as well as over the
+              // panels: a file dragged in during the tour still highlights the
+              // window, and the card explaining the bin is still readable.
+              if (_tourRunning)
+                TourOverlay(
+                  stops: editorTour(_anchors),
+                  onFinished: _endTour,
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  void _endTour() {
+    if (!_tourRunning) return;
+    setState(() => _tourRunning = false);
+    widget.onTourFinished?.call();
+  }
+
+  /// Starts it again, from the shortcut sheet. The marker is written the first
+  /// time round and not unwritten here: replaying the tour on purpose says
+  /// nothing about whether it should be offered unprompted next launch.
+  void _startTour() {
+    if (!_tourRunning) setState(() => _tourRunning = true);
   }
 }
 
@@ -524,6 +582,7 @@ class _DropOverlay extends StatelessWidget {
 /// state and the one button that fixes it.
 class _Stage extends StatelessWidget {
   const _Stage({
+    super.key,
     required this.engine,
     required this.store,
     required this.onImport,
@@ -604,12 +663,16 @@ class _NoticeBar extends StatelessWidget {
 class _EditorBar extends StatelessWidget {
   const _EditorBar({
     required this.open,
+    required this.exportKey,
     required this.onClose,
     required this.onImport,
     required this.onExport,
   });
 
   final OpenProject open;
+
+  /// The tour's fifth stop points at the Export button, which is in here.
+  final GlobalKey exportKey;
   final VoidCallback onClose;
   final VoidCallback onImport;
 
@@ -656,6 +719,7 @@ class _EditorBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           FilledButton.icon(
+            key: exportKey,
             onPressed: onExport,
             icon: const Icon(Icons.ios_share, size: 16),
             label: const Text('Export'),

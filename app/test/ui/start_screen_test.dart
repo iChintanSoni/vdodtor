@@ -57,13 +57,14 @@ void main() {
   }
 
   Future<void> pumpStart(WidgetTester tester, Workspace workspace,
-      {VoidCallback? onNew}) async {
+      {VoidCallback? onNew, VoidCallback? onSample}) async {
     await tester.pumpWidget(MaterialApp(
       home: AnimatedBuilder(
         animation: workspace,
         builder: (_, _) => StartScreen(
           workspace: workspace,
           onNewProject: onNew ?? () {},
+          onOpenSample: onSample ?? () {},
         ),
       ),
     ));
@@ -76,6 +77,35 @@ void main() {
 
     expect(find.text('New project'), findsOneWidget);
     expect(find.textContaining('Nothing here yet'), findsOneWidget);
+  });
+
+  testWidgets('an empty library offers the sample rather than only advice',
+      (tester) async {
+    // The one screen a first launch is guaranteed to see. Somebody with no
+    // footage to hand has nothing to do in a new project, and "drop some
+    // footage on it" is advice that assumes they already have some.
+    var asked = 0;
+    await pumpStart(tester, await workspaceWith(tester, []),
+        onSample: () => asked++);
+
+    await tester.tap(find.text('Open the sample project'));
+    await tester.pump();
+    expect(asked, 1);
+  });
+
+  testWidgets('the sample sits beside New project, not in front of it',
+      (tester) async {
+    // Beside, so somebody who came here to work is never routed through a
+    // demo — and still there once the library has projects in it, because
+    // wanting the sample is not something that only happens on day one.
+    var asked = 0;
+    await pumpStart(tester, await workspaceWith(tester, ['First']),
+        onSample: () => asked++);
+
+    expect(find.text('New project'), findsOneWidget);
+    await tester.tap(find.text('Open the sample'));
+    await tester.pump();
+    expect(asked, 1);
   });
 
   testWidgets('lists projects and opens the one that is tapped',

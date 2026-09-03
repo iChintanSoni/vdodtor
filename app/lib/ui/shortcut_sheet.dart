@@ -9,14 +9,21 @@ import 'theme.dart';
 /// list is wrong the first time somebody changes a key and nobody finds out,
 /// because the only thing that reads it is a person who already believed it.
 class ShortcutSheet extends StatelessWidget {
-  const ShortcutSheet({super.key});
+  const ShortcutSheet({super.key, this.onTakeTour});
+
+  /// Replays the sixty-second tour, or null where there is nothing to replay.
+  ///
+  /// It hangs off this sheet rather than off a menu because this is already
+  /// the "how does this work" surface, and a tour with no way back is a thing
+  /// people skip on their first day and then cannot find on their second.
+  final VoidCallback? onTakeTour;
 
   /// Opens the sheet, or closes it if it is already open.
   ///
   /// Toggling matters because the shortcut that opens it — ⌘/ — is still live
   /// underneath, so without this the second press would push a second copy on
   /// top of the first.
-  static void toggle(BuildContext context) {
+  static void toggle(BuildContext context, {VoidCallback? onTakeTour}) {
     if (_isOpen) {
       Navigator.of(context, rootNavigator: true).pop();
       return;
@@ -24,7 +31,7 @@ class ShortcutSheet extends StatelessWidget {
     _isOpen = true;
     showDialog<void>(
       context: context,
-      builder: (_) => const ShortcutSheet(),
+      builder: (_) => ShortcutSheet(onTakeTour: onTakeTour),
     ).whenComplete(() => _isOpen = false);
   }
 
@@ -54,6 +61,17 @@ class ShortcutSheet extends StatelessWidget {
                         style: TextStyle(
                             fontSize: 16, fontWeight: FontWeight.w600)),
                   ),
+                  if (onTakeTour case final takeTour?)
+                    TextButton(
+                      // Closed first: the tour points at the panels behind
+                      // this sheet, and pointing at them through it would
+                      // highlight a window nobody can see.
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                        takeTour();
+                      },
+                      child: const Text('Take the tour'),
+                    ),
                   IconButton(
                     tooltip: 'Close',
                     icon: const Icon(Icons.close, size: 18),
