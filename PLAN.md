@@ -1908,6 +1908,22 @@ look, one slow-mo moment) entirely in vdodtor.
       notice and a disk image is a thing people throw away the day they mount it;
       the same two files go into the image as well, beside the OFL licences, because
       somebody deciding whether to install should not have to install first.
+      **And the volume wears the app's icon.** The DMG window is the first thing a
+      stranger sees of vdodtor — before the app has ever been launched — and a
+      generic white disk beside an `/Applications` alias is the look of a download
+      nobody vouched for. `.VolumeIcon.icns` is **copied out of the built bundle**,
+      at the name `CFBundleIconFile` gives, rather than made again: there is then one
+      place an icon comes from and no way for the two to drift, which is the same
+      argument as generating the icon in the first place, one step further along.
+      Two things needed and neither enough alone — the file at the volume root and
+      `kHasCustomIcon` on the root's Finder info — and the flag is why the image is
+      now built read/write, marked and *then* compressed: the flag lives on a volume
+      root, which does not exist until there is a volume, and `hdiutil` does not
+      carry the staging folder's own attributes across. It is set with `xattr` rather
+      than `SetFile -a C`, which is the same 32 bytes: `SetFile` has been deprecated
+      for years and comes from Xcode, and a packaging script that stops working on an
+      Xcode upgrade fails on release day. Everything survives the compress, which was
+      checked rather than assumed.
 - [x] Update channel — **decided: there is no updater, and that is the feature**
       Split off the DMG item because it was a different question: an editor whose
       pitch is "no account, fully offline" has to decide what it is willing to ask

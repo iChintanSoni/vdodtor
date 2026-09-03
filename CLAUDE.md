@@ -323,7 +323,11 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   everywhere. And it is **three drawings rather than one scaled**: under 64 px the
   overlay lane and the cut go, under 32 px the head and the shadow go and the line
   doubles. A 40-unit cut is a third of a pixel at 16 px, where detail is not lost but
-  becomes noise.
+  becomes noise. The **disk image wears the same icon**, copied out of the built
+  bundle at the name `CFBundleIconFile` gives rather than made again, so there is one
+  place an icon comes from; the flag that makes a volume use it lives on the volume
+  root, which is why `package_mac.sh` now builds read/write, marks it and compresses
+  afterwards.
 - **The sample project is code, and its footage is copied rather than pointed at.**
   An empty editor teaches nobody anything, so the chooser offers a fifteen-second
   edit beside New Project — but it is **not** a shipped `.vdo`: a project file
