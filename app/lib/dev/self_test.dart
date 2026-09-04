@@ -1450,6 +1450,106 @@ Future<void> runAudioEffectsSelfTest(
 /// It puts the clip back at its own speed, so the passes after it see the
 /// timeline they expect. Retiming rounds to a whole tick each time, so "back"
 /// is within a few microseconds rather than exact.
+/// The chroma key, its eyedropper and its matte view, on a real shot.
+///
+/// `vd_key_test.c` asserts what a key means and `vd_compositor_test.c` asserts
+/// that the shader agrees with it. Neither can answer the two questions this
+/// pass exists for. The first is whether the four numbers actually *cross*:
+/// they are the newest fields on `VdTimelineClip`, and a struct that does not
+/// line up between the generated bindings and the header is a bug no test on
+/// either side of the boundary can see. The second is whether the eyedropper
+/// returns a colour anybody would recognise as the one under the cursor —
+/// which is a question about a frame of real footage rather than about
+/// arithmetic.
+///
+/// The shot here is not a green screen, so what it keys out is whatever colour
+/// the middle of the frame happens to be. That is the point: a key on the
+/// picked colour must take *that* colour and leave the rest, whatever it is.
+///
+/// It also prints the decoder count around the whole pass. Tolerance is the
+/// one control somebody drags continuously while watching the picture, so a
+/// reopen per value would stutter the preview for the length of the drag.
+Future<void> runKeySelfTest(PreviewEngine engine, DocumentStore store) async {
+  final clip = store.project.mainTrack.clips
+      .where((c) => !c.isGenerated)
+      .firstOrNull;
+  if (clip == null) {
+    stdout.writeln('[selftest] key: nothing on the main lane to key');
+    return;
+  }
+
+  final at = clip.start.raw + clip.duration.raw ~/ 2;
+  engine.seek(at);
+  await Future<void>.delayed(const Duration(milliseconds: 200));
+
+  final out = Directory.systemTemp.createTempSync('vdodtor_key_');
+  engine.dumpPng('${out.path}/unkeyed.png');
+  final before = engine.stats;
+
+  // The eyedropper, off to the left rather than in the middle of the frame.
+  //
+  // It picks what is *visible*, which is the right behaviour — somebody points
+  // at the screen they can see — but by the time this pass runs the earlier
+  // ones have left a caption, a shape and a sticker stacked in the centre, and
+  // picking one of those would key the clip underneath on a colour that is not
+  // in it. Pointing at the middle of the frame here would be measuring the
+  // wrong thing rather than finding a bug.
+  //
+  // It renders once with every grade, look and key suppressed and then renders
+  // normally again, so `after_pick.png` should be byte-identical to
+  // `unkeyed.png` — that identity is the whole of "it leaves the frame as it
+  // found it".
+  final picked = engine.pickColor(0.12, 0.5);
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/after_pick.png');
+  if (picked == null) {
+    stdout.writeln('[selftest] key: the eyedropper found nothing to pick');
+    return;
+  }
+  final hex = (picked & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+  stdout.writeln('[selftest] key: picked #$hex off the left of the frame');
+
+  // A key on what was picked, at widening tolerances. The picked colour is
+  // the clip's own, so even the narrowest of these should take most of the
+  // shot; what the wider ones say is that a tolerance somebody drags past the
+  // point of usefulness still produces a frame rather than a crash.
+  //
+  // The bars turning black partway through is the other rule showing itself:
+  // a keyed layer contains rather than blur filling, so a clip that was
+  // filling its own pillars with a blurred copy of itself stops.
+  for (final tolerance in [0.05, 0.2, 0.5, 0.9]) {
+    store.endGesture();
+    store.run(SetClipKey(
+        clip.id, ClipKey.none.withColor(picked).copyWith(tolerance: tolerance)));
+    store.endGesture();
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    engine.dumpPng('${out.path}/tolerance_$tolerance.png');
+  }
+
+  // And what the matte of that looks like — the view mode, which is the
+  // engine's and reaches every layer at once.
+  engine.view = EngineViewMode.matte;
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/matte.png');
+  engine.view = EngineViewMode.normal;
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/matte_off.png');
+
+  final after = engine.stats;
+  stdout.writeln('[selftest] key: four tolerances on ${clip.id} at $at — '
+      'layers ${before.activeLayers} then ${after.activeLayers}, '
+      'decoders ${before.openDecoders} then ${after.openDecoders}');
+
+  // And back to the whole shot, so the passes after this one see the timeline
+  // they expect rather than one with a hole in it.
+  store.endGesture();
+  store.run(SetClipKey(clip.id, ClipKey.none));
+  store.endGesture();
+  await Future<void>.delayed(const Duration(milliseconds: 150));
+  engine.dumpPng('${out.path}/unkeyed_again.png');
+  stdout.writeln('[selftest] key: frames in ${out.path}');
+}
+
 Future<void> runSpeedSelfTest(PreviewEngine engine, DocumentStore store) async {
   final target = _clipToRetime(store.project);
   if (target == null) {

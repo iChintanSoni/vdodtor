@@ -303,6 +303,159 @@ final class ClipColor {
           '${look.isEmpty ? '' : ' look $look@$lookStrength'})';
 }
 
+
+/// What a clip removes from itself: the chroma key.
+///
+/// [ClipColor] says what a picture looks like; this says which parts of it are
+/// **there at all**. That is a different kind of thing, which is why it is a
+/// second object rather than four more fields on the first: every slider up
+/// there is a map from colour to colour, and this one produces alpha.
+///
+/// **Nothing here is evaluated in Dart.** What a key means — a distance in
+/// chroma, a ramp, a despill — lives in `engine/src/vd_key.c`, on the terms
+/// `vd_anim` and `vd_color` already have: nothing in the app draws a matte, so
+/// a second copy of the arithmetic would be a second thing to keep in step
+/// with no reader.
+///
+/// It hangs off every clip, like [ClipTransform] and [ClipColor], because a
+/// clip does not know whether its source has a picture until the media is
+/// probed and the document must be describable without opening a file.
+@immutable
+final class ClipKey {
+  const ClipKey({
+    this.color = 0,
+    this.tolerance = 0,
+    this.softness = defaultSoftness,
+    this.spill = defaultSpill,
+  });
+
+  /// The shot with all of itself still in it. The default for every clip, and
+  /// the value serialisation leaves out of the file entirely.
+  static const none = ClipKey();
+
+  /// What the two shaping sliders open on once a colour has been picked.
+  ///
+  /// Neither is 0: a key with no softness has a hard edge that reads as cut
+  /// out with scissors, and one with no despill leaves the green bounce on the
+  /// subject's shoulder — so a key that opened on zeros would look wrong in
+  /// the two ways somebody would then have to discover the controls for.
+  static const defaultSoftness = 0.15;
+  static const defaultSpill = 1.0;
+
+  /// And what the tolerance opens on: enough to take a real screen, and not so
+  /// much that it starts on the subject.
+  static const defaultTolerance = 0.2;
+
+  /// The colour to remove, as 0xRRGGBB — the same spelling [ClipText.color]
+  /// uses, without the alpha, because a key colour is a point in the picture
+  /// rather than ink.
+  ///
+  /// A **grey** colour removes nothing whatever the sliders say: there is no
+  /// hue to be near, and nothing to measure a fraction of. See `vd_key.h`.
+  final int color;
+
+  /// How far from [color], as a **fraction of the way from that colour to
+  /// grey**, still counts as background: 0 removes only the colour itself, 1
+  /// removes everything that leans that way at all.
+  ///
+  /// A fraction rather than a distance so that the slider means the same thing
+  /// on a blue screen as on a green one — blue carries a fifth of green's luma
+  /// and its coordinates are an order of magnitude larger.
+  ///
+  /// **This is the on switch as well as the amount.** There is no separate
+  /// flag, because a flag is a second thing that can disagree with it and
+  /// because a document records what *happens* rather than what was clicked:
+  /// a key that removes nothing and a key turned off are the same picture.
+  final double tolerance;
+
+  /// The width of the ramp from gone to kept, in the same fractions. 0 is a
+  /// hard edge.
+  final double softness;
+
+  /// How much of [color] to pull out of what is left. Green bounces off a
+  /// screen onto everything in front of it, so the edge of a subject is green
+  /// even where it is opaque.
+  final double spill;
+
+  /// Whether this key is doing anything. A colour at no tolerance is a key the
+  /// user can bring back with the slider, so the *document* keeps the colour
+  /// while the *frame* shows all of itself — exactly [ClipColor.hasLook]'s
+  /// bargain.
+  bool get isKeying => tolerance > 0 && !_isGrey(color);
+
+  bool get isNone => this == none;
+
+  /// A colour with no hue to key on. The engine refuses these too, on its own
+  /// terms; this is so the *inspector* agrees with the picture, which it would
+  /// not if a swatch could be lit while nothing was being removed.
+  static bool _isGrey(int color) {
+    final r = (color >> 16) & 0xFF;
+    final g = (color >> 8) & 0xFF;
+    final b = color & 0xFF;
+    final high = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    final low = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    // A couple of counts of spread is a grey somebody's eye would call grey,
+    // and the engine's own floor is a fraction of the way to being a colour.
+    return high - low <= 2;
+  }
+
+  /// Pulled inside the range the inspector offers, on the way into the
+  /// document — so a file written by a version with a wider slider opens as
+  /// something this one can still edit. The engine clamps too; this is so the
+  /// *sliders* agree with the picture.
+  ClipKey clamped() => ClipKey(
+        color: color & 0xFFFFFF,
+        tolerance: tolerance.clamp(0.0, 1.0),
+        softness: softness.clamp(0.0, 1.0),
+        spill: spill.clamp(0.0, 1.0),
+      );
+
+  ClipKey copyWith({
+    int? color,
+    double? tolerance,
+    double? softness,
+    double? spill,
+  }) =>
+      ClipKey(
+        color: color ?? this.color,
+        tolerance: tolerance ?? this.tolerance,
+        softness: softness ?? this.softness,
+        spill: spill ?? this.spill,
+      );
+
+  /// Puts a key on the colour somebody picked, or takes one off with a grey.
+  ///
+  /// [copyWith] cannot do it: a colour chosen after the tolerance was dragged
+  /// to nothing would arrive at a tolerance of nothing and appear to do
+  /// nothing at all, so picking a colour brings it back up. That is
+  /// [ClipColor.withLook]'s rule, and it is the same rule because it is the
+  /// same shape of mistake.
+  ClipKey withColor(int argb) {
+    final rgb = argb & 0xFFFFFF;
+    return copyWith(
+      color: rgb,
+      tolerance: !_isGrey(rgb) && tolerance <= 0 ? defaultTolerance : tolerance,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipKey &&
+      other.color == color &&
+      other.tolerance == tolerance &&
+      other.softness == softness &&
+      other.spill == spill;
+
+  @override
+  int get hashCode => Object.hash(color, tolerance, softness, spill);
+
+  @override
+  String toString() => isNone
+      ? 'ClipKey.none'
+      : 'ClipKey(#${color.toRadixString(16).padLeft(6, '0')} '
+          'tol $tolerance soft $softness spill $spill)';
+}
+
 /// One point on a clip's volume line.
 ///
 /// [sourceTime] is in the *source's* own time — the coordinate [Clip.sourceIn]
@@ -1680,6 +1833,7 @@ final class Clip {
     this.enabled = true,
     this.transform = ClipTransform.identity,
     this.color = ClipColor.neutral,
+    this.key = ClipKey.none,
     this.audio = ClipAudio.unity,
     this.animation = ClipAnimation.still,
     this.transition = ClipTransition.none,
@@ -1763,6 +1917,10 @@ final class Clip {
   /// graded, which is almost all of them.
   final ClipColor color;
 
+  /// What it removes from itself. [ClipKey.none] for a clip nobody has keyed,
+  /// which is almost all of them.
+  final ClipKey key;
+
   /// How loud it is. [ClipAudio.unity] for a clip nobody has faded, and
   /// present even on a clip whose source has no sound — see [ClipAudio].
   final ClipAudio audio;
@@ -1841,6 +1999,7 @@ final class Clip {
     bool? enabled,
     ClipTransform? transform,
     ClipColor? color,
+    ClipKey? key,
     ClipAudio? audio,
     ClipAnimation? animation,
     ClipTransition? transition,
@@ -1858,6 +2017,7 @@ final class Clip {
         enabled: enabled ?? this.enabled,
         transform: transform ?? this.transform,
         color: color ?? this.color,
+        key: key ?? this.key,
         audio: audio ?? this.audio,
         animation: animation ?? this.animation,
         transition: transition ?? this.transition,
@@ -1930,6 +2090,7 @@ final class Clip {
       other.enabled == enabled &&
       other.transform == transform &&
       other.color == color &&
+      other.key == key &&
       other.audio == audio &&
       other.animation == animation &&
       other.transition == transition &&
@@ -1938,8 +2099,8 @@ final class Clip {
 
   @override
   int get hashCode => Object.hash(id, mediaId, start.raw, duration.raw,
-      sourceIn.raw, speed, label, enabled, transform, color, audio, animation,
-      transition, text, shape);
+      sourceIn.raw, speed, label, enabled, transform, color, key, audio,
+      animation, transition, text, shape);
 
   @override
   String toString() => isGenerated

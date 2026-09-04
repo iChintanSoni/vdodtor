@@ -642,6 +642,114 @@ class VdEngineBindings {
   late final _vd_lut_find = _vd_lut_findPtr
       .asFunction<ffi.Pointer<VdLut> Function(ffi.Pointer<ffi.Char>)>();
 
+  /// The key that removes nothing. Equivalent to a zeroed struct; this exists so
+  /// callers can say what they mean.
+  VdChromaKey vd_key_none() {
+    return _vd_key_none();
+  }
+
+  late final _vd_key_nonePtr =
+      _lookup<ffi.NativeFunction<VdChromaKey Function()>>('vd_key_none');
+  late final _vd_key_none = _vd_key_nonePtr
+      .asFunction<VdChromaKey Function()>();
+
+  /// True when this key would leave every pixel exactly as it found it — a
+  /// tolerance of nothing, or a colour with no hue to key on. The compositor asks
+  /// before it does anything, so an unkeyed fragment takes the arithmetic it took
+  /// before this file existed, bit for bit, and the golden frames cannot move for
+  /// a feature nobody used.
+  bool vd_key_is_off(ffi.Pointer<VdChromaKey> key) {
+    return _vd_key_is_off(key);
+  }
+
+  late final _vd_key_is_offPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdChromaKey>)>>(
+        'vd_key_is_off',
+      );
+  late final _vd_key_is_off = _vd_key_is_offPtr
+      .asFunction<bool Function(ffi.Pointer<VdChromaKey>)>();
+
+  /// Where a straight — not premultiplied — RGB triple sits in the chroma plane.
+  ///
+  /// The plain coordinates, with the brightness still in them. The matte divides
+  /// them through by luma and the despill does not: a despill is a subtraction
+  /// from the colour that is actually there, at the level it is actually at.
+  VdChroma vd_key_chroma(ffi.Pointer<ffi.Float> rgb) {
+    return _vd_key_chroma(rgb);
+  }
+
+  late final _vd_key_chromaPtr =
+      _lookup<ffi.NativeFunction<VdChroma Function(ffi.Pointer<ffi.Float>)>>(
+        'vd_key_chroma',
+      );
+  late final _vd_key_chroma = _vd_key_chromaPtr
+      .asFunction<VdChroma Function(ffi.Pointer<ffi.Float>)>();
+
+  /// The same, for a 0xAARRGGBB colour, which is how the key itself arrives.
+  VdChroma vd_key_chroma_of_color(int color) {
+    return _vd_key_chroma_of_color(color);
+  }
+
+  late final _vd_key_chroma_of_colorPtr =
+      _lookup<ffi.NativeFunction<VdChroma Function(ffi.Uint32)>>(
+        'vd_key_chroma_of_color',
+      );
+  late final _vd_key_chroma_of_color = _vd_key_chroma_of_colorPtr
+      .asFunction<VdChroma Function(int)>();
+
+  /// Resolves a key. A NULL or off key gives a matte that keeps everything, which
+  /// `vd_key_matte_is_off` reports and the compositor short-circuits on.
+  VdKeyMatte vd_key_matte(ffi.Pointer<VdChromaKey> key) {
+    return _vd_key_matte(key);
+  }
+
+  late final _vd_key_mattePtr =
+      _lookup<
+        ffi.NativeFunction<VdKeyMatte Function(ffi.Pointer<VdChromaKey>)>
+      >('vd_key_matte');
+  late final _vd_key_matte = _vd_key_mattePtr
+      .asFunction<VdKeyMatte Function(ffi.Pointer<VdChromaKey>)>();
+
+  bool vd_key_matte_is_off(ffi.Pointer<VdKeyMatte> matte) {
+    return _vd_key_matte_is_off(matte);
+  }
+
+  late final _vd_key_matte_is_offPtr =
+      _lookup<ffi.NativeFunction<ffi.Bool Function(ffi.Pointer<VdKeyMatte>)>>(
+        'vd_key_matte_is_off',
+      );
+  late final _vd_key_matte_is_off = _vd_key_matte_is_offPtr
+      .asFunction<bool Function(ffi.Pointer<VdKeyMatte>)>();
+
+  /// How opaque a straight — not premultiplied — RGB triple is under this matte,
+  /// and the triple despilled in place.
+  ///
+  /// 1 is kept exactly as it arrived, 0 is gone. This is the arithmetic the
+  /// shader does, which is what lets a key be asserted on numbers rather than on
+  /// pixels — and what makes `vd_compositor_test.c` able to check that the GPU
+  /// agrees with it, the way it already checks the look against `vd_lut_sample`.
+  ///
+  /// The despill runs whatever the alpha came out as. A pixel that was removed
+  /// has no colour anybody will see, and branching on it would cost a divergence
+  /// per fragment to save arithmetic that is already free.
+  double vd_key_apply(
+    ffi.Pointer<VdKeyMatte> matte,
+    ffi.Pointer<ffi.Float> rgb,
+  ) {
+    return _vd_key_apply(matte, rgb);
+  }
+
+  late final _vd_key_applyPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Float Function(ffi.Pointer<VdKeyMatte>, ffi.Pointer<ffi.Float>)
+        >
+      >('vd_key_apply');
+  late final _vd_key_apply = _vd_key_applyPtr
+      .asFunction<
+        double Function(ffi.Pointer<VdKeyMatte>, ffi.Pointer<ffi.Float>)
+      >();
+
   /// The cut with no transition on it: both clips at rest, nothing hidden, no
   /// flash. Not a zeroed struct — a zeroed one has both clips invisible.
   VdTransitionValue vd_transition_rest() {
@@ -1816,6 +1924,78 @@ class VdEngineBindings {
       >('vd_engine_render_at');
   late final _vd_engine_render_at = _vd_engine_render_atPtr
       .asFunction<int Function(ffi.Pointer<VdEngine>, int)>();
+
+  /// Sets the view mode. Takes effect on the next render; call vd_engine_seek or
+  /// vd_engine_render_now to see it immediately.
+  void vd_engine_set_view(ffi.Pointer<VdEngine> engine, VdViewMode view) {
+    return _vd_engine_set_view(engine, view.value);
+  }
+
+  late final _vd_engine_set_viewPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(ffi.Pointer<VdEngine>, ffi.UnsignedInt)
+        >
+      >('vd_engine_set_view');
+  late final _vd_engine_set_view = _vd_engine_set_viewPtr
+      .asFunction<void Function(ffi.Pointer<VdEngine>, int)>();
+
+  VdViewMode vd_engine_view(ffi.Pointer<VdEngine> engine) {
+    return VdViewMode.fromValue(_vd_engine_view(engine));
+  }
+
+  late final _vd_engine_viewPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.UnsignedInt Function(ffi.Pointer<VdEngine>)>
+      >('vd_engine_view');
+  late final _vd_engine_view = _vd_engine_viewPtr
+      .asFunction<int Function(ffi.Pointer<VdEngine>)>();
+
+  /// The colour of the picture at (`u`, `v`) in output space — 0..1 from the top
+  /// left — as the camera recorded it: 0xAARRGGBB straight, alpha always 0xFF.
+  ///
+  /// This is the eyedropper. It renders the current position once through
+  /// VD_VIEW_PLAIN, reads the frame back, and then **renders normally again
+  /// before returning**: the pick render publishes into the same texture the
+  /// preview is showing, and a paused editor would otherwise sit looking at an
+  /// ungraded frame until the next edit happened to repaint it.
+  ///
+  /// It averages a small patch rather than reading one pixel. One pixel of a
+  /// screen that has been through 4:2:0 and an encoder is noise, and a key built
+  /// on a noisy sample needs a wider tolerance than the screen it was taken from
+  /// deserves.
+  ///
+  /// Out of range, or before anything has been rendered, returns
+  /// VD_ERR_INVALID_ARG and writes nothing.
+  int vd_engine_pick_color(
+    ffi.Pointer<VdEngine> engine,
+    double u,
+    double v,
+    ffi.Pointer<ffi.Uint32> out_argb,
+  ) {
+    return _vd_engine_pick_color(engine, u, v, out_argb);
+  }
+
+  late final _vd_engine_pick_colorPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<VdEngine>,
+            ffi.Float,
+            ffi.Float,
+            ffi.Pointer<ffi.Uint32>,
+          )
+        >
+      >('vd_engine_pick_color');
+  late final _vd_engine_pick_color = _vd_engine_pick_colorPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<VdEngine>,
+          double,
+          double,
+          ffi.Pointer<ffi.Uint32>,
+        )
+      >();
 
   int vd_engine_position(ffi.Pointer<VdEngine> engine) {
     return _vd_engine_position(engine);
@@ -2999,6 +3179,107 @@ final class VdColorLook extends ffi.Struct {
   external double strength;
 }
 
+/// What a clip removes from itself: a colour, how much of it to take, how
+/// softly, and how much of its spill to pull out of what is left.
+///
+/// **A zeroed struct is no key, twice over.** `tolerance` 0 means nothing is
+/// within zero of the key colour, so nothing is removed; and the zeroed
+/// `color` is black, which is grey, which has no hue to be near in the first
+/// place. Either alone would do — having both is what makes this a field a
+/// caller can `memset` and never learn about, on `VdTransform`'s terms.
+final class VdChromaKey extends ffi.Struct {
+  /// The colour to remove: 0xAARRGGBB, straight, alpha ignored — the
+  /// convention `VdTextSpec` already writes colours in, because the document
+  /// writes them and a human reads them.
+  ///
+  /// A **grey** key removes nothing, whatever the other three fields say.
+  /// There is no hue to be near and nothing to measure a fraction of: the
+  /// distance below would be taken from the middle of the chroma plane and
+  /// divided by nothing, which is not a key but a saturation threshold wearing
+  /// one's clothes.
+  @ffi.Uint32()
+  external int color;
+
+  /// How far from the key colour still counts as background, as a **fraction
+  /// of the way from that colour to grey**: 0 removes only the colour itself
+  /// and is what a zeroed struct says, 1 removes everything that leans that way
+  /// at all. See the head of this file for why it is a fraction rather than a
+  /// distance.
+  ///
+  /// This is the on switch as well as the amount. A separate `enabled` flag
+  /// would be a second thing that can disagree with it, and a document that
+  /// records what *happens* has no room for the difference between a key
+  /// turned off and a key set to remove nothing.
+  @ffi.Float()
+  external double tolerance;
+
+  /// The width of the ramp from gone to kept, measured outwards from
+  /// `tolerance` in the same fractions. 0 is a hard edge.
+  ///
+  /// Smoothstepped rather than linear: a linear ramp leaves a corner where the
+  /// matte meets solid, and that corner reads as a bright line drawn around
+  /// the subject — the one artefact everybody recognises as a bad key.
+  @ffi.Float()
+  external double softness;
+
+  /// How much of the key's own colour to pull out of what is left: 0 leaves
+  /// the fringe as it was shot, 1 takes all of it.
+  ///
+  /// Green bounces off a screen onto everything in front of it, so the edge of
+  /// a subject is green even where it is opaque. The removal happens along the
+  /// same chroma axis the matte is measured on — one space paying for both
+  /// halves of the feature — and **at constant luma**, which is the whole
+  /// trick: taking green off the green *channel* darkens every edge pixel it
+  /// touches and trades a green halo for a grey one. See `vd_key_apply`.
+  @ffi.Float()
+  external double spill;
+}
+
+/// A colour's position in the chroma plane: how far it is from grey, and in
+/// which direction. Grey is {0, 0}.
+///
+/// BT.709, whatever matrix the source was coded in — see the head of this file.
+final class VdChroma extends ffi.Struct {
+  @ffi.Float()
+  external double cb;
+
+  @ffi.Float()
+  external double cr;
+}
+
+/// The key resolved into what the shader actually needs: the chroma point to
+/// measure from, the unit vector to despill along, and the two thresholds.
+///
+/// Worked out once per layer on the CPU rather than once per fragment on the
+/// GPU — the same division of labour `vd_color_transform` makes, for the same
+/// reason: the part that decides what the control *means* is the part worth
+/// testing, and a normalise per pixel is a normalise of a constant.
+final class VdKeyMatte extends ffi.Struct {
+  /// The key colour's chroma divided by its own luma: where it sits once its
+  /// brightness has been taken out. Distances are measured from here, against
+  /// pixels treated the same way.
+  external VdChroma chromaticity;
+
+  /// `chromaticity` normalised: the axis a despill subtracts along. {0, 0} when
+  /// the key is grey, which is one of the two ways a key is off.
+  external VdChroma axis;
+
+  /// One over the length of `chromaticity`, which is what turns a distance into
+  /// a fraction of the way from the key colour to grey — so `tolerance` means
+  /// the same thing on a blue screen as on a green one.
+  @ffi.Float()
+  external double inv_length;
+
+  @ffi.Float()
+  external double tolerance;
+
+  @ffi.Float()
+  external double softness;
+
+  @ffi.Float()
+  external double spill;
+}
+
 /// The presets, in the order a picker offers them.
 ///
 /// One direction each. `VD_TRANSITION_WIPE` wipes left to right and
@@ -3499,6 +3780,43 @@ final class VdLayer extends ffi.Struct {
   /// Applied after `color`, which is the order a colourist works in: correct
   /// the shot, then style it. See vd_lut.h.
   external VdColorLook look;
+
+  /// What this layer removes from itself. A zeroed VdChromaKey removes nothing,
+  /// so this is another field a caller can leave alone — see vd_key.h.
+  ///
+  /// Applied **before** `color` and `look`, and that is the decision. A key
+  /// measured on a graded picture makes every slider in the colour panel above
+  /// it secretly a keying control: turn up the contrast and the matte closes
+  /// over. The despill runs there too, so what the grade is handed is a
+  /// corrected plate.
+  ///
+  /// **A keyed layer is contained, whatever `fit` says.** A blur fill paints
+  /// the bars with a blurred copy of this same picture, and filling them with a
+  /// copy of a background the user has just declared is not there is a
+  /// contradiction — it floods the frame with the very colour being removed.
+  /// Worse, the backdrop is rendered into an offscreen cleared to opaque black
+  /// and then drawn full-frame, so the holes a key put in it would paint black
+  /// over every layer underneath. VD_FIT_BLUR therefore reads as
+  /// VD_FIT_CONTAIN here. A rendering rule and not a document change: nothing
+  /// rewrites the fit the user chose.
+  external VdChromaKey key;
+
+  /// Draws this layer's alpha as luminance instead of its picture — white where
+  /// it reaches the frame, black where it does not — which is how somebody
+  /// sees what a tolerance is actually doing.
+  ///
+  /// It is a property of the person looking rather than of the document, so
+  /// nothing on a clip carries it: `vd_engine_set_view` sets it on every layer
+  /// at once, and vd_export builds its own engine that never calls that. See
+  /// VdViewMode in vd_engine.h for why it lives there and not in the render
+  /// list.
+  ///
+  /// Opaque, so the black paints over what is underneath rather than letting it
+  /// show through a hole — a matte you can see past is not a matte. And it is
+  /// the alpha *after* opacity, because the question it answers is how much of
+  /// this layer reaches the frame.
+  @ffi.Bool()
+  external bool matte_view;
 }
 
 /// What gets drawn inside the box.
@@ -3916,6 +4234,15 @@ final class VdTimelineClip extends ffi.Struct {
   @ffi.Float()
   external double look_strength;
 
+  /// What this clip removes from itself: a colour, and how much of it. A zeroed
+  /// VdChromaKey removes nothing, so this is a field a caller can ignore.
+  ///
+  /// Handed to the compositor untouched, like `color` beside it and unlike the
+  /// animation and the transition below: a key is the same four numbers at
+  /// every instant of the clip, so nothing about it belongs in the render loop.
+  /// See vd_key.h.
+  external VdChromaKey key;
+
   /// How this clip joins the one before it on the same track. A zeroed
   /// VdClipTransition is "a plain cut", so this is a field a caller can ignore.
   ///
@@ -4011,6 +4338,46 @@ final class VdEngineOptions extends ffi.Struct {
   /// export will avoid touching the sound card.
   @ffi.Int32()
   external int audio_output;
+}
+
+/// What to draw instead of the frame the export would write.
+///
+/// A view mode is a property of the person looking, not of the document, which
+/// is why it lives here beside the clock and the position — the only other two
+/// things in this engine that are not the document — rather than on a clip.
+/// Nothing in a project file can record one, because it never reaches one.
+///
+/// It is also what keeps "preview and export differ in the clock and in nothing
+/// else" true rather than approximately true: the second difference is now
+/// *named*, and vd_export builds its own headless VdEngine that never calls
+/// this, so a zeroed engine renders exactly what the export writes.
+///
+/// Values cross the FFI boundary as integers: append only, never reorder.
+enum VdViewMode {
+  /// The frame the export would write. What a zeroed engine renders.
+  VD_VIEW_NORMAL(0),
+
+  /// Every layer's alpha as opaque luminance: white where it reaches the frame,
+  /// black where it does not. The fastest way to see what a chroma key's
+  /// tolerance is actually doing, and meaningless without one.
+  VD_VIEW_MATTE(1),
+
+  /// The picture as it came off the wire: no grade, no look and no key on any
+  /// layer. This is what vd_engine_pick_color renders through, and the reason
+  /// it has to — a colour picked out of a graded frame is a colour that moves
+  /// the moment the grade does, and with a key already on there is no screen
+  /// left to point at.
+  VD_VIEW_PLAIN(2);
+
+  final int value;
+  const VdViewMode(this.value);
+
+  static VdViewMode fromValue(int value) => switch (value) {
+    0 => VD_VIEW_NORMAL,
+    1 => VD_VIEW_MATTE,
+    2 => VD_VIEW_PLAIN,
+    _ => throw ArgumentError('Unknown value for VdViewMode: $value'),
+  };
 }
 
 typedef VdFrameCallbackFunction = ffi.Void Function(

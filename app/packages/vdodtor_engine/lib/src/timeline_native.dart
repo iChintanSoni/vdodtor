@@ -128,6 +128,12 @@ Pointer<VdTimeline> nativeTimeline(Arena arena, EngineTimeline timeline) {
         : color.look.toNativeUtf8(allocator: arena).cast<Char>();
     entry.look_strength = color.lookStrength;
 
+    final key = clip.key;
+    entry.key.color = key.color;
+    entry.key.tolerance = key.tolerance;
+    entry.key.softness = key.softness;
+    entry.key.spill = key.spill;
+
     final animation = clip.animation;
     entry.anim.in_presetAsInt = animation.inPreset.index;
     entry.anim.in_duration = animation.inTicks;

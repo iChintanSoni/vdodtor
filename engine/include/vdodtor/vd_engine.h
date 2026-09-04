@@ -20,6 +20,7 @@
 #include "vdodtor/vd_color.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_eq.h"
+#include "vdodtor/vd_key.h"
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_shape.h"
 #include "vdodtor/vd_sticker.h"
@@ -175,6 +176,15 @@ typedef struct {
   // 0..1: how far towards the look to go. Only read when `look` names one.
   float look_strength;
 
+  // What this clip removes from itself: a colour, and how much of it. A zeroed
+  // VdChromaKey removes nothing, so this is a field a caller can ignore.
+  //
+  // Handed to the compositor untouched, like `color` beside it and unlike the
+  // animation and the transition below: a key is the same four numbers at
+  // every instant of the clip, so nothing about it belongs in the render loop.
+  // See vd_key.h.
+  VdChromaKey key;
+
   // How this clip joins the one before it on the same track. A zeroed
   // VdClipTransition is "a plain cut", so this is a field a caller can ignore.
   //
@@ -308,6 +318,62 @@ VD_EXPORT int32_t vd_engine_render_now(VdEngine* engine);
 // which is what makes the frame on screen a promise about the frame in the
 // file. See vd_export.h.
 VD_EXPORT int32_t vd_engine_render_at(VdEngine* engine, VdTick position);
+
+// --- how the frame is being looked at ---------------------------------------
+
+// What to draw instead of the frame the export would write.
+//
+// A view mode is a property of the person looking, not of the document, which
+// is why it lives here beside the clock and the position — the only other two
+// things in this engine that are not the document — rather than on a clip.
+// Nothing in a project file can record one, because it never reaches one.
+//
+// It is also what keeps "preview and export differ in the clock and in nothing
+// else" true rather than approximately true: the second difference is now
+// *named*, and vd_export builds its own headless VdEngine that never calls
+// this, so a zeroed engine renders exactly what the export writes.
+//
+// Values cross the FFI boundary as integers: append only, never reorder.
+typedef enum {
+  // The frame the export would write. What a zeroed engine renders.
+  VD_VIEW_NORMAL = 0,
+
+  // Every layer's alpha as opaque luminance: white where it reaches the frame,
+  // black where it does not. The fastest way to see what a chroma key's
+  // tolerance is actually doing, and meaningless without one.
+  VD_VIEW_MATTE = 1,
+
+  // The picture as it came off the wire: no grade, no look and no key on any
+  // layer. This is what vd_engine_pick_color renders through, and the reason
+  // it has to — a colour picked out of a graded frame is a colour that moves
+  // the moment the grade does, and with a key already on there is no screen
+  // left to point at.
+  VD_VIEW_PLAIN = 2,
+} VdViewMode;
+
+// Sets the view mode. Takes effect on the next render; call vd_engine_seek or
+// vd_engine_render_now to see it immediately.
+VD_EXPORT void vd_engine_set_view(VdEngine* engine, VdViewMode view);
+VD_EXPORT VdViewMode vd_engine_view(VdEngine* engine);
+
+// The colour of the picture at (`u`, `v`) in output space — 0..1 from the top
+// left — as the camera recorded it: 0xAARRGGBB straight, alpha always 0xFF.
+//
+// This is the eyedropper. It renders the current position once through
+// VD_VIEW_PLAIN, reads the frame back, and then **renders normally again
+// before returning**: the pick render publishes into the same texture the
+// preview is showing, and a paused editor would otherwise sit looking at an
+// ungraded frame until the next edit happened to repaint it.
+//
+// It averages a small patch rather than reading one pixel. One pixel of a
+// screen that has been through 4:2:0 and an encoder is noise, and a key built
+// on a noisy sample needs a wider tolerance than the screen it was taken from
+// deserves.
+//
+// Out of range, or before anything has been rendered, returns
+// VD_ERR_INVALID_ARG and writes nothing.
+VD_EXPORT int32_t vd_engine_pick_color(VdEngine* engine, float u, float v,
+                                       uint32_t* out_argb);
 
 VD_EXPORT VdTick vd_engine_position(VdEngine* engine);
 VD_EXPORT VdTick vd_engine_duration(VdEngine* engine);

@@ -73,6 +73,11 @@ typedef struct {
   const VdLut* lut;
   float look_strength;
 
+  // The key, resolved no further than the document wrote it: what it *means*
+  // is four numbers and a colour, and the compositor turns them into a matte
+  // once per layer. See vd_key.h.
+  VdChromaKey key;
+
   VdClipAnim anim;
   bool has_video;
 
@@ -181,6 +186,12 @@ struct VdEngine {
 
   VdFrameCallback frame_callback;
   void* frame_callback_context;
+
+  // How the frame is being looked at, which is not part of the document and
+  // therefore not part of the render list — see VdViewMode. Under `lock`
+  // rather than `render_lock`: it is set from the UI thread while the render
+  // thread may be mid-frame, and it is one enum.
+  VdViewMode view;
 
   int64_t clock;  // LRU stamp for decoders
   VdEngineStats stats;
@@ -596,6 +607,31 @@ static VdTick source_time_at(const VdClipEntry* clip, VdTick position) {
   return clip->source_in + (VdTick)llround((double)offset * clip->speed);
 }
 
+// What a view mode does to a layer once it is built.
+//
+// Applied to the whole list at the end rather than at each of the three places
+// a layer is made, so that the colour dipped over a cut by a transition — which
+// is a layer nothing on the timeline owns — is looked at the same way as
+// everything else. VD_VIEW_NORMAL does nothing, which is what a zeroed engine
+// and every export get.
+static void apply_view(VdLayer* layer, VdViewMode view) {
+  switch (view) {
+    case VD_VIEW_MATTE:
+      layer->matte_view = true;
+      break;
+    case VD_VIEW_PLAIN:
+      // The picture as it came off the wire. The key goes with the grade and
+      // the look because the eyedropper has to see the screen it is being
+      // pointed at, and a key already on has removed it.
+      layer->color = vd_color_neutral();
+      memset(&layer->look, 0, sizeof(layer->look));
+      layer->key = vd_key_none();
+      break;
+    case VD_VIEW_NORMAL:
+      break;
+  }
+}
+
 // Renders `position` into the compositor.
 //
 // Requires render_lock and *not* `lock`: decoding and compositing take
@@ -670,6 +706,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->transform = clip->transform;
       layer->color = clip->color;
       layer->look = vd_lut_look(clip->lut, clip->look_strength);
+      layer->key = clip->key;
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -708,6 +745,7 @@ static int32_t render_position(VdEngine* e, VdTick position) {
       layer->transform = clip->transform;
       layer->color = clip->color;
       layer->look = vd_lut_look(clip->lut, clip->look_strength);
+      layer->key = clip->key;
       apply_anim(layer, &anim);
       if (has_head) apply_transition(layer, &head, true);
       if (has_tail) apply_transition(layer, &tail, false);
@@ -749,11 +787,21 @@ static int32_t render_position(VdEngine* e, VdTick position) {
     // — one cube however many clips are wearing it.
     layer->color = clip->color;
     layer->look = vd_lut_look(clip->lut, clip->look_strength);
+    layer->key = clip->key;
     apply_anim(layer, &anim);
     if (has_head) apply_transition(layer, &head, true);
     if (has_tail) apply_transition(layer, &tail, false);
     layer_count++;
     if (has_head) push_flash(e, layers, frames, &layer_count, &head);
+  }
+
+  // How this frame is being looked at, which is the engine's and not the
+  // document's. Read once here rather than per layer.
+  pthread_mutex_lock(&e->lock);
+  const VdViewMode view = e->view;
+  pthread_mutex_unlock(&e->lock);
+  if (view != VD_VIEW_NORMAL) {
+    for (int32_t i = 0; i < layer_count; i++) apply_view(&layers[i], view);
   }
 
   const int32_t result = vd_compositor_render(e->compositor, layers, layer_count);
@@ -1028,6 +1076,7 @@ int32_t vd_engine_set_timeline(VdEngine* e, const VdTimeline* timeline) {
     dst->color = src->color;
     dst->lut = vd_lut_find(src->look);
     dst->look_strength = src->look_strength;
+    dst->key = src->key;
     dst->has_video = src->has_video;
     dst->is_sticker = src->sticker;
     dst->anim = src->anim;
@@ -1220,6 +1269,103 @@ int32_t vd_engine_render_now(VdEngine* e) {
   const VdTick position = current_position(e);
   pthread_mutex_unlock(&e->lock);
   return vd_engine_render_at(e, position);
+}
+
+void vd_engine_set_view(VdEngine* e, VdViewMode view) {
+  if (!e) return;
+  if (view != VD_VIEW_NORMAL && view != VD_VIEW_MATTE &&
+      view != VD_VIEW_PLAIN) {
+    // A mode this build has never heard of shows the frame, rather than
+    // nothing: a newer document cannot ask for one — the document does not
+    // carry a view at all — so this is only reachable from a caller that has
+    // gone wrong, and a black preview is the worse of the two failures.
+    view = VD_VIEW_NORMAL;
+  }
+  pthread_mutex_lock(&e->lock);
+  e->view = view;
+  pthread_mutex_unlock(&e->lock);
+}
+
+VdViewMode vd_engine_view(VdEngine* e) {
+  if (!e) return VD_VIEW_NORMAL;
+  pthread_mutex_lock(&e->lock);
+  const VdViewMode view = e->view;
+  pthread_mutex_unlock(&e->lock);
+  return view;
+}
+
+// Half the side of the patch the eyedropper averages over, in output pixels.
+//
+// Two rather than none, because one pixel of a screen that has been through
+// 4:2:0 and an encoder is noise, and a key built on a noisy sample needs a
+// wider tolerance than the screen deserves. And two rather than ten, because a
+// patch wide enough to cross the edge of the subject would average the screen
+// with the thing standing in front of it and key neither.
+#define VD_PICK_RADIUS 2
+
+int32_t vd_engine_pick_color(VdEngine* e, float u, float v,
+                             uint32_t* out_argb) {
+  if (!e || !out_argb) return VD_ERR_INVALID_ARG;
+  // NaN fails the first half of each of these rather than passing both.
+  if (!(u >= 0.0f) || !(u <= 1.0f) || !(v >= 0.0f) || !(v <= 1.0f)) {
+    return VD_ERR_INVALID_ARG;
+  }
+
+  pthread_mutex_lock(&e->lock);
+  const bool ready = e->compositor != NULL;
+  const VdTick position = current_position(e);
+  const VdViewMode previous = e->view;
+  const int32_t width = e->width;
+  const int32_t height = e->height;
+  if (ready) e->view = VD_VIEW_PLAIN;
+  pthread_mutex_unlock(&e->lock);
+  if (!ready) return VD_ERR_UNSUPPORTED;
+
+  int32_t cx = (int32_t)(u * (float)width);
+  int32_t cy = (int32_t)(v * (float)height);
+  if (cx > width - 1) cx = width - 1;
+  if (cy > height - 1) cy = height - 1;
+
+  int64_t sum[3] = {0, 0, 0};
+  int32_t counted = 0;
+
+  pthread_mutex_lock(&e->render_lock);
+  int32_t result = render_position(e, position);
+  if (result == VD_OK) {
+    for (int32_t dy = -VD_PICK_RADIUS; dy <= VD_PICK_RADIUS; dy++) {
+      for (int32_t dx = -VD_PICK_RADIUS; dx <= VD_PICK_RADIUS; dx++) {
+        uint8_t bgra[4] = {0, 0, 0, 0};
+        if (!vd_compositor_read_pixel(e->compositor, cx + dx, cy + dy, bgra)) {
+          continue;
+        }
+        sum[0] += bgra[2];
+        sum[1] += bgra[1];
+        sum[2] += bgra[0];
+        counted++;
+      }
+    }
+  }
+  pthread_mutex_unlock(&e->render_lock);
+
+  // Back to whatever was being looked at, and *rendered* back: the pick above
+  // published into the same texture the preview is showing, so a paused editor
+  // would sit on an ungraded frame until something else happened to repaint.
+  pthread_mutex_lock(&e->lock);
+  e->view = previous;
+  pthread_mutex_unlock(&e->lock);
+  pthread_mutex_lock(&e->render_lock);
+  render_position(e, position);
+  pthread_mutex_unlock(&e->render_lock);
+  notify_frame(e);
+
+  if (result != VD_OK) return result;
+  if (counted <= 0) return VD_ERR_INVALID_ARG;
+
+  const uint32_t r = (uint32_t)((sum[0] + counted / 2) / counted);
+  const uint32_t g = (uint32_t)((sum[1] + counted / 2) / counted);
+  const uint32_t b = (uint32_t)((sum[2] + counted / 2) / counted);
+  *out_argb = 0xFF000000u | (r << 16) | (g << 8) | b;
+  return VD_OK;
 }
 
 VdTick vd_engine_position(VdEngine* e) {

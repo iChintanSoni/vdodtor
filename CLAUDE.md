@@ -50,6 +50,7 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_transition (how one clip becomes the next),
            vd_color (five grading sliders as one matrix),
            vd_lut (the grade that cannot be one: .cube looks),
+           vd_key (the grade that decides whether a pixel is there at all),
            vd_stretch (the sound of a speed: WSOLA, and the tape),
            vd_eq (what a clip sounds like, as a short list of presets),
            vd_probe,
@@ -623,6 +624,55 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   through the offset row gives a half-transparent pixel half a contrast lift. A
   blur-filled clip's backdrop is graded *once*, inside the offscreen pass and not again
   at the composite, or the bars end up twice as far from neutral as the picture in them.
+- **A key is the grade that changes whether a pixel is *there*, and it runs on
+  chroma divided by brightness.** `vd_color` is every affine map on RGB, which is why
+  five sliders fold into one 3x3; `vd_lut` is the arbitrary map left over, which is why
+  it is a lattice. A chroma key is neither and the difference is not one of degree —
+  those two decide what colour a pixel is and this one decides whether it is there — so
+  it is `vd_key.c`, its own `ClipKey`, its own inspector section, on `vd_color.c`'s
+  terms: plain C, no GPU, asserted on numbers, with the shader mirroring it and
+  `vd_compositor_test.c` holding the two together.
+  **Both halves of "chroma divided by brightness" are needed.** Distance in RGB makes
+  the matte a function of how well that corner was lit. Projecting onto (Cb, Cr) is the
+  usual answer and only half of one: Cb and Cr are *differences*, so they shrink with
+  the picture, and a screen at a third of the key light sits a third of the way in
+  towards grey — further from the sampled green than most of the subject is. That is why
+  simple keyers need a perfectly lit screen. Dividing by the pixel's own luma removes
+  it, because in a gamma-encoded signal a shadow is still a uniform scaling of all three
+  channels. Then the distance is divided by the key's own, so **`tolerance` is the
+  fraction of the way from the key colour to grey** and means the same thing on a blue
+  screen as on a green one — blue carries a fifth of green's luma and its coordinates
+  are an order of magnitude larger. The despill runs on the same axis at constant luma,
+  because taking green off the green *channel* trades a green halo for a grey one.
+  **A zeroed `VdChromaKey` is off twice over** — tolerance 0, and a black key is grey
+  with no hue to be near — so the shader short-circuits on `graded`/`lut_size`'s terms
+  and no golden frame moved. **And the key is measured before the grade and the look**,
+  or every slider in the colour panel is secretly a keying control; the assertion is a
+  fully desaturated frame, with no chroma left to key on at all, still keying. **A keyed
+  layer contains**: filling its bars with a blurred copy of a background just declared
+  absent floods the frame with the colour being removed, and the backdrop's offscreen is
+  cleared *opaque*, so the holes would paint black over the lane beneath. The
+  substitution has to happen before `compute_fit`, not only at the `wants_blur` test —
+  `VD_FIT_BLUR` is not `VD_FIT_CONTAIN` to that function. **Not mirrored in Dart**, for
+  `vd_anim`'s reason: nothing in the app draws a matte.
+- **A view mode belongs to the person looking, so it lives on the engine.**
+  `vd_engine_set_view` sits beside the clock and the position — the only other two things
+  the engine owns that the document does not — and never on a clip, so no project file
+  can record one because it never reaches one. That is also what keeps "preview and
+  export differ in the clock and in nothing else" true rather than approximately true:
+  `vd_export` builds its own headless `VdEngine` and never calls it, so the second
+  difference is *named* rather than a hole. `VD_VIEW_MATTE` draws every layer's alpha as
+  opaque luminance — opaque, because a matte you can see past is not a matte —
+  and `VD_VIEW_PLAIN` strips the grade, the look and the key from every layer, which is
+  what `vd_engine_pick_color` renders through: the eyedropper has to see the screen as
+  the camera recorded it, or a grade applied afterwards moves the key out from under
+  itself and a key already on has removed the thing being pointed at. So one enum pays
+  for both features, and it is **two** enums to keep in step rather than the usual three.
+  The pick averages a 5x5 patch — one pixel of a screen through 4:2:0 is noise — and
+  renders normally again before returning, because it publishes into the texture the
+  preview is showing. In the app both are ephemeral state on `EditorScreen`: the matte
+  view turns itself off when the selection moves, and Escape cancels a pick before it
+  clears a selection.
 - **A look is the grade that cannot be a matrix, and it runs in the signal.** Every
   slider in `vd_color` is affine, which is why five fold into one 3x3; a split-tone
   pushes shadows one way and highlights the other, and no matrix applies two directions

@@ -157,3 +157,18 @@ ffmpeg $common -framerate 2 -i .sticker_frames/a%d.png -plays 0 -f apng \
   sticker_alpha.apng
 
 rm -rf .sticker_frames
+
+# A green screen with something standing in front of it, for the chroma key.
+#
+# Not a flat green field: a key that removes everything is indistinguishable
+# from a key that works, so the fixture has to carry something that must
+# survive. And not a *pure* green either — a real screen is paint, lit
+# unevenly, through a camera's own matrix, so it lands somewhere near 0x33CC33
+# and never on 0x00FF00. The gradient is the point of the whole design: the
+# left edge is at half the light of the right, which is more fall-off than a
+# badly lit screen has, and a matte measured on plain Cb/Cr keeps the dark end
+# of it. The subject is orange because that is nearly the complement of green
+# and so the least ambiguous thing to have to keep.
+ffmpeg $common -f lavfi -i "color=c=0x33CC33:s=320x240:r=30:d=1" \
+  -vf "geq=r='r(X,Y)*(0.5+0.5*X/W)':g='g(X,Y)*(0.5+0.5*X/W)':b='b(X,Y)*(0.5+0.5*X/W)',drawbox=x=110:y=60:w=100:h=120:color=0xE07030:t=fill,format=yuv420p" \
+  -c:v libx264 -preset veryfast -crf 18 -an green_screen.mp4

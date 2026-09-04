@@ -38,6 +38,7 @@
 
 #include "vdodtor/vd_decoder.h"
 #include "vdodtor/vd_engine.h"
+#include "vdodtor/vd_key.h"
 #include "vdodtor/vd_export.h"
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_text.h"
@@ -709,10 +710,95 @@ static void scene_the_typewriter_types_at_the_same_speed(void) {
   remove(path);
 }
 
+
+// A chroma key, through both clocks and through an encoder.
+//
+// The key is the one effect whose output is *alpha*, and alpha is the thing an
+// MP4 cannot carry: what is written is the composite, so the only way to know
+// the export keyed the same picture the preview did is to look at where the
+// subject's edge landed. That edge is also the hardest thing in this file to
+// get through H.264 — a matte cut from 4:2:0 chroma is rebuilt over two pixels
+// on every boundary, and the tolerance the parity goldens run at is exactly
+// the allowance for that.
+//
+// The plate's fit is left at blur fill, so this reference also pins a keyed
+// layer containing rather than filling its bars with a blurred copy of the
+// colour being removed.
+static void scene_a_key_reaches_the_file(void) {
+  VdTimelineClip clips[3];
+
+  // Four flat quadrants underneath rather than the test pattern the other
+  // scenes use. The pattern's saturated vertical bars are the worst thing in
+  // this repository to put through 4:2:0, and their edges alone push the frame
+  // past the parity tolerance — so a scene built on it would be measuring the
+  // encoder rather than the key. Four flats have enough structure to catch a
+  // layer in the wrong place and leave the matte as the only hard edge in the
+  // frame, which is what this scene is for.
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("quadrants.mp4");
+  clips[0].start = 0;
+  clips[0].duration = SECOND;
+  clips[0].fit = VD_FIT_COVER;
+  clips[0].has_video = true;
+  clips[0].gain = 0.0f;
+
+  clips[1] = vd_timeline_clip_default();
+  clips[1].path = fixture("green_screen.mp4");
+  clips[1].start = 0;
+  clips[1].duration = SECOND;
+  clips[1].track = 1;
+  clips[1].fit = VD_FIT_BLUR;
+  clips[1].has_video = true;
+  clips[1].gain = 0.0f;
+  clips[1].key = vd_key_none();
+  clips[1].key.color = 0x001F791Du;  // the middle of the screen's gradient
+  clips[1].key.tolerance = 0.2f;
+  clips[1].key.softness = 0.15f;
+  clips[1].key.spill = 1.0f;
+
+  // Sound, so the file the pictures come out of is an ordinary two-track
+  // export rather than the easy half of the encoder — see parity_scene.
+  clips[2] = vd_timeline_clip_default();
+  clips[2].path = fixture("cfr_30fps_stereo.mp4");
+  clips[2].start = 0;
+  clips[2].duration = SECOND;
+  clips[2].track = 2;
+  clips[2].has_video = false;
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = WIDTH;
+  timeline.height = HEIGHT;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 3;
+
+  const char* path = output("keyed");
+  if (!export_to(&timeline, path)) return;
+
+  VdEngine* preview = make_engine();
+  VD_CHECK(preview != NULL);
+  if (!preview) {
+    remove(path);
+    return;
+  }
+  VD_CHECK_EQ(vd_engine_set_timeline(preview, &timeline), VD_OK);
+
+  Film film;
+  if (film_open(&film, path, WIDTH, HEIGHT)) {
+    check_both_drivers(preview, &film, 10 * FRAME, "parity_keyed");
+    film_close(&film);
+  }
+
+  vd_engine_destroy(preview);
+  remove(path);
+}
+
 int main(void) {
   scene_the_file_shows_what_the_preview_showed();
   scene_a_bigger_export_is_the_same_edit();
   scene_the_typewriter_types_at_the_same_speed();
+  scene_a_key_reaches_the_file();
   vd_golden_epilogue();
   return VD_REPORT();
 }

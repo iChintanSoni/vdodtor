@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/commands/document_store.dart';
@@ -30,7 +32,10 @@ void main() {
   });
 
   Future<void> pumpInspector(WidgetTester tester,
-          {Future<String?> Function()? onLoadLook}) =>
+          {Future<String?> Function()? onLoadLook,
+          Future<int?> Function()? onPickKeyColour,
+          bool matteView = false,
+          ValueChanged<bool>? onMatteView}) =>
       tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -39,6 +44,9 @@ void main() {
               builder: (context, _) => Inspector(
                 timeline: controller,
                 onLoadLook: onLoadLook,
+                onPickKeyColour: onPickKeyColour,
+                matteView: matteView,
+                onMatteView: onMatteView,
               ),
             ),
           ),
@@ -1283,6 +1291,214 @@ void main() {
 
       expect(store.project.clipById('b')!.speed, ClipSpeed.normal);
       expect(store.project.clipById('b')!.duration, secs(3));
+    });
+  });
+
+  group('the chroma key', () {
+    Future<void> scrollToKey(WidgetTester tester) async {
+      await tester.scrollUntilVisible(find.text('CHROMA KEY'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a clip with a picture gets the panel', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToKey(tester);
+      expect(find.text('Screen'), findsOneWidget);
+    });
+
+    testWidgets('a caption does not', (tester) async {
+      // The same condition COLOUR is offered under: a shape is drawn from a
+      // colour somebody chose, so there is nothing in it to key out.
+      controller.addTextClip();
+      await pumpInspector(tester);
+      expect(find.text('CHROMA KEY'), findsNothing);
+    });
+
+    testWidgets('it sits under the grade, because that is where it runs',
+        (tester) async {
+      // A key is measured on the shot as it was shot, before every slider
+      // above it — so a panel offering it first would describe an order the
+      // engine does not run in.
+      //
+      // Measured as how far the rail has to be scrolled to reach each, rather
+      // than by comparing two coordinates: the rail is lazy, so the section
+      // above is no longer built by the time the one below is on screen.
+      double scrolled() =>
+          tester.state<ScrollableState>(find.byType(Scrollable).first)
+              .position
+              .pixels;
+
+      controller.select('b');
+      await pumpInspector(tester);
+      await tester.scrollUntilVisible(find.text('Look'), 120,
+          scrollable: find.byType(Scrollable).first);
+      await tester.pumpAndSettle();
+      final toLook = scrolled();
+
+      await scrollToKey(tester);
+      expect(scrolled(), greaterThan(toLook));
+    });
+
+    testWidgets('the sliders only appear once there is a colour',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToKey(tester);
+      expect(find.text('Tolerance'), findsNothing);
+
+      store.run(const SetClipKey(
+          'b', ClipKey(color: 0x00B140, tolerance: 0.2)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToKey(tester);
+      for (final label in ['Tolerance', 'Softness', 'Spill']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+    });
+
+    testWidgets('a swatch keys the clip on that colour', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToKey(tester);
+
+      // The first swatch under "Screen" is chroma green.
+      await tester.tap(find
+          .descendant(
+              of: find.ancestor(
+                  of: find.text('Screen'), matching: find.byType(Column)).first,
+              matching: find.byType(GestureDetector))
+          .first);
+      await tester.pumpAndSettle();
+
+      final key = store.project.clipById('b')!.key;
+      expect(key.color, 0x00B140);
+      // And it arrived keying, rather than as a colour at no tolerance that
+      // appears to do nothing.
+      expect(key.isKeying, isTrue);
+      expect(key.tolerance, ClipKey.defaultTolerance);
+    });
+
+    testWidgets('the eyedropper puts what it picked on the clip',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester,
+          onPickKeyColour: () async => 0xFF33CC33);
+      await scrollToKey(tester);
+
+      await tester.tap(find.text('Pick from preview'));
+      await tester.pumpAndSettle();
+
+      final key = store.project.clipById('b')!.key;
+      expect(key.color, 0x33CC33);  // the alpha is dropped
+      expect(key.isKeying, isTrue);
+    });
+
+    testWidgets('a cancelled pick changes nothing', (tester) async {
+      controller.select('b');
+      await pumpInspector(tester, onPickKeyColour: () async => null);
+      await scrollToKey(tester);
+
+      await tester.tap(find.text('Pick from preview'));
+      await tester.pumpAndSettle();
+      expect(store.project.clipById('b')!.key, ClipKey.none);
+    });
+
+    testWidgets('and a pick is one undo step', (tester) async {
+      // Pointing at the screen is how the user *chose* the colour. An undo
+      // that put back a key nobody had picked yet would be a step nobody took.
+      final before = store.project;
+      controller.select('b');
+      await pumpInspector(tester, onPickKeyColour: () async => 0xFF33CC33);
+      await scrollToKey(tester);
+
+      await tester.tap(find.text('Pick from preview'));
+      await tester.pumpAndSettle();
+      store.undo();
+      expect(store.project, same(before));
+    });
+
+    testWidgets('no eyedropper without somewhere to pick from',
+        (tester) async {
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToKey(tester);
+      expect(find.text('Pick from preview'), findsNothing);
+      // The swatches are still there, which is the point of having them.
+      expect(find.text('Screen'), findsOneWidget);
+    });
+
+    testWidgets('Reset takes the whole key off', (tester) async {
+      store.run(const SetClipKey(
+          'b', ClipKey(color: 0x00B140, tolerance: 0.4, spill: 0.2)));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester);
+      await scrollToKey(tester);
+
+      await tester.tap(find.descendant(
+          of: find.ancestor(
+              of: find.text('CHROMA KEY'), matching: find.byType(Row)).first,
+          matching: find.text('Reset')));
+      await tester.pumpAndSettle();
+      expect(store.project.clipById('b')!.key, ClipKey.none);
+    });
+
+    testWidgets('the matte view is only offered under a key that is doing '
+        'something', (tester) async {
+      // The matte of a clip nobody keyed is a white rectangle, which teaches
+      // nothing and looks broken.
+      var asked = false;
+      controller.select('b');
+      await pumpInspector(tester, onMatteView: (_) => asked = true);
+      await scrollToKey(tester);
+      expect(find.text('View matte'), findsNothing);
+
+      store.run(const SetClipKey(
+          'b', ClipKey(color: 0x00B140, tolerance: 0.2)));
+      store.endGesture();
+      await tester.pumpAndSettle();
+      await scrollToKey(tester);
+
+      await tester.tap(find.text('View matte'));
+      await tester.pumpAndSettle();
+      expect(asked, isTrue);
+      // And it is not written down anywhere: a view mode is a property of the
+      // person looking, and nothing about it reaches the document.
+      expect(store.project.clipById('b')!.key.tolerance, 0.2);
+    });
+
+    test('the editor attaches both of the view-side controls', () {
+      // EditorScreen is not pumpable in a widget test — it builds a real
+      // PreviewEngine — so this reads the source, which is the arrangement
+      // tour_test.dart and about_test.dart already use for the parts of the
+      // app a test cannot construct.
+      //
+      // Both controls above take a callback and hide themselves when it is
+      // null, which makes "the panel is right" and "the editor wired it up"
+      // two different questions. This is the second one.
+      final source = File('lib/ui/editor_screen.dart').readAsStringSync();
+      for (final wiring in [
+        'onPickKeyColour:',
+        'onMatteView:',
+        // Escape has to reach the pick before it reaches the selection: the
+        // eyedropper is the more recent thing the user started, and clearing
+        // the selection would take away the panel they started it from.
+        '_cancelPick()',
+      ]) {
+        expect(source, contains(wiring), reason: wiring);
+      }
+    });
+
+    testWidgets('and it says when it is on', (tester) async {
+      store.run(const SetClipKey(
+          'b', ClipKey(color: 0x00B140, tolerance: 0.2)));
+      store.endGesture();
+      controller.select('b');
+      await pumpInspector(tester, matteView: true, onMatteView: (_) {});
+      await scrollToKey(tester);
+      expect(find.text('Showing matte'), findsOneWidget);
     });
   });
 }

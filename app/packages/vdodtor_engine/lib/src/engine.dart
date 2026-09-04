@@ -108,6 +108,49 @@ class EngineColor {
   final double lookStrength;
 }
 
+/// What a clip removes from itself: a colour, and how much of it.
+///
+/// The half of the picture that is about *whether a pixel is there* rather than
+/// what colour it is, which is why it is beside [EngineColor] rather than in
+/// it. See `engine/include/vdodtor/vd_key.h`, where the arithmetic lives —
+/// nothing on this side evaluates a key, exactly as nothing on this side
+/// evaluates a look.
+@immutable
+class EngineKey {
+  const EngineKey({
+    this.color = 0,
+    this.tolerance = 0,
+    this.softness = 0,
+    this.spill = 0,
+  });
+
+  /// The key that removes nothing, which is what the engine does with a zeroed
+  /// struct — twice over: no tolerance, and a black key is grey and has no hue
+  /// to be near.
+  static const none = EngineKey();
+
+  /// 0xAARRGGBB, straight, alpha ignored. A grey colour removes nothing.
+  final int color;
+
+  /// How far from [color], as a fraction of the way from it to grey, still
+  /// counts as background. 0 is the on switch as well as the amount.
+  final double tolerance;
+
+  /// The width of the ramp from gone to kept, in the same fractions.
+  final double softness;
+
+  /// How much of the key's own colour to pull out of what is kept.
+  final double spill;
+}
+
+/// How the frame is being looked at, which is *not* part of the document.
+///
+/// Order matches `VdViewMode` in vd_engine.h; the index crosses the FFI
+/// boundary, so append only. Unlike every other enum that crosses, there is no
+/// third copy in the document model — a view mode never reaches a project
+/// file, because nothing about looking at a frame is a property of the edit.
+enum EngineViewMode { normal, matte, plain }
+
 /// The shape a fade ramps in. Order matches `VdFadeCurve` in vd_engine.h — the
 /// index crosses the FFI boundary as an integer, so these may be appended to
 /// and never reordered.
@@ -364,6 +407,7 @@ class EngineClip {
     this.fit = FitMode.contain,
     this.transform = EngineTransform.identity,
     this.color = EngineColor.neutral,
+    this.key = EngineKey.none,
     this.animation = EngineAnimation.none,
     this.transition = EngineTransition.none,
     this.hasVideo = true,
@@ -425,6 +469,10 @@ class EngineClip {
   /// the animation and the transition below: those are functions of time, and
   /// a grade is the same five numbers at every instant of the clip.
   final EngineColor color;
+
+  /// What it removes from itself. [EngineKey.none] for every clip nobody
+  /// pointed an eyedropper at, which is almost all of them.
+  final EngineKey key;
 
   /// How it arrives and how it leaves.
   final EngineAnimation animation;
@@ -639,6 +687,53 @@ class PreviewEngine extends ChangeNotifier {
     _checkAlive();
     bindings.vd_engine_seek(_handle.cast(), ticks);
     notifyListeners();
+  }
+
+  /// How the frame is being looked at.
+  ///
+  /// Not part of the timeline, and deliberately: a view mode belongs to the
+  /// person looking rather than to the edit, so it sits here beside the clock
+  /// and the playhead — the only other two things the engine owns that the
+  /// document does not — and no project file can record one. An export builds
+  /// its own engine and never touches this, which is what keeps "preview and
+  /// export differ in the clock and in nothing else" true.
+  EngineViewMode get view {
+    if (_disposed) return EngineViewMode.normal;
+    final raw = bindings.vd_engine_view(_handle.cast()).value;
+    return raw >= 0 && raw < EngineViewMode.values.length
+        ? EngineViewMode.values[raw]
+        : EngineViewMode.normal;
+  }
+
+  set view(EngineViewMode mode) {
+    _checkAlive();
+    if (view == mode) return;
+    bindings.vd_engine_set_view(
+        _handle.cast(), VdViewMode.fromValue(mode.index));
+    // Renders once, so the change is visible while paused — which is when
+    // somebody looking at a matte is looking at it.
+    bindings.vd_engine_render_now(_handle.cast());
+    notifyListeners();
+  }
+
+  /// The colour of the picture at ([u], [v]) — 0..1 from the top left of the
+  /// frame — as the camera recorded it, or null for a point off the frame or
+  /// before anything has been rendered.
+  ///
+  /// The eyedropper. It renders once with every layer's grade, look and key
+  /// suppressed and then renders normally again, so what comes back is the
+  /// screen as it was shot rather than as it was graded — and so that a key
+  /// already on does not remove the very thing being pointed at.
+  int? pickColor(double u, double v) {
+    _checkAlive();
+    final out = calloc<Uint32>();
+    try {
+      final result =
+          bindings.vd_engine_pick_color(_handle.cast(), u, v, out);
+      return result == 0 ? out.value : null;
+    } finally {
+      calloc.free(out);
+    }
   }
 
   int get positionTicks =>

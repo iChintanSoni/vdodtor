@@ -16,6 +16,7 @@
 
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_key.h"
 
 // 30 fps, so frame 10 sits here. Every scene decodes at a fixed tick rather
 // than taking whatever frame comes out first: the fixture animates, and a
@@ -338,6 +339,43 @@ static void scene_three_layer_blend(void) {
   vd_frame_release(&back);
 }
 
+
+// A green screen keyed over another shot, which is the frame the whole feature
+// exists to produce. Point tests can say the middle of the screen went and the
+// subject stayed; only a whole frame can say what happened along the *edge*
+// between them — where a matte is soft, a despill is doing its work, and 4:2:0
+// chroma is half resolution, so the boundary is rebuilt over two pixels and is
+// exactly where a change to any of the three would show first.
+//
+// The plate is 4:3 in a 16:9 output with its fit left at blur fill, so this is
+// also the reference for a keyed layer containing rather than filling its bars
+// with a blurred copy of the colour being removed.
+static void scene_keyed_over_a_background(void) {
+  VdFrame background, plate;
+  if (!frame_at("cfr_30fps_stereo.mp4", TICK_FRAME_10, &background)) return;
+  if (!frame_at("green_screen.mp4", 0, &plate)) {
+    vd_frame_release(&background);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);
+  if (c) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&background, VD_FIT_COVER, 1.0f);
+    layers[1] = layer_of(&plate, VD_FIT_BLUR, 1.0f);
+    layers[1].key = vd_key_none();
+    layers[1].key.color = 0x001F791Du;  // the middle of the screen's gradient
+    layers[1].key.tolerance = 0.2f;
+    layers[1].key.softness = 0.15f;
+    layers[1].key.spill = 1.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    check_golden(c, "keyed_over_a_background");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&plate);
+  vd_frame_release(&background);
+}
+
 int main(void) {
   test_the_harness_round_trips();
   scene_pattern_contain();
@@ -346,6 +384,7 @@ int main(void) {
   scene_picture_in_picture();
   scene_transform_stack();
   scene_three_layer_blend();
+  scene_keyed_over_a_background();
   vd_golden_epilogue();
   return VD_REPORT();
 }

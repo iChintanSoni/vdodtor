@@ -7,7 +7,9 @@
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_compositor.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_key.h"
 
+#include <math.h>
 #include <stdlib.h>
 
 #include <CoreVideo/CoreVideo.h>
@@ -1541,6 +1543,376 @@ static void test_the_background_is_actually_blurred(void) {
   vd_frame_release(&frame);
 }
 
+
+// --- the chroma key ---------------------------------------------------------
+// What a key *means* is pinned in vd_key_test.c with no GPU in the room. What
+// is left for here is that the shader does the same arithmetic, that it runs
+// where it is supposed to in the order, that the alpha it produces actually
+// composites, and that a layer nobody keyed is untouched by any of it.
+
+// A green screen and the colour of it, as ffmpeg's decoder renders the middle
+// of the fixture's gradient. See engine/tests/media/generate.sh: the field
+// runs from half brightness at the left edge to full at the right, which is
+// the fall-off the whole design is arranged around.
+#define SCREEN_COLOR 0x001F791Du
+#define SUBJECT_R 225
+#define SUBJECT_G 112
+#define SUBJECT_B 48
+
+// The key the inspector opens on, on a given colour.
+static VdChromaKey key_on(uint32_t color) {
+  VdChromaKey key = vd_key_none();
+  key.color = color;
+  key.tolerance = 0.2f;
+  key.softness = 0.15f;
+  key.spill = 1.0f;
+  return key;
+}
+
+// Eight vertical bands of one colour each, opaque. A whole render's worth of
+// answers in one frame, which is what makes comparing the GPU against
+// vd_key_apply cheap enough to do on every colour worth asking about.
+#define BAND_COUNT 8
+static CVPixelBufferRef band_layer(int32_t width, int32_t height,
+                                   const uint8_t rgb[BAND_COUNT][3]) {
+  CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
+      kCFAllocatorDefault, 2, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks);
+  CFDictionarySetValue(attrs, kCVPixelBufferMetalCompatibilityKey,
+                       kCFBooleanTrue);
+  CVPixelBufferRef buffer = NULL;
+  const CVReturn status =
+      CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                          kCVPixelFormatType_32BGRA, attrs, &buffer);
+  CFRelease(attrs);
+  if (status != kCVReturnSuccess) return NULL;
+
+  CVPixelBufferLockBaseAddress(buffer, 0);
+  uint8_t* base = CVPixelBufferGetBaseAddress(buffer);
+  const size_t stride = CVPixelBufferGetBytesPerRow(buffer);
+  for (int32_t y = 0; y < height; y++) {
+    uint8_t* row = base + (size_t)y * stride;
+    for (int32_t x = 0; x < width; x++) {
+      const int band = x * BAND_COUNT / width;
+      row[(size_t)x * 4 + 0] = rgb[band][2];
+      row[(size_t)x * 4 + 1] = rgb[band][1];
+      row[(size_t)x * 4 + 2] = rgb[band][0];
+      row[(size_t)x * 4 + 3] = 255;
+    }
+  }
+  CVPixelBufferUnlockBaseAddress(buffer, 0);
+  return buffer;
+}
+
+static VdLayer bgra_layer(CVPixelBufferRef buffer) {
+  VdLayer layer;
+  memset(&layer, 0, sizeof(layer));
+  layer.pixel_buffer = buffer;
+  layer.format = VD_PIXEL_BGRA;
+  layer.fit = VD_FIT_STRETCH;
+  layer.opacity = 1.0f;
+  return layer;
+}
+
+// **The test that keeps the two implementations from drifting.** vd_key.c and
+// vd_shaders.metal are one function written twice — the second in a language
+// that cannot include the first's header, so the luma weights and the two
+// chroma denominators are literally retyped there. This renders a band of each
+// of eight colours through the GPU and compares every one against what
+// vd_key_apply says it should be, composited over black by hand.
+//
+// The same arrangement vd_lut_sample and the texture fetch already have, and
+// necessary for the same reason: a constant mistyped in a shader is a bug that
+// only shows as a slightly wrong picture.
+static void test_the_shader_agrees_with_vd_key(void) {
+  static const uint8_t bands[BAND_COUNT][3] = {
+      {49, 199, 48},    // the screen at full light
+      {26, 105, 26},    // and in its own shadow: the same colour, keyed the same
+      {225, 112, 48},   // the subject
+      {128, 128, 128},  // grey, which no key touches
+      {140, 160, 130},  // a pale wall with green bounce on it: despilled, kept
+      {200, 60, 190},   // the complement of the screen, which must not move
+      {0, 0, 0},        // black, where there is no luma to divide by
+      {255, 255, 255},  // and white, at the other end of the same division
+  };
+
+  CVPixelBufferRef buffer = band_layer(320, 64, bands);
+  VD_CHECK(buffer != NULL);
+  VdCompositor* c = vd_compositor_create(320, 64, NULL);
+  if (c && buffer) {
+    const VdChromaKey key = key_on(SCREEN_COLOR);
+    const VdKeyMatte matte = vd_key_matte(&key);
+
+    VdLayer layer = bgra_layer(buffer);
+    layer.key = key;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    for (int band = 0; band < BAND_COUNT; band++) {
+      float rgb[3] = {(float)bands[band][0] / 255.0f,
+                      (float)bands[band][1] / 255.0f,
+                      (float)bands[band][2] / 255.0f};
+      const float alpha = vd_key_apply(&matte, rgb);
+      // Premultiplied, over opaque black: what is left is the colour scaled by
+      // how much of it is there.
+      char what[64];
+      snprintf(what, sizeof(what), "band %d agrees with vd_key_apply", band);
+      const int32_t x = (int32_t)(320 * band / BAND_COUNT) + 20;
+      check_pixel_is(c, x, 32, (int)lrintf(rgb[0] * alpha * 255.0f),
+                     (int)lrintf(rgb[1] * alpha * 255.0f),
+                     (int)lrintf(rgb[2] * alpha * 255.0f), what);
+    }
+    vd_compositor_destroy(c);
+  }
+  if (buffer) CVPixelBufferRelease(buffer);
+}
+
+// A zeroed key is no key, so every test above this line — and every golden
+// frame taken before this feature existed — keeps its answer.
+static void test_a_zeroed_key_leaves_the_picture_alone(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "a zeroed key removes nothing");
+
+    // And a key at no tolerance is the same thing: the document keeps the
+    // colour somebody picked while the frame shows nothing of it.
+    layer.key = key_on(SCREEN_COLOR);
+    layer.key.tolerance = 0.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, SOLID_R, SOLID_G, SOLID_B,
+                   "a key at no tolerance removes nothing");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// The whole feature, on a decoded frame: the screen goes and the subject
+// stays. The gradient is what makes this worth more than a flat field — the
+// left of the screen is at half the light of the right, and both have to go.
+static void test_a_key_removes_a_green_screen(void) {
+  VdFrame frame;
+  if (!first_frame("green_screen.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.key = key_on(SCREEN_COLOR);
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    check_pixel_is(c, 10, 120, 0, 0, 0, "the shadowed end of the screen");
+    check_pixel_is(c, 310, 120, 0, 0, 0, "the lit end of the screen");
+    check_pixel_is(c, 160, 20, 0, 0, 0, "and the strip above the subject");
+    check_pixel_is(c, 160, 120, SUBJECT_R, SUBJECT_G, SUBJECT_B,
+                   "the subject is untouched");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// And the hole is a hole rather than black paint: what is underneath shows
+// through it, which is the only reason anybody wants this.
+static void test_a_key_lets_the_lane_beneath_show_through(void) {
+  VdFrame background, plate;
+  if (!first_frame("solid_sd_601.mp4", &background)) return;
+  if (!first_frame("green_screen.mp4", &plate)) {
+    vd_frame_release(&background);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&background, VD_FIT_STRETCH, 1.0f);
+    layers[1] = layer_of(&plate, VD_FIT_STRETCH, 1.0f);
+    layers[1].key = key_on(SCREEN_COLOR);
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+
+    check_pixel_is(c, 10, 120, SOLID_R, SOLID_G, SOLID_B,
+                   "the lane beneath shows through the screen");
+    check_pixel_is(c, 160, 120, SUBJECT_R, SUBJECT_G, SUBJECT_B,
+                   "and the subject still covers it");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&plate);
+  vd_frame_release(&background);
+}
+
+// **The ordering decision, as an assertion.** The key is measured on the shot
+// as it was shot, before the five sliders and before the look. Fully
+// desaturating a frame leaves it with no chroma at all, so a key that ran
+// after the grade would have nothing to measure and would remove nothing —
+// and every slider in the colour panel would silently be a keying control.
+static void test_a_key_is_measured_before_the_grade(void) {
+  VdFrame frame;
+  if (!first_frame("green_screen.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.key = key_on(SCREEN_COLOR);
+    layer.color = vd_color_neutral();
+    layer.color.saturation = -1.0f;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    check_pixel_is(c, 10, 120, 0, 0, 0, "the screen goes despite the grade");
+    check_pixel_is(c, 310, 120, 0, 0, 0, "at both ends of the gradient");
+
+    // And the subject is still there, and now grey — so the grade did run.
+    uint8_t bgra[4] = {0, 0, 0, 0};
+    VD_CHECK(vd_compositor_read_pixel(c, 160, 120, bgra));
+    VD_CHECK(bgra[1] > 40);
+    VD_CHECK(abs((int)bgra[0] - (int)bgra[1]) <= COLOUR_TOLERANCE);
+    VD_CHECK(abs((int)bgra[2] - (int)bgra[1]) <= COLOUR_TOLERANCE);
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// A keyed layer contains rather than blur filling. Filling the bars with a
+// blurred copy of the background somebody has just removed floods the frame
+// with the one colour they were getting rid of — and because the backdrop goes
+// through an offscreen cleared to opaque black, the holes in it would paint
+// black over every layer underneath.
+static void test_a_keyed_layer_contains_rather_than_blur_filling(void) {
+  VdFrame background, plate;
+  if (!first_frame("solid_sd_601.mp4", &background)) return;
+  if (!first_frame("green_screen.mp4", &plate)) {  // 4:3
+    vd_frame_release(&background);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(640, 360, NULL);  // 16:9
+  if (c) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&background, VD_FIT_COVER, 1.0f);
+    layers[1] = layer_of(&plate, VD_FIT_BLUR, 1.0f);
+    layers[1].key = key_on(SCREEN_COLOR);
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+
+    // The pillar is what the lane underneath is, not a blurred green wash.
+    check_pixel_is(c, 20, 180, SOLID_R, SOLID_G, SOLID_B,
+                   "no blurred screen in the bars");
+    check_pixel_is(c, 320, 180, SUBJECT_R, SUBJECT_G, SUBJECT_B,
+                   "and the subject is where contain puts it");
+
+    // Without the key it does fill, so the rule above is the key's doing and
+    // not a fit that stopped working.
+    layers[1].key = vd_key_none();
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+    uint8_t bgra[4] = {0, 0, 0, 0};
+    VD_CHECK(vd_compositor_read_pixel(c, 20, 180, bgra));
+    VD_CHECK(bgra[1] > bgra[2] + 20);  // green, blurred, in the pillar
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&plate);
+  vd_frame_release(&background);
+}
+
+// A still and a sticker arrive already premultiplied, and a key is a second
+// alpha to multiply into the one they came with. A GIF on a white card is the
+// case worth having.
+static void test_a_key_reaches_a_premultiplied_layer(void) {
+  VdFrame background;
+  if (!first_frame("solid_sd_601.mp4", &background)) return;
+
+  static const uint8_t bands[BAND_COUNT][3] = {
+      {49, 199, 48},  {49, 199, 48},  {49, 199, 48},  {49, 199, 48},
+      {225, 112, 48}, {225, 112, 48}, {225, 112, 48}, {225, 112, 48},
+  };
+  CVPixelBufferRef sticker = band_layer(320, 240, bands);
+  VD_CHECK(sticker != NULL);
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c && sticker) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&background, VD_FIT_STRETCH, 1.0f);
+    layers[1] = bgra_layer(sticker);
+    layers[1].key = key_on(SCREEN_COLOR);
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+
+    check_pixel_is(c, 80, 120, SOLID_R, SOLID_G, SOLID_B,
+                   "the sticker's green half is gone");
+    check_pixel_is(c, 240, 120, SUBJECT_R, SUBJECT_G, SUBJECT_B,
+                   "and its other half is not");
+    vd_compositor_destroy(c);
+  }
+  if (sticker) CVPixelBufferRelease(sticker);
+  vd_frame_release(&background);
+}
+
+// --- the matte view ---------------------------------------------------------
+// A view mode, set on every layer at once by the engine and never by a clip.
+// White where the layer reaches the frame, black where it does not, and opaque
+// either way — a matte you can see past is not a matte.
+
+static void test_the_matte_view_draws_the_alpha(void) {
+  VdFrame frame;
+  if (!first_frame("green_screen.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.key = key_on(SCREEN_COLOR);
+    layer.matte_view = true;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+
+    check_pixel_is(c, 10, 120, 0, 0, 0, "black where the screen was");
+    check_pixel_is(c, 160, 120, 255, 255, 255, "white where the subject is");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
+// The black has to *cover*, or a matte over a lane with something on it shows
+// that something through its own holes and reads as a key that is not working.
+static void test_the_matte_view_covers_what_is_underneath(void) {
+  VdFrame background, plate;
+  if (!first_frame("solid_sd_601.mp4", &background)) return;
+  if (!first_frame("green_screen.mp4", &plate)) {
+    vd_frame_release(&background);
+    return;
+  }
+
+  VdCompositor* c = vd_compositor_create(320, 240, NULL);
+  if (c) {
+    VdLayer layers[2];
+    layers[0] = layer_of(&background, VD_FIT_STRETCH, 1.0f);
+    layers[0].matte_view = true;
+    layers[1] = layer_of(&plate, VD_FIT_STRETCH, 1.0f);
+    layers[1].key = key_on(SCREEN_COLOR);
+    layers[1].matte_view = true;
+    VD_CHECK_EQ(vd_compositor_render(c, layers, 2), VD_OK);
+
+    check_pixel_is(c, 10, 120, 0, 0, 0, "the hole is black, not the lane below");
+    check_pixel_is(c, 160, 120, 255, 255, 255, "and the subject is white");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&plate);
+  vd_frame_release(&background);
+}
+
+// A layer nobody keyed is white everywhere, which is what "all of this reaches
+// the frame" looks like.
+static void test_the_matte_view_of_an_unkeyed_layer_is_white(void) {
+  VdFrame frame;
+  if (!first_frame("solid_sd_601.mp4", &frame)) return;
+
+  VdCompositor* c = vd_compositor_create(200, 200, NULL);
+  if (c) {
+    VdLayer layer = layer_of(&frame, VD_FIT_STRETCH, 1.0f);
+    layer.matte_view = true;
+    VD_CHECK_EQ(vd_compositor_render(c, &layer, 1), VD_OK);
+    check_pixel_is(c, 100, 100, 255, 255, 255, "nothing keyed is all there");
+    vd_compositor_destroy(c);
+  }
+  vd_frame_release(&frame);
+}
+
 int main(void) {
   test_lifecycle();
   test_no_layers_is_black();
@@ -1585,5 +1957,15 @@ int main(void) {
   test_blur_fill_costs_nothing_when_there_are_no_bars();
   test_the_background_is_actually_blurred();
   test_software_frames_composite_the_same();
+  test_the_shader_agrees_with_vd_key();
+  test_a_zeroed_key_leaves_the_picture_alone();
+  test_a_key_removes_a_green_screen();
+  test_a_key_lets_the_lane_beneath_show_through();
+  test_a_key_is_measured_before_the_grade();
+  test_a_keyed_layer_contains_rather_than_blur_filling();
+  test_a_key_reaches_a_premultiplied_layer();
+  test_the_matte_view_draws_the_alpha();
+  test_the_matte_view_covers_what_is_underneath();
+  test_the_matte_view_of_an_unkeyed_layer_is_white();
   return VD_REPORT();
 }

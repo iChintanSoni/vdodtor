@@ -49,6 +49,20 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > the end of the analytics question too: none, not even a count. Its first catch in the
 > running app was itself. What is left in M4 is the signing key and two calls to Apple.
 >
+> **And M6 has opened with the brief's first fast-follow feature: green
+> screens.** A clip carries a colour to remove, the compositor turns everything
+> near it into transparency, and the lane underneath shows through — in the
+> preview and in the exported file, compared by a parity golden rather than by
+> eye. The arithmetic is `vd_key.c` on `vd_color.c`'s terms, and it keys on
+> chroma **divided by brightness**: Cb and Cr are differences and shrink with
+> the picture, so the usual answer only works on a perfectly lit screen, and
+> the fixture's own gradient caught that before anything else did. Two things
+> that are about *looking* rather than about the edit came with it — an
+> eyedropper that renders one frame with every grade, look and key suppressed,
+> and a matte view — and both live on the engine beside the clock and the
+> position rather than in the render list, so no project file can record one
+> and `vd_export` never sees them.
+>
 > **And M5 has started: the app has its own name and its own face, and the
 > first window is no longer an empty one.** OQ-4's name half is settled —
 > vdodtor ships — and the icon is no longer the one `flutter create` wrote:
@@ -2252,7 +2266,7 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
 
 ### Chroma key
 
-- [ ] **`vd_key`: what a matte means, as arithmetic** — the third grading
+- [x] **`vd_key`: what a matte means, as arithmetic** — the third grading
       module, and a different kind of thing from the two beside it. `vd_color`
       is every affine operation on RGB, which is exactly why five sliders fold
       into one matrix; `vd_lut` is the arbitrary map left over, which is why it
@@ -2265,16 +2279,33 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       Metal is a distance and a mix that a test could tell you nothing about.
       Not mirrored in Dart, for `vd_anim`'s reason — nothing in the app draws a
       matte.
-      **The key runs on chroma, not on RGB.** Distance in RGB makes the matte a
-      function of how brightly that corner of the screen was lit: the shadow on
-      the cyclorama stays and the subject's lit shoulder goes. Converting both
-      the pixel and the key colour to (Cb, Cr) with the BT.709 weights
-      `vd_color.h` already declares takes the light out of the measurement
-      entirely — `alpha = smoothstep(tolerance, tolerance + softness, d)` on
-      the 2D distance between them. Those weights and not the source's own
-      `kr`/`kb`, for the reason saturation already uses them: by then the
-      picture is RGB, and it is the *project's* idea of hue that has to decide
-      or two cameras key to two different greens.
+      **The key runs on chroma divided by brightness, and the second half of
+      that is a correction to what this plan said before the work started.**
+      Distance in RGB makes the matte a function of how brightly that corner of
+      the screen was lit: the shadow on the cyclorama stays and the subject's
+      lit shoulder goes. Converting both the pixel and the key colour to
+      (Cb, Cr) with the BT.709 weights `vd_color.h` already declares is the
+      usual answer, and it is **only half of one** — Cb and Cr are
+      *differences*, so they shrink with the picture. A screen at a third of
+      the key light's brightness sits a third of the way in towards grey, which
+      is further from the sampled green than most of the subject is. Every
+      simple keyer has that failure, and it is why they all want a perfectly
+      evenly lit screen. The first version of this file did exactly that and
+      its own test caught it: the fixture's screen falls off by half across the
+      frame, and only the lit end keyed.
+      Dividing the chroma through by the pixel's own luma removes it — in a
+      gamma-encoded signal a shadow is still very nearly a uniform scaling of
+      all three channels, because a power law takes a scale to a scale. Then
+      the distance is divided by the key's own, which is what makes
+      **`tolerance` the fraction of the way from the key colour to grey**: 0 at
+      the colour, 1 at grey, and the same number on a blue screen as on a green
+      one. Without that last division the slider would mean two different
+      things, because blue carries a fifth of green's luma and its coordinates
+      are an order of magnitude larger.
+      The weights are BT.709 and not the source's own `kr`/`kb`, for the reason
+      saturation already uses them: by then the picture is RGB, and it is the
+      *project's* idea of hue that has to decide, or two cameras key to two
+      different greens.
       **Smoothstep and not a linear ramp.** A linear one leaves a corner where
       the matte meets solid, and that corner reads as a bright line drawn
       around the subject — which is the one artefact everybody recognises as
@@ -2296,7 +2327,7 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       COLOUR panel above it secretly a keying control — turn up the contrast
       and the matte closes, drag saturation and the fringe comes back. The
       despill runs there too, so what the grade is handed is a corrected plate.
-- [ ] **The key reaches the compositor, and a keyed layer contains** —
+- [x] **The key reaches the compositor, and a keyed layer contains** —
       `VdLayer::key` beside `VdLayer::color` and `VdLayer::look`, per layer for
       the reason a grade is per layer: a key on the *frame* would key the
       caption over the shot as well. It reaches the premultiplied layers too —
@@ -2313,9 +2344,14 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       with a blurred copy of a picture you have just declared is not there is a
       contradiction, so **the compositor reads `VD_FIT_BLUR` as
       `VD_FIT_CONTAIN` for a keyed layer**. A rendering rule and not a document
-      change — nothing rewrites what the user chose — and the inspector greys
-      the blur-fill chip while a key is on, so the panel and the picture agree.
-- [ ] **`ClipKey`, and no toggle** — colour, tolerance, softness and spill on
+      change: nothing rewrites the fit the user chose.
+      One detail the test found that the plan had not. The substitution has to
+      happen **before `compute_fit`**, not only at the `wants_blur` check —
+      `VD_FIT_BLUR` is not `VD_FIT_CONTAIN` to that function, so a keyed layer
+      that merely skipped the three blur passes was still laid out as *cover*.
+      The plate covered the pillars it was supposed to leave alone, and the
+      lane beneath showed nowhere.
+- [x] **`ClipKey`, and no toggle** — colour, tolerance, softness and spill on
       the document, and `tolerance` *is* the on switch: nothing is within 0 of
       the key colour, so a key at 0 keys nothing and there is no second flag
       that can disagree with it. `ClipKey.withColor` brings the tolerance back
@@ -2326,8 +2362,17 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       The section is offered on `showsPicture && !clip.isGenerated`, which is
       exactly where COLOUR is offered and for the same reason: a key on a
       rectangle somebody just chose the colour of is a control fighting the one
-      above it.
-- [ ] **The eyedropper, and what it picks** — the control that decides whether
+      above it. It sits **under** the grade, because that is the order the
+      engine runs them in, and a panel in the other order teaches the wrong
+      habit — the argument that already puts the look under the five sliders.
+      Two decisions the sliders themselves make. `softness` and `spill` open at
+      15% and 100% rather than at zero, because a key with no softness is cut
+      out with scissors and one with no despill leaves the green on the
+      subject's shoulder: a key opening on zeros would be wrong in the two ways
+      somebody would then have to go and find the controls for. And the three
+      sliders appear only once there is a colour, on the look strength's rule —
+      a tolerance under no colour is a control that does nothing.
+- [x] **The eyedropper, and what it picks** — the control that decides whether
       the feature is usable at all. Finding a screen's exact green by dragging
       a colour field is the part of chroma key everybody gives up on.
       `vd_engine_pick_color(engine, u, v)` renders the current position once
@@ -2341,12 +2386,20 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       **renders normally again before returning**: the pick render publishes
       into the preview texture, and a paused editor would otherwise sit showing
       an ungraded frame until the next edit.
-      The Flutter half is smaller than it looks. The preview already lives
-      inside an `AspectRatio` of the project's own format with the texture
-      filling it, so a tap maps to normalised output coordinates by one
-      division and no fit arithmetic, and the `Stack` the tour hangs off is
-      where the picking overlay goes.
-- [ ] **The matte view, and where a view mode lives** — white where the picture
+      The Flutter half turned out smaller than it looked. The preview already
+      lives inside an `AspectRatio` of the project's own format with the
+      texture filling it, so a tap maps to normalised output coordinates by one
+      division and no fit arithmetic at all, and the `Stack` the tour hangs off
+      is where the picking overlay goes. **Escape cancels a pick before it
+      clears the selection** — the eyedropper is the more recent thing the user
+      started, and clearing the selection would take away the panel they
+      started it from.
+      It picks what is *visible*, which is deliberate and worth writing down:
+      somebody points at the screen they can see, so a colour belonging to an
+      overlay on a lane above is what comes back when that is what is under the
+      cursor. The self-test pass found that by pointing at the middle of a
+      frame with three earlier passes' overlays stacked in it.
+- [x] **The matte view, and where a view mode lives** — white where the picture
       is kept, black where it has gone: the fastest way to see what a tolerance
       is actually doing.
       It is **not** a field on the render list. A view mode is a property of
@@ -2368,7 +2421,7 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       changes**. Somebody who leaves it on and comes back later has a
       black-and-white editor, which reads as a broken app rather than as a
       debug view.
-- [ ] **The tests, and one new fixture** — `vd_key_test.c` pins what a key
+- [x] **The tests, and one new fixture** — `vd_key_test.c` pins what a key
       means with no GPU in the room: a green plate keys, a grey key keys
       nothing, tolerance 0 keys nothing, softness 0 is a hard edge, and a
       despill holds Y. `vd_compositor_test.c` pins that the shader agrees with
@@ -2379,10 +2432,93 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       A `green_screen.mp4` goes into `engine/tests/media/generate.sh` — a
       coloured subject on a green field, a few KB, committed like the rest —
       for the engine and parity tests, because a key that works on a synthetic
-      buffer and not on subsampled chroma is a key that does not work. Dart
-      gets the round trip, `withColor`, the command and an inspector widget
-      test.
-- [ ] **What is deliberately not in it.** Spatial matte controls — shrink,
+      buffer and not on subsampled chroma is a key that does not work. **Its
+      screen has a gradient across it**, half the light at the left edge, which
+      is more fall-off than a badly lit screen has, and it is the fixture that
+      caught the arithmetic above.
+      Dart gets the round trip, `withColor`, the command and an inspector
+      widget test — and, because `EditorScreen` builds a real `PreviewEngine`
+      and cannot be pumped, a read of its source for the two callbacks and the
+      Escape handler, which is `tour_test.dart`'s arrangement.
+      The parity scene took two goes, and the first is worth recording. It used
+      the same test pattern the other parity scenes do and failed by a hair —
+      8% of pixels past the threshold against 4% allowed. The diff said why:
+      every count was on the *pattern's* own saturated vertical bars, with the
+      subject's outline solid black. Perfect agreement on the matte, and a
+      scene measuring the encoder rather than the key. Four flat quadrants
+      underneath leave the matte as the only hard edge in the frame, which is
+      what the scene is for.
+      Measured in the running app at 1920x1080: the eyedropper picks `#00c965`
+      off a shot whose own colour it is, four tolerances go on the clip, and
+      **layers stay flat at 2 and decoders flat at 6** through all of them — a
+      slider that reopened the file on every value would stutter the preview
+      for the length of the drag. The frame before the pick and the frame after
+      it are **byte-identical**, which is the whole of "it leaves the frame as
+      it found it"; the keyed frame is black but for the shape on the lane
+      above, which is a key belonging to the clip that carries it; and the bars
+      turn black at the same moment, which is a keyed layer containing.
+      **And measured on real footage, which is what settles the defaults.**
+      Two green-screen clips a person would actually key, plus the same one
+      relit to fall off by 2.3:1 across the frame with grain on top — a badly
+      lit screen, and worse than most. With the eyedropper sampling only the
+      *brightest* corner, the defaults take the whole screen including the
+      dimmest one, and the matte is solid white on solid black with no grey
+      mush anywhere in it.
+      The numbers say why, and they are the argument for the arithmetic above
+      rather than a restatement of it. Measured from the sampled colour, as a
+      fraction of its own distance from grey:
+
+      | sample | chroma ÷ luma | plain Cb/Cr |
+      |---|---|---|
+      | the lit corner it sampled | 0.000 | 0.000 |
+      | the dimmest corner | **0.018** | **0.572** |
+      | skin | 1.071 | 1.064 |
+
+      The whole screen lands inside 0.018, so a tolerance of 0.20 covers it
+      ten times over and skin is fifty times further away — which is why the
+      slider has somewhere to go. On plain Cb/Cr the dim corner is at 0.572,
+      so keying the whole screen needs a tolerance near 0.6 and skin is only
+      1.8x beyond that: no room, and the first dark fold of a face goes with
+      the background. **The defaults stand unchanged.**
+      `spill` at 1.0 earns itself in the same set: at 0.0 the hair carries a
+      bright green rim and a green cast all the way through it, and at 1.0
+      both are gone with the hair still grey-brown rather than darkened.
+      **And it holds while things move**, which a still cannot say. Runs of 72
+      and 90 consecutive frames through the badly lit clip and the portrait
+      one, with the colour picked once at the first frame and never touched
+      again — which is what a person does.
+      Nothing crawls. Over 72 frames of a grainy, unevenly lit screen: **not
+      one pixel** of a static screen corner ever lifted off transparent, not
+      one pixel of the subject ever came off opaque, and **zero** pixels
+      anywhere flipped end to end between consecutive frames. The edge band
+      stays between 0.16% and 0.22% of the frame with a standard deviation of
+      0.013% — it breathes with the length of the silhouette as the head
+      turns, which is the picture moving rather than the matte. A map of every
+      pixel whose alpha ever changed is exactly the band the silhouette swept,
+      and black everywhere else; on the portrait clip **100%** of the pixels
+      that moved lie inside it.
+      The number that says why is that the matte moves *less* than the picture
+      it is taken from: mean |Δmatte| 0.45 against mean |Δplate| 1.28 per pixel
+      per frame. A key with no state between frames cannot drift on its own —
+      it is a pure function of the pixel — so the only thing that could make it
+      chatter is the source crossing the threshold, and it is not close enough
+      to the threshold to do that.
+      **The one case worth being nervous about is the dark one**, because
+      dividing chroma by luma is exactly the step that could amplify noise
+      where there is little luma to divide by. So a third clip was made with
+      the shadows crushed until the hair and beard are literally black, and
+      grain laid over that: **140,187 pixels of the subject at plate luma 0–8**
+      never moved by more than 8 and never fell below alpha 248, and **zero**
+      background pixels anywhere in the frame ever flickered by more than 24.
+      The floor under the divisor does what it is there for — a very dark pixel
+      reads as less saturated than it measures and is *kept*, which is the safe
+      direction.
+      None of this is a test in the suite, and deliberately: the key carries no
+      state between frames, so there is nothing temporal for a test to guard
+      that `vd_key_test.c` does not already pin per pixel. A moving fixture
+      would cost a slow test to assert a property the shape of the code already
+      gives.
+- [x] **What is deliberately not in it.** Spatial matte controls — shrink,
       grow, edge blur, a garbage matte — are a second render pass and a
       different feature: a chroma-space key with a despill is what makes a
       green screen work, and the rest is what makes it work *well*, which is a
@@ -2395,13 +2531,17 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
 **Exit criteria:** a green-screen clip dropped on an overlay lane, keyed with
 one click of the eyedropper, shows the lane underneath through it — in the
 preview *and* in the exported file, with the two compared by the parity test
-rather than by eye.
+rather than by eye. **Met**, by `parity_keyed`: one keyed timeline through both
+clocks against one committed picture — and by two real green-screen clips, a
+deliberately badly lit one and a crushed-shadow one, on which the defaults key
+cleanly with no tuning at all and the matte holds still across runs of 72 and
+90 frames. See the tests item above for the numbers.
 
 ---
 
 ## Post-v1 (priority order)
 
-1. **Fast-follow features:** chroma key (**planned — see M6 above**) · on-device
+1. **Fast-follow features:** ~~chroma key~~ (**done — see M6 above**) · on-device
    auto-captions (stays free) · voiceover recording · keyframes on all transforms ·
    120 fps export · premium pack drops
 2. **Windows port:** engine already FFmpeg; compositor backend decision (Vulkan/D3D or ANGLE);

@@ -162,6 +162,42 @@ final class SetClipColor extends EditCommand {
       next is SetClipColor && next.clipId == clipId ? next : null;
 }
 
+/// Keys a clip: the colour to remove, and how much of it.
+///
+/// Merged on the clip id like [SetClipColor], and for the same reason: a drag
+/// on the tolerance slider is one decision about what is background, and an
+/// undo stack with a step per value is one nobody can walk back through. The
+/// eyedropper merges into that run too — picking a colour and then tuning what
+/// it takes is one thing the user did, and an undo that put back the colour
+/// without the tuning would leave a key that had never existed.
+final class SetClipKey extends EditCommand {
+  const SetClipKey(this.clipId, this.key);
+
+  final String clipId;
+  final ClipKey key;
+
+  @override
+  String get label => 'Key clip';
+
+  @override
+  Project apply(Project project) {
+    final track = project.trackOfClip(clipId);
+    if (track == null) throw EditException('no clip $clipId');
+    final clip = track.clipById(clipId)!;
+    final next = key.clamped();
+    if (clip.key == next) return project;
+
+    return project.replaceTrack(track.withClips([
+      for (final c in track.clips)
+        c.id == clipId ? c.copyWith(key: next) : c,
+    ]));
+  }
+
+  @override
+  EditCommand? mergeWith(EditCommand next) =>
+      next is SetClipKey && next.clipId == clipId ? next : null;
+}
+
 /// Sets a clip's volume, mute and fades.
 ///
 /// The audio counterpart of [SetClipTransform], and merged the same way: a

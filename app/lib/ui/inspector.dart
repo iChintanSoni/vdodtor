@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -24,6 +25,9 @@ class Inspector extends StatelessWidget {
     super.key,
     required this.timeline,
     this.onLoadLook,
+    this.onPickKeyColour,
+    this.matteView = false,
+    this.onMatteView,
     this.tier = Tier.free,
     this.onGetPro,
   });
@@ -52,6 +56,23 @@ class Inspector extends StatelessWidget {
   /// should show.
   final Future<String?> Function()? onLoadLook;
 
+  /// Puts the editor into picking mode and hands back the colour the user
+  /// clicked in the preview, or null if they cancelled.
+  ///
+  /// A callback for [onLoadLook]'s reason: the preview is the one thing in
+  /// this rail that a widget test has no engine behind. Null hides the
+  /// eyedropper and leaves the swatches, which is what a build with no preview
+  /// should show.
+  final Future<int?> Function()? onPickKeyColour;
+
+  /// Whether the preview is currently showing mattes instead of pictures.
+  ///
+  /// It lives in the editor rather than in the document, and it is passed
+  /// through rather than held here, because it is a property of the person
+  /// looking. See `VdViewMode` in vd_engine.h.
+  final bool matteView;
+  final ValueChanged<bool>? onMatteView;
+
   static const double width = 224;
 
   DocumentStore get _store => timeline.store;
@@ -74,6 +95,9 @@ class Inspector extends StatelessWidget {
 
   void _setColor(Clip clip, ClipColor color) =>
       _store.run(SetClipColor(clip.id, color), fromGestureStart: true);
+
+  void _setKey(Clip clip, ClipKey key) =>
+      _store.run(SetClipKey(clip.id, key), fromGestureStart: true);
 
   void _setAnimation(Clip clip, ClipAnimation animation) =>
       _store.run(SetClipAnimation(clip.id, animation), fromGestureStart: true);
@@ -205,6 +229,37 @@ class Inspector extends StatelessWidget {
                       _commit();
                       _store.run(
                           SetClipColor(clip.id, clip.color.withLook(name)));
+                      _commit();
+                    },
+            ),
+          // Under the grade, because a key is measured on the shot as it was
+          // shot — before every slider above it — so a panel that offered it
+          // first would be describing an order the engine does not run in.
+          // The far side of the same argument that puts the look under the
+          // sliders rather than over them.
+          if (showsPicture && !clip.isGenerated)
+            _KeyControls(
+              value: clip.key,
+              onChanged: (k) => _setKey(clip, k),
+              onCommit: _commit,
+              matteView: matteView,
+              onMatteView: onMatteView,
+              onReset: () {
+                _commit();
+                _store.run(SetClipKey(clip.id, ClipKey.none));
+                _commit();
+              },
+              onPick: onPickKeyColour == null
+                  ? null
+                  : () async {
+                      final picked = await onPickKeyColour!();
+                      if (picked == null) return;
+                      // One step in the undo stack, not two: pointing at the
+                      // screen is how the user *chose* the colour, and an undo
+                      // that put back a key nobody had picked yet would be a
+                      // step nobody took.
+                      _commit();
+                      _store.run(SetClipKey(clip.id, clip.key.withColor(picked)));
                       _commit();
                     },
             ),
@@ -1149,6 +1204,148 @@ String _percentOfSize(double v) => '${(v * 100).round()}%';
 /// It appears whether or not the clip has a neighbour. A transition with no
 /// cut under it does nothing, and hiding the control when a clip is dragged
 /// away from its neighbour would mean re-picking one every time it came back.
+
+/// The chroma key: a colour to remove, and three sliders for how much of it.
+///
+/// **The eyedropper is the control that decides whether this is usable.**
+/// Finding a screen's exact green by dragging a colour field is the part of
+/// chroma keying everybody gives up on, so it is the first thing in the panel
+/// and the swatches are the fallback rather than the other way round.
+///
+/// The sliders appear only once there is a colour, on [_ColorControls]'s rule
+/// for the look strength: a tolerance under no colour is a control that does
+/// nothing, and one that stayed put would invite a drag and a wonder why the
+/// picture did not move.
+class _KeyControls extends StatelessWidget {
+  const _KeyControls({
+    required this.value,
+    required this.onChanged,
+    required this.onCommit,
+    required this.onReset,
+    required this.matteView,
+    this.onMatteView,
+    this.onPick,
+  });
+
+  final ClipKey value;
+  final ValueChanged<ClipKey> onChanged;
+  final VoidCallback onCommit;
+  final VoidCallback onReset;
+
+  final bool matteView;
+  final ValueChanged<bool>? onMatteView;
+
+  /// Picks the colour off the preview. Null hides the button.
+  final Future<void> Function()? onPick;
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const _SectionLabel('CHROMA KEY'),
+              const Spacer(),
+              if (!value.isNone)
+                TextButton(
+                  onPressed: onReset,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('Reset', style: TextStyle(fontSize: 11)),
+                ),
+            ],
+          ),
+          if (onPick != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: OutlinedButton.icon(
+                onPressed: () => unawaited(onPick!()),
+                icon: const Icon(Icons.colorize_outlined, size: 15),
+                label: const Text('Pick from preview',
+                    style: TextStyle(fontSize: 11)),
+                style: OutlinedButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: VdColors.text,
+                  side: const BorderSide(color: VdColors.line),
+                ),
+              ),
+            ),
+          // The two screens anybody actually shoots on, for the case where
+          // there is no preview to point at — a clip scrubbed past its own
+          // end, or a build with no engine behind it.
+          _Swatches(
+            label: 'Screen',
+            value: value.color | 0xFF000000,
+            options: _screenPalette,
+            onChanged: (c) => onChanged(value.withColor(c)),
+          ),
+          if (value.isKeying) ...[
+            _Slider(
+              label: 'Tolerance',
+              value: value.tolerance,
+              min: 0,
+              max: 1,
+              format: _strengthPercent,
+              onChanged: (v) => onChanged(value.copyWith(tolerance: v)),
+              onCommit: onCommit,
+            ),
+            _Slider(
+              label: 'Softness',
+              value: value.softness,
+              min: 0,
+              max: 1,
+              format: _strengthPercent,
+              onChanged: (v) => onChanged(value.copyWith(softness: v)),
+              onCommit: onCommit,
+            ),
+            _Slider(
+              label: 'Spill',
+              value: value.spill,
+              min: 0,
+              max: 1,
+              format: _strengthPercent,
+              onChanged: (v) => onChanged(value.copyWith(spill: v)),
+              onCommit: onCommit,
+            ),
+            // Only under a key that is doing something: the matte of a clip
+            // nobody keyed is a white rectangle, which teaches nothing and
+            // looks broken.
+            if (onMatteView != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: OutlinedButton.icon(
+                  onPressed: () => onMatteView!(!matteView),
+                  icon: Icon(
+                      matteView
+                          ? Icons.visibility_outlined
+                          : Icons.contrast_outlined,
+                      size: 15),
+                  label: Text(matteView ? 'Showing matte' : 'View matte',
+                      style: const TextStyle(fontSize: 11)),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor:
+                        matteView ? VdColors.accent : VdColors.text,
+                    side: BorderSide(
+                        color: matteView ? VdColors.accent : VdColors.line),
+                  ),
+                ),
+              ),
+          ],
+        ],
+      );
+}
+
+/// The two colours screens are actually painted: chroma green and chroma blue.
+///
+/// Two rather than a palette, because unlike a caption's ink these are not a
+/// matter of taste — a key colour is a *measurement* of a particular screen,
+/// and the eyedropper above is how it is meant to be taken. These are for the
+/// times there is nothing to point at.
+const List<int> _screenPalette = [0xFF00B140, 0xFF0047BB];
+
 /// The five sliders that decide what a shot looks like.
 ///
 /// All five run −1..1 from the same centre, because that is what the document
