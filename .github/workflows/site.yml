@@ -1,0 +1,63 @@
+name: Site
+
+# vdodtor.app is not marketing; it is the other half of the app. Six addresses
+# are compiled into a build with no updater, no remote config and no socket, so
+# the site has to answer them for as long as any copy of vdodtor exists.
+# `app/test/app/site_test.dart` proves the pages are in this repository; this
+# workflow is what puts them on the internet, and nothing but a request proves
+# a host serves them.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'site/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deployment in flight: the half-published state of a site is
+# not something anybody wants to reason about. Queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish site/ to vdodtor.app
+    # Deliberately a GitHub-hosted runner, and the only workflow here that is.
+    # CI needs the self-hosted Mac because a green build has to mean what a
+    # local build means; the site is plain files with no build step, and tying
+    # it to a machine that has to be registered first would mean the buy button
+    # stayed dead until somebody set up a runner.
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only here for `enablement`: it turns Pages on through the API if it is
+      # off, so the first run needs nobody to visit a settings screen. The
+      # custom domain is not its business — that comes from site/CNAME, which
+      # travels with the directory and is asserted against the address the app
+      # opens.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      # site/ is uploaded exactly as it is committed. There is no build step,
+      # which is the whole reason the site is written in plain HTML: a
+      # generator is one more thing that can stop working between a release and
+      # the day somebody clicks Buy.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

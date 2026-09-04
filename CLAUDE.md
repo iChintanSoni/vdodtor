@@ -60,7 +60,8 @@ engine/    C engine (CMake): vd_time (tick math), vd_anim (in/out presets),
            vd_engine (transport), vd_thumbnail, vd_peaks
 site/      vdodtor.app — six plain static pages (no build step) and one
            stylesheet, serving the addresses the app opens; `source/` carries
-           the byte-identical notice and LGPL text the app ships
+           the byte-identical notice and LGPL text the app ships, and `CNAME`
+           the domain `.github/workflows/site.yml` publishes them at
 tools/     build_ffmpeg.sh — vendors universal LGPL FFmpeg into third_party/ffmpeg
            make_luts.dart  — writes every look from the formulae in it: the built-in
                              five into app/assets/luts, a pack's into build/packs/<id>
@@ -350,7 +351,15 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   download page offer the version `pubspec.yaml` would build. `site/source/` holds the
   **byte-identical** notice and LGPL text the app ships rather than a retelling — the
   shipped notice names that address as where the source is, and a licence obligation
-  restated in a second set of words is a second thing that can be wrong.
+  restated in a second set of words is a second thing that can be wrong. The **domain
+  is part of that boundary too**: `site/CNAME` is where the host reads it and a
+  compiled-in string is where the app reads it, so `site_test.dart` asserts they are
+  the same name — publishing under another one breaks every button exactly as renaming
+  a page would. `.github/workflows/site.yml` does the publishing, on a **GitHub-hosted**
+  runner rather than the self-hosted Mac CI needs: the site has no build step, and the
+  buy button must not wait on a registered runner. Every link, the stylesheet and both
+  icons are **absolute**, so the site is only correct at the root of a domain — under a
+  `github.io` project subpath it is eight unstyled pages linking to nothing.
 - **The sample project is code, and its footage is copied rather than pointed at.**
   An empty editor teaches nobody anything, so the chooser offers a fifteen-second
   edit beside New Project — but it is **not** a shipped `.vdo`: a project file
