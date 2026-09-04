@@ -55,6 +55,25 @@ void main() {
     expect(pageFor('/').existsSync(), isTrue);
   });
 
+  test('the site is published at the address the app opens', () {
+    // The one file under site/ that is not part of the site: the host reads
+    // the domain out of it, and the app reads the same domain out of a string
+    // compiled into a build that can never be told otherwise. Publishing under
+    // any other name is the same failure as renaming a page — every button in
+    // every copy already installed, dead — so the two are asserted together
+    // rather than kept in step by memory.
+    //
+    // It also has to be *this* name and not a subpath: every link, the
+    // stylesheet and both icons are absolute, so the site works at the root of
+    // a domain and nowhere else. A project page under /vdodtor/ would serve
+    // eight pages that all look unstyled and link to nothing.
+    final cname = File('${site.path}/CNAME');
+    expect(cname.existsSync(), isTrue,
+        reason: 'site/CNAME is what tells the host which domain to serve, and '
+            'without it a deploy lands somewhere the app never points at');
+    expect(cname.readAsStringSync().trim(), host);
+  });
+
   test('every address the app opens is a page the site serves', () {
     final addresses = addressesInLib();
     expect(addresses, isNotEmpty, reason: 'the scan found nothing, so it is '

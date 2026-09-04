@@ -61,8 +61,16 @@ built and *how far* along it is. Update it in the same commit as the work it des
 > hard-codes six `vdodtor.app` addresses into a build that can never update
 > itself, so a renamed page is a dead buy button in every copy ever installed.
 > `site_test.dart` reads `lib/` for every one of those addresses and fails if
-> the site has no page for it. OQ-4 is closed; what is left is a domain and a
-> host, which are not code. And the
+> the site has no page for it. **And it is now published rather than merely
+> written**: `.github/workflows/site.yml` puts `site/` on GitHub Pages on every
+> push that touches it, from a GitHub-hosted runner rather than the self-hosted
+> Mac, because a buy button that stays dead until somebody registers a CI runner
+> is the wrong dependency. `site/CNAME` is where the domain is written down for
+> the host, and `site_test.dart` makes it the same domain the app opens — the
+> app-and-site boundary applied to the address itself, since publishing under
+> the wrong name breaks every button in every copy installed exactly as renaming
+> a page would. OQ-4 is closed; what is left is a domain and a DNS record,
+> which are not code. And the
 > chooser offers a sample project beside New Project — a fifteen-second edit,
 > cut from three gradient shots this repository generates rather than licenses,
 > with a title, a rule, a strapline, a dissolve, a wipe, a look on the middle
@@ -263,7 +271,7 @@ found one at a time. Roughly in the order they unblock each other:
 
 | # | Step | Needs | Where |
 |---|---|---|---|
-| 1 | Publish `site/` at `vdodtor.app` | The domain, and a static host. No build step. | M5 |
+| 1 | Publish `site/` at `vdodtor.app` | The domain, and a DNS record pointing it at GitHub Pages. The host and the deploy are in: `.github/workflows/site.yml`. | M5 |
 | 2 | Replace the development licence signing key | A `keygen` run, and somewhere that is not this repository to keep the private half. Re-sign the shipped packs in the same change. | Packaging |
 | 3 | Developer ID certificate + `notarytool` profile | An Apple Developer account. | Packaging |
 | 4 | Run `tools/package_mac.sh` for real | 2 and 3. Everything else in it has been run. | Packaging |
@@ -2171,12 +2179,36 @@ buy Pro, and export 4K — with no help.
       one pass in `lib/dev/self_test.dart` that **edits nothing** — every other
       builds a timeline in order to measure the engine under it, and this one is
       handed the timeline a stranger gets.
-- [ ] **Publish `site/` at vdodtor.app** — needs the domain and a static host
-      (GitHub Pages, Netlify, Cloudflare Pages: `site/` is a plain directory
-      with no build step, so any of them is a one-time setup). **Until this is
-      done every address in the shipped app is dead**, including the buy button.
-      Then check the six live URLs by hand once; `site_test.dart` proves the
-      pages exist, and nothing but a request proves the host serves them.
+- [~] **Publish `site/` at vdodtor.app** — the deploy is in; what is left is the
+      domain. **Until it resolves every address in the shipped app is dead**,
+      including the buy button, and there is no way to fix that afterwards in a
+      copy already installed.
+      `.github/workflows/site.yml` uploads `site/` to **GitHub Pages** on every
+      push to `master` that touches it, and on demand. It is the one workflow
+      here that runs on a **GitHub-hosted** runner: CI needs the self-hosted Mac
+      because a green build has to mean what a local build means, but the site
+      has no build step at all, and making the buy button wait on a registered
+      runner would be inventing a dependency. `configure-pages` is there only for
+      `enablement`, which turns Pages on through the API, so the first deploy
+      needs nobody to visit a settings screen either.
+      **The domain is written down twice and asserted once.** `site/CNAME` is
+      where the host reads it; a string compiled into the app is where the app
+      reads it; and `site_test.dart` makes them the same, because deploying
+      under the wrong name breaks every button in every installed copy exactly
+      as renaming a page would. It is also why a `github.io` project page is not
+      a fallback worth having: every link, the stylesheet and both icons are
+      **absolute**, so the site works at the root of a domain and nowhere else —
+      served under `/vdodtor/` it is eight unstyled pages linking to nothing.
+      Chosen over Netlify and Cloudflare Pages for one reason: the repository is
+      already here, so it adds no account, no vendor and no second place to look
+      when a page does not appear.
+      Rehearsed locally against `site/` served as a root — all six addresses the
+      app opens return their page, `/download` and its four neighbours through
+      the trailing-slash redirect every static host issues, and the notices and
+      both icons resolve. What is left for the owner: buy `vdodtor.app`, point
+      an `ALIAS`/`A` record at GitHub Pages, and check the six live URLs once —
+      `site_test.dart` proves the pages exist, and nothing but a request proves
+      a host serves them.
 - [ ] **Wire the checkout behind `/pro`** — needs OQ-2 (pricing) and a merchant
       account. Then `site/pro/index.html` becomes a redirect to the hosted
       checkout, and the fulfilment webhook mints keys with
