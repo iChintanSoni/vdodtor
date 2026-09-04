@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/model/time.dart';
 import 'package:vdodtor/ui/timeline/timeline_geometry.dart';
 
+import '../../fixtures.dart';
+
 /// The geometry is the whole of the timeline's arithmetic, and every bug it
 /// can have is one the eye would forgive and the hand would not: a playhead
 /// that lands a frame off, a zoom that walks away from the cursor, a clip
@@ -222,6 +224,91 @@ void main() {
           expect(step.raw % perFrame, 0, reason: '$fps at $px px/s');
         }
       }
+    });
+  });
+
+  group('the scrollbar', () {
+    // 900 px wide, so 784 px of track past the lane headers.
+    const width = 900.0;
+
+    test('says nothing when the whole project fits', () {
+      const g = TimelineGeometry(pxPerSecond: 80);
+      expect(g.scrollbarThumb(secs(6), width), isNull);
+      // Exactly filling the view is still nothing to say.
+      expect(g.scrollbarThumb(Tick((784 / g.pxPerTick).floor()), width),
+          isNull);
+    });
+
+    test('the thumb is the fraction of the film that is on screen', () {
+      const g = TimelineGeometry(pxPerSecond: 80);
+      // Two minutes at 80 px/s is 9600 px of film behind 784 px of window.
+      final thumb = g.scrollbarThumb(secs(120), width)!;
+      expect(thumb.width, closeTo(784 * 784 / 9600, 0.5));
+      expect(thumb.left, 0);
+    });
+
+    test('the thumb moves with the view, and reaches the end', () {
+      const g = TimelineGeometry(pxPerSecond: 80);
+      final content = secs(120);
+      final track = width - TimelineGeometry.headerWidth;
+      final full = g.copyWith(scrollPx: 9600 - track);
+
+      final thumb = full.scrollbarThumb(content, width)!;
+      expect(thumb.left + thumb.width, closeTo(track, 0.5),
+          reason: 'the far end of the film should put the thumb at the far '
+              'end of its track');
+    });
+
+    test('a drag of the thumb is worth `scale` pixels of film', () {
+      const g = TimelineGeometry(pxPerSecond: 80);
+      final content = secs(120);
+      final thumb = g.scrollbarThumb(content, width)!;
+      final track = width - TimelineGeometry.headerWidth;
+
+      // Dragging the thumb the length of its travel is scrolling the film the
+      // length of its reach: the two ends have to meet.
+      final travel = track - thumb.width;
+      expect(travel * thumb.scale, closeTo(9600 - track, 1));
+    });
+
+    test('a thumb never gets too small to grab', () {
+      // Ten hours at full zoom is the shape that would leave a sliver.
+      const g = TimelineGeometry(pxPerSecond: 1200);
+      final thumb = g.scrollbarThumb(secs(36000), width)!;
+      expect(thumb.width, TimelineGeometry.minThumbWidth);
+      expect(thumb.scale, greaterThan(0));
+    });
+
+    test('panning past the end grows the bar rather than leaving it', () {
+      // Nothing clamps a pan at the end of the film, so the reachable extent
+      // is the longer of the film and wherever the view actually is. A thumb
+      // drawn outside its own track would be a bar lying about where you are.
+      final g = const TimelineGeometry(pxPerSecond: 80)
+          .copyWith(scrollPx: 20000);
+      final thumb = g.scrollbarThumb(secs(120), width)!;
+      final track = width - TimelineGeometry.headerWidth;
+      expect(thumb.left, greaterThanOrEqualTo(0));
+      expect(thumb.left + thumb.width, lessThanOrEqualTo(track + 0.5));
+    });
+
+    test('the band is pinned to the bottom, whatever the height', () {
+      // heightFor is clamped by the editor, so a project with many lanes gets
+      // less room than it asked for; the bar has to be findable anyway.
+      for (final height in [120.0, 200.0, 320.0]) {
+        final band = TimelineGeometry.scrollbarBand(width, height);
+        expect(band.bottom, height);
+        expect(band.height, TimelineGeometry.scrollbarHeight);
+        expect(band.left, TimelineGeometry.headerWidth);
+      }
+    });
+
+    test('the lanes make room for it', () {
+      final withBar = TimelineGeometry.heightFor(3);
+      final lanes = TimelineGeometry.rulerHeight +
+          3 * (TimelineGeometry.trackHeight + TimelineGeometry.trackGap) +
+          TimelineGeometry.trackGap;
+      expect(withBar - lanes, TimelineGeometry.scrollbarHeight,
+          reason: 'a bar drawn over the last lane is a bar in the way');
     });
   });
 }

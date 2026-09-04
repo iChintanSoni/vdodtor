@@ -36,6 +36,13 @@ class FakeTransport extends ChangeNotifier implements TimelineTransport {
     positionTicks = ticks;
     notifyListeners();
   }
+
+  /// A film that got shorter — an undone import, a deleted last clip — which
+  /// the engine reports the same way it reports anything else.
+  void setDuration(int ticks) {
+    durationTicks = ticks;
+    notifyListeners();
+  }
 }
 
 void main() {
@@ -198,7 +205,14 @@ void main() {
   group('following the playhead', () {
     const width = 900.0;
 
-    setUp(() => controller.viewportWidth = width);
+    setUp(() {
+      controller.viewportWidth = width;
+      // A film longer than the window. Scrolling is bounded at the end of the
+      // film, so a six-second project in a 784 px track cannot be scrolled at
+      // all — correct, and the state in which none of this is observable:
+      // there is no "off screen" to bring the playhead back from.
+      transport.setDuration(secs(120).raw);
+    });
 
     test('is on by default and keeps the playhead visible', () {
       transport.isPlaying = true;
@@ -338,7 +352,14 @@ void main() {
   group('zooming with no pointer', () {
     const width = 900.0;
 
-    setUp(() => controller.viewportWidth = width);
+    setUp(() {
+      controller.viewportWidth = width;
+      // A film longer than the window. Scrolling is bounded at the end of the
+      // film, so a six-second project in a 784 px track cannot be scrolled at
+      // all — correct, and the state in which none of this is observable:
+      // there is no "off screen" to bring the playhead back from.
+      transport.setDuration(secs(120).raw);
+    });
 
     test('keeps the playhead where it is on screen', () {
       controller.seekTo(secs(3));

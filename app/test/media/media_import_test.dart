@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vdodtor/commands/document_store.dart';
+import 'package:vdodtor/commands/edits.dart';
 import 'package:vdodtor/media/file_access.dart';
 import 'package:vdodtor/media/media_import.dart';
 import 'package:vdodtor/model/ids.dart';
@@ -40,6 +41,69 @@ void main() {
       [for (final p in paths) GrantedFile(path: p, bookmark: bookmark)];
 
   group('placing what came in', () {
+    test('audio makes its own lane when the project has none', () async {
+      // The bug a user found: every lane but the main one has a remove button
+      // on its header, so a project can perfectly well have no audio lane —
+      // and importing a song into one used to put it in the bin, leave the
+      // timeline untouched, and say nothing at all. Three files listed, one
+      // clip, no explanation.
+      final store = DocumentStore(blank());
+      store.run(RemoveTrack(audioTrackId));
+      expect(store.project.trackCountOfKind(TrackKind.audio), 0);
+
+      final importer = importerFor({'/f/song.m4a': audioProbe(seconds: 10)});
+      final result = await importer.import(store, granted(['/f/song.m4a']));
+
+      expect(result.clipsPlaced, 1);
+      expect(result.unplaced, isEmpty);
+      expect(result.notice, isNull);
+
+      final lane = store.project.tracks
+          .singleWhere((t) => t.kind == TrackKind.audio);
+      expect(lane.name, 'Audio 1');
+      expect(lane.clips.single.mediaId, result.added.single.id);
+    });
+
+    test('the lane it makes is undone with the clip', () async {
+      // InsertClips.newTracks' rule: undoing the import must not leave an
+      // empty lane nobody asked for.
+      final store = DocumentStore(blank());
+      store.run(RemoveTrack(audioTrackId));
+      final importer = importerFor({'/f/song.m4a': audioProbe(seconds: 10)});
+      await importer.import(store, granted(['/f/song.m4a']));
+      expect(store.project.trackCountOfKind(TrackKind.audio), 1);
+
+      store.undo();
+      expect(store.project.trackCountOfKind(TrackKind.audio), 0);
+    });
+
+    test('with nowhere to put it, it says so', () async {
+      // The remaining way to be unplaceable: every lane of the kind exists and
+      // is locked. The file is still in the bin — it can be dragged out later
+      // — so it is not a failed import; it is an import the user has to be
+      // told something about.
+      var store = DocumentStore(blank());
+      store.run(RemoveTrack(audioTrackId));
+      for (var i = 0; i < Project.maxTracksOfKind(TrackKind.audio); i++) {
+        store.run(AddTrack(Track.of(
+          id: 'locked-$i',
+          kind: TrackKind.audio,
+          name: 'Audio ${i + 1}',
+          locked: true,
+        )));
+      }
+
+      final importer = importerFor({'/f/song.m4a': audioProbe(seconds: 10)});
+      final result = await importer.import(store, granted(['/f/song.m4a']));
+
+      expect(result.clipsPlaced, 0);
+      expect(result.added, hasLength(1), reason: 'it still reached the bin');
+      expect(result.unplaced.single.displayName, contains('song'));
+      expect(result.failures, isEmpty, reason: 'not a failed import');
+      expect(result.notice, isNotNull,
+          reason: 'a drop that changes nothing must not also say nothing');
+    });
+
     test('a video lands in the bin and on the main track', () async {
       final store = DocumentStore(blank());
       final importer = importerFor({'/f/a.mp4': videoProbe(seconds: 4)});

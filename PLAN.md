@@ -459,7 +459,24 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       Playback moves the playhead from a ticker that runs only while playing, dirtying one
       `RepaintBoundary` — the same discipline `EnginePreview` needed, for the same reason.
       The transport slider is gone: it scrubbed the same playhead over the same range as
-      the ruler now does, and two controls for one value is one of them always wrong
+      the ruler now does, and two controls for one value is one of them always wrong.
+      **Navigating it was then found broken by driving the real app**, in three ways one
+      after another, none of which any existing test could see. macOS does not report a
+      trackpad as a wheel: a two-finger swipe carries an `NSEvent` phase, so the embedder
+      sends `PointerPanZoom*` and a `Listener` handling only `onPointerSignal` hears
+      nothing — the timeline could be panned with a mouse and not with the trackpad of the
+      machine it was written on, and the test that covered it synthesised the one device
+      that worked. Then the embedder **drops the inertia events** after the fingers lift,
+      on the grounds that the framework generates momentum, which `Scrollable` does and a
+      bare `Listener` does not: it stopped dead where every other window on the machine
+      coasts. And scrolling was **unbounded**, so the film could be taken off the left
+      edge into empty space with every gesture that would bring it back looking like the
+      one that had not worked. It now pans with momentum on a friction simulation, locks
+      the axis once per gesture rather than picking the larger one per event, stops with
+      the last frame against the right edge, and **carries a scrollbar** — which is what
+      says the project continues past the window at all. A vertical swipe deliberately
+      does nothing: time runs across, and the wheel maps its one axis onto that only
+      because it has no other to offer
 - [x] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
       on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
       repaints from a ticker that runs only during playback and dirties a single
