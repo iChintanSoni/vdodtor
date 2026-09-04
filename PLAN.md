@@ -2457,6 +2457,32 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       it found it"; the keyed frame is black but for the shape on the lane
       above, which is a key belonging to the clip that carries it; and the bars
       turn black at the same moment, which is a keyed layer containing.
+      **And measured on real footage, which is what settles the defaults.**
+      Two green-screen clips a person would actually key, plus the same one
+      relit to fall off by 2.3:1 across the frame with grain on top — a badly
+      lit screen, and worse than most. With the eyedropper sampling only the
+      *brightest* corner, the defaults take the whole screen including the
+      dimmest one, and the matte is solid white on solid black with no grey
+      mush anywhere in it.
+      The numbers say why, and they are the argument for the arithmetic above
+      rather than a restatement of it. Measured from the sampled colour, as a
+      fraction of its own distance from grey:
+
+      | sample | chroma ÷ luma | plain Cb/Cr |
+      |---|---|---|
+      | the lit corner it sampled | 0.000 | 0.000 |
+      | the dimmest corner | **0.018** | **0.572** |
+      | skin | 1.071 | 1.064 |
+
+      The whole screen lands inside 0.018, so a tolerance of 0.20 covers it
+      ten times over and skin is fifty times further away — which is why the
+      slider has somewhere to go. On plain Cb/Cr the dim corner is at 0.572,
+      so keying the whole screen needs a tolerance near 0.6 and skin is only
+      1.8x beyond that: no room, and the first dark fold of a face goes with
+      the background. **The defaults stand unchanged.**
+      `spill` at 1.0 earns itself in the same set: at 0.0 the hair carries a
+      bright green rim and a green cast all the way through it, and at 1.0
+      both are gone with the hair still grey-brown rather than darkened.
 - [x] **What is deliberately not in it.** Spatial matte controls — shrink,
       grow, edge blur, a garbage matte — are a second render pass and a
       different feature: a chroma-space key with a despill is what makes a
@@ -2471,9 +2497,9 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
 one click of the eyedropper, shows the lane underneath through it — in the
 preview *and* in the exported file, with the two compared by the parity test
 rather than by eye. **Met**, by `parity_keyed`: one keyed timeline through both
-clocks against one committed picture. What is left is somebody sitting down
-with real footage and deciding whether the defaults are the right defaults,
-which is a judgement rather than a test.
+clocks against one committed picture — and by two real green-screen clips and
+a deliberately badly lit one, on which the defaults key cleanly with no
+tuning at all. See the tests item above for the numbers.
 
 ---
 
