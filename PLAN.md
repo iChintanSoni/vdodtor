@@ -2483,6 +2483,41 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
       `spill` at 1.0 earns itself in the same set: at 0.0 the hair carries a
       bright green rim and a green cast all the way through it, and at 1.0
       both are gone with the hair still grey-brown rather than darkened.
+      **And it holds while things move**, which a still cannot say. Runs of 72
+      and 90 consecutive frames through the badly lit clip and the portrait
+      one, with the colour picked once at the first frame and never touched
+      again — which is what a person does.
+      Nothing crawls. Over 72 frames of a grainy, unevenly lit screen: **not
+      one pixel** of a static screen corner ever lifted off transparent, not
+      one pixel of the subject ever came off opaque, and **zero** pixels
+      anywhere flipped end to end between consecutive frames. The edge band
+      stays between 0.16% and 0.22% of the frame with a standard deviation of
+      0.013% — it breathes with the length of the silhouette as the head
+      turns, which is the picture moving rather than the matte. A map of every
+      pixel whose alpha ever changed is exactly the band the silhouette swept,
+      and black everywhere else; on the portrait clip **100%** of the pixels
+      that moved lie inside it.
+      The number that says why is that the matte moves *less* than the picture
+      it is taken from: mean |Δmatte| 0.45 against mean |Δplate| 1.28 per pixel
+      per frame. A key with no state between frames cannot drift on its own —
+      it is a pure function of the pixel — so the only thing that could make it
+      chatter is the source crossing the threshold, and it is not close enough
+      to the threshold to do that.
+      **The one case worth being nervous about is the dark one**, because
+      dividing chroma by luma is exactly the step that could amplify noise
+      where there is little luma to divide by. So a third clip was made with
+      the shadows crushed until the hair and beard are literally black, and
+      grain laid over that: **140,187 pixels of the subject at plate luma 0–8**
+      never moved by more than 8 and never fell below alpha 248, and **zero**
+      background pixels anywhere in the frame ever flickered by more than 24.
+      The floor under the divisor does what it is there for — a very dark pixel
+      reads as less saturated than it measures and is *kept*, which is the safe
+      direction.
+      None of this is a test in the suite, and deliberately: the key carries no
+      state between frames, so there is nothing temporal for a test to guard
+      that `vd_key_test.c` does not already pin per pixel. A moving fixture
+      would cost a slow test to assert a property the shape of the code already
+      gives.
 - [x] **What is deliberately not in it.** Spatial matte controls — shrink,
       grow, edge blur, a garbage matte — are a second render pass and a
       different feature: a chroma-space key with a despill is what makes a
@@ -2497,9 +2532,10 @@ v1 has shipped, and what lands here is what the first thousand users ask for.
 one click of the eyedropper, shows the lane underneath through it — in the
 preview *and* in the exported file, with the two compared by the parity test
 rather than by eye. **Met**, by `parity_keyed`: one keyed timeline through both
-clocks against one committed picture — and by two real green-screen clips and
-a deliberately badly lit one, on which the defaults key cleanly with no
-tuning at all. See the tests item above for the numbers.
+clocks against one committed picture — and by two real green-screen clips, a
+deliberately badly lit one and a crushed-shadow one, on which the defaults key
+cleanly with no tuning at all and the matte holds still across runs of 72 and
+90 frames. See the tests item above for the numbers.
 
 ---
 
