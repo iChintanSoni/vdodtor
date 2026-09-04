@@ -97,6 +97,11 @@ Map<String, Object?> _trackToJson(Track t) => {
             if (!c.transform.isIdentity)
               'transform': _transformToJson(c.transform),
             if (!c.color.isNeutral) 'color': _gradeToJson(c.color),
+            // `isKeying`, not `!isNone`: a colour at no tolerance removes
+            // nothing, and a file records what happens rather than what was
+            // clicked on the way there — the rule an animation and a
+            // transition already take.
+            if (c.key.isKeying) 'key': _keyToJson(c.key),
             if (!c.audio.isUnity) 'audio': _audioToJson(c.audio),
             // `isAnimated`, not `isStill`: a preset with no length to run in
             // does nothing, and a file records what happens rather than what
@@ -146,6 +151,25 @@ Map<String, Object?> _gradeToJson(ClipColor c) => {
       if (c.look.isNotEmpty && c.lookStrength != 1)
         'lookStrength': c.lookStrength,
     };
+
+/// The colour and only the sliders that were moved off their defaults, so a
+/// key somebody picked and left alone writes one line.
+Map<String, Object?> _keyToJson(ClipKey k) => {
+      'color': k.color,
+      'tolerance': k.tolerance,
+      if (k.softness != ClipKey.defaultSoftness) 'softness': k.softness,
+      if (k.spill != ClipKey.defaultSpill) 'spill': k.spill,
+    };
+
+ClipKey _keyFromJson(Map<String, Object?> json) => ClipKey(
+      // A file with a key object but no colour is a key on black, which is
+      // grey, which removes nothing — the same reading a hand-edited grade
+      // gets, and the safe one: the clip is whole rather than gone.
+      color: json['color'] is int ? json['color']! as int : 0,
+      tolerance: _double(json, 'tolerance', 0),
+      softness: _double(json, 'softness', ClipKey.defaultSoftness),
+      spill: _double(json, 'spill', ClipKey.defaultSpill),
+    );
 
 ClipColor _gradeFromJson(Map<String, Object?> json) => ClipColor(
       // A slider this version has never heard of is simply not read, which is
@@ -562,6 +586,10 @@ Track _trackFromJson(Map<String, Object?> json, String at) {
       color: c['color'] == null
           ? ClipColor.neutral
           : _gradeFromJson(_asMap(c['color'], '$where.color')).clamped(),
+      // Clamped on the way in on the same terms, and for the same reason.
+      key: c['key'] == null
+          ? ClipKey.none
+          : _keyFromJson(_asMap(c['key'], '$where.key')).clamped(),
       // Clamped on the way in: a file can always claim a fade longer than the
       // clip carrying it, whether through a hand edit or a version of this
       // program that did not clamp.

@@ -113,6 +113,22 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _syncQueued = false;
   String? _notice;
 
+  /// The eyedropper, while it is waiting for a click on the preview. Null the
+  /// rest of the time, which is what the stage reads to decide whether it is
+  /// taking clicks.
+  Completer<int?>? _pick;
+
+  /// Whether the preview is showing mattes, and which clip's key that was
+  /// turned on for.
+  ///
+  /// Both live here rather than in the document, because a view mode is a
+  /// property of the person looking — see `VdViewMode` in vd_engine.h. The
+  /// clip id is what lets it turn itself off when the selection moves:
+  /// somebody who leaves it on and comes back to a black-and-white editor has
+  /// a broken app rather than a debug view.
+  bool _matteView = false;
+  String? _matteClipId;
+
   DocumentStore get _store => widget.open.store;
 
   @override
@@ -142,6 +158,7 @@ class _EditorScreenState extends State<EditorScreen> {
         store: _store,
         transport: EngineTransport(engine),
       )..unreachableMediaIds = widget.open.unreachableMediaIds;
+      timeline.addListener(_onSelectionChanged);
       setState(() {
         _engine = engine;
         _timeline = timeline;
@@ -206,6 +223,11 @@ class _EditorScreenState extends State<EditorScreen> {
         // panel — and on the same terms: it puts the clip back the way it
         // found it, so what the passes below dump is about themselves.
         await runLookSelfTest(engine, _store);
+        // And after both, because a key is measured on the shot as it was
+        // shot: it has to run on a clip nothing has graded, or what it dumps
+        // is a question about the grade above it. It puts the clip back whole
+        // on the way out.
+        await runKeySelfTest(engine, _store);
         // After the grading passes, because it is the only one that changes
         // how *long* a clip is: the lane repacks around it, so anything
         // measured against a clip's start has to be measured before it. It
@@ -377,7 +399,13 @@ class _EditorScreenState extends State<EditorScreen> {
         EditorAction.detachAudio: () => _timeline?.detachAudio(),
         EditorAction.delete: () => _timeline?.deleteSelected(),
         EditorAction.selectAll: () => _timeline?.selectAll(),
-        EditorAction.clearSelection: () => _timeline?.clearSelection(),
+        // Escape cancels a pick before it clears a selection: the eyedropper
+        // is the more recent thing the user started, and clearing the
+        // selection would take away the panel they started it from.
+        EditorAction.clearSelection: () {
+          if (_cancelPick()) return;
+          _timeline?.clearSelection();
+        },
         EditorAction.copy: () => _timeline?.copySelection(),
         EditorAction.cut: () => _timeline?.cutSelection(),
         EditorAction.paste: () => _timeline?.paste(),
@@ -402,11 +430,73 @@ class _EditorScreenState extends State<EditorScreen> {
     unawaited(_drops?.cancel());
     _store.removeListener(_onDocumentChanged);
     _engine?.removeListener(_onEngineChanged);
+    _timeline?.removeListener(_onSelectionChanged);
     _timeline?.dispose();
+    // A pick left waiting when the editor closes has to be told, or whatever
+    // awaited it never returns.
+    _pick?.complete(null);
     unawaited(_engine?.dispose());
     _thumbnails.dispose();
     _waveforms.dispose();
     super.dispose();
+  }
+
+  // --- the chroma key's two view-side controls -------------------------------
+
+  /// Puts the editor into picking mode and waits for a click on the preview.
+  ///
+  /// The colour comes back through the engine, which renders that one frame
+  /// with every grade, look and key suppressed — so what is picked is the
+  /// screen as the camera recorded it rather than as the grade left it, and a
+  /// key already on has not removed the thing being pointed at.
+  Future<int?> _pickKeyColour() {
+    // A second press replaces the first rather than stacking: the button is
+    // still there while picking, and two live completers would leave one
+    // waiting forever.
+    _pick?.complete(null);
+    final pick = Completer<int?>();
+    setState(() => _pick = pick);
+    return pick.future;
+  }
+
+  /// True if there was a pick to cancel, which is what lets Escape fall
+  /// through to clearing the selection when there was not.
+  bool _cancelPick() {
+    final pick = _pick;
+    if (pick == null) return false;
+    setState(() => _pick = null);
+    pick.complete(null);
+    return true;
+  }
+
+  void _pickAt(double u, double v) {
+    final pick = _pick;
+    if (pick == null) return;
+    setState(() => _pick = null);
+    pick.complete(_engine?.pickColor(u, v));
+  }
+
+  void _setMatteView(bool on) {
+    final engine = _engine;
+    if (engine == null) return;
+    setState(() {
+      _matteView = on;
+      _matteClipId = on ? _timeline?.selectedClip?.id : null;
+    });
+    engine.view = on ? EngineViewMode.matte : EngineViewMode.normal;
+  }
+
+  /// Turns the matte view off when the thing it was turned on for stops being
+  /// what is selected, or stops being keyed.
+  void _onSelectionChanged() {
+    if (!_matteView) return;
+    final selected = _timeline?.selectedClip;
+    if (selected != null &&
+        selected.id == _matteClipId &&
+        selected.key.isKeying) {
+      return;
+    }
+    _setMatteView(false);
   }
 
   @override
@@ -462,6 +552,8 @@ class _EditorScreenState extends State<EditorScreen> {
                                       store: _store,
                                       onImport: () =>
                                           unawaited(_importFromPicker()),
+                                      picking: _pick != null,
+                                      onPick: _pickAt,
                                     ),
                         ),
                         if (_timeline != null) ...[
@@ -478,6 +570,11 @@ class _EditorScreenState extends State<EditorScreen> {
                               timeline: _timeline!,
                               onLoadLook:
                                   widget.lookLibrary == null ? null : _loadLook,
+                              onPickKeyColour:
+                                  engine == null ? null : _pickKeyColour,
+                              matteView: _matteView,
+                              onMatteView:
+                                  engine == null ? null : _setMatteView,
                               tier: widget.licensing.entitlement.tier,
                               onGetPro: () => unawaited(showLicenceDialog(
                                   context,
@@ -586,11 +683,20 @@ class _Stage extends StatelessWidget {
     required this.engine,
     required this.store,
     required this.onImport,
+    this.picking = false,
+    this.onPick,
   });
 
   final PreviewEngine engine;
   final DocumentStore store;
   final VoidCallback onImport;
+
+  /// Whether the next click on the preview is an eyedropper rather than
+  /// nothing at all.
+  final bool picking;
+
+  /// Where it landed, normalised from the top left of the frame.
+  final void Function(double u, double v)? onPick;
 
   @override
   Widget build(BuildContext context) {
@@ -622,6 +728,46 @@ class _Stage extends StatelessWidget {
                     const Text('or drop files anywhere in this window',
                         style: TextStyle(fontSize: 11, color: VdColors.dim)),
                   ],
+                ),
+              ),
+            // The eyedropper takes over the preview while it is armed.
+            //
+            // The mapping from a click to a point in the frame is one
+            // division and no fit arithmetic, because the texture fills this
+            // AspectRatio exactly: the box is already the project's own shape,
+            // so the preview's top left *is* the frame's.
+            if (picking && onPick != null)
+              Positioned.fill(
+                child: LayoutBuilder(
+                  builder: (context, constraints) => MouseRegion(
+                    cursor: SystemMouseCursors.precise,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (details) => onPick!(
+                        (details.localPosition.dx / constraints.maxWidth)
+                            .clamp(0.0, 1.0),
+                        (details.localPosition.dy / constraints.maxHeight)
+                            .clamp(0.0, 1.0),
+                      ),
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: Container(
+                          margin: const EdgeInsets.only(top: 10),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: VdColors.panel,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: VdColors.accent),
+                          ),
+                          child: const Text(
+                              'Click the background colour  ·  Esc to cancel',
+                              style: TextStyle(
+                                  fontSize: 11, color: VdColors.text)),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
           ],

@@ -114,6 +114,7 @@ EngineTimeline engineTimelineFor(Project project) {
         },
         transform: _engineTransformFor(transform),
         color: _engineColorFor(clip.color),
+        key: _engineKeyFor(clip.key),
         animation: _engineAnimationFor(clip.animation),
         transition: _engineTransitionFor(clip.transition),
       ));
@@ -153,6 +154,16 @@ EngineTransform _engineTransformFor(ClipTransform transform) => EngineTransform(
 /// below. There is no work to save by leaving a neutral grade out: a zeroed
 /// struct *is* the neutral grade, and the compositor already asks whether
 /// there is anything to do before it does any.
+/// The key, straight across. A colour with no hue and a tolerance of nothing
+/// are both "no key" on the far side too, so there is nothing to decide here —
+/// which is what having one gate rather than a gate and a flag buys.
+EngineKey _engineKeyFor(ClipKey key) => EngineKey(
+      color: key.color,
+      tolerance: key.tolerance,
+      softness: key.softness,
+      spill: key.spill,
+    );
+
 EngineColor _engineColorFor(ClipColor color) => EngineColor(
       brightness: color.brightness,
       contrast: color.contrast,
