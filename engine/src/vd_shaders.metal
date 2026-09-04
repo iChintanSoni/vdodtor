@@ -57,6 +57,31 @@ struct VdLayerUniforms {
   // How far towards the look to go: 0 is the shot as it was graded, 1 is the
   // look at full strength.
   float lut_strength;
+  // 0 for a layer nobody keyed, and then the matte is skipped entirely — the
+  // same guarantee `graded` and `lut_size` give, and for the same reason: an
+  // unkeyed fragment takes the path it took before this shader learned about
+  // keying, so the golden frames cannot move for a feature nobody used.
+  //
+  // Placed here rather than beside the floats below it because a float2 wants
+  // an 8-byte offset and this is what puts one there. See LayerUniforms in
+  // vd_compositor.mm, which mirrors this byte for byte.
+  uint keyed;
+  // The key colour's chroma per unit of its own luma, the unit vector along
+  // it, and one over its length. All three are worked out on the CPU by
+  // vd_key_matte — see vd_key.h, where what a key *means* lives and can be
+  // asserted on numbers.
+  float2 key_chromaticity;
+  float2 key_axis;
+  float key_inv_length;
+  // How far from the key colour, as a fraction of the way to grey, still
+  // counts as background — and how wide the ramp out of it is.
+  float key_tolerance;
+  float key_softness;
+  // How much of the key's own colour to pull out of what is kept.
+  float key_spill;
+  // Draws the layer's alpha as opaque luminance instead of its picture. A
+  // view mode, set on every layer at once by the engine and never by a clip.
+  uint matte;
 };
 
 struct VertexOut {
@@ -135,6 +160,71 @@ static inline float3 ycbcr_to_rgb(float y, float cb, float cr, float kr,
   return clamp(rgb, 0.0, 1.0);
 }
 
+// --- the key ---------------------------------------------------------------
+// Mirrors vd_key_apply in vd_key.c, which is where the argument for all of it
+// lives and where it is asserted on numbers. vd_compositor_test.c checks that
+// this agrees with that file on real pixels, so the two cannot drift.
+
+// The BT.709 luma weights and the two chroma denominators derived from them,
+// 2(1-Kr) and 2(1-Kb). Spelled out here because a shader cannot include
+// vd_color.h; vd_key.c derives them, and the compositor test is what keeps the
+// two sets of digits honest.
+constant float3 vd_luma_weights = float3(0.2126, 0.7152, 0.0722);
+constant float vd_chroma_r = 1.5748;
+constant float vd_chroma_b = 1.8556;
+
+// The darkest a pixel may be before its luma stops being divided into its
+// chroma. Below this there is nothing to divide by and the noise is the hue.
+constant float vd_key_min_luma = 0.02;
+
+static inline float2 vd_chroma(float3 rgb, float y) {
+  return float2((rgb.b - y) / vd_chroma_b, (rgb.r - y) / vd_chroma_r);
+}
+
+// How opaque this fragment is under the layer's key, with the colour despilled
+// in place. 1 for a layer nobody keyed, which is almost all of them.
+static inline float vd_key(thread float3& rgb, constant VdLayerUniforms& u) {
+  if (u.keyed == 0u) return 1.0;
+
+  const float y = dot(rgb, vd_luma_weights);
+  const float2 c = vd_chroma(rgb, y);
+
+  // Brightness divided out of both terms, then the distance taken as a
+  // fraction of the key's own distance from grey — so the shadow at the bottom
+  // of a screen and the hot spot under the key light are the same colour, and
+  // `tolerance` means the same thing on a blue screen as on a green one.
+  const float2 n = c / max(y, vd_key_min_luma);
+  const float d = length(n - u.key_chromaticity) * u.key_inv_length;
+
+  const float alpha =
+      u.key_softness <= 0.0
+          ? (d >= u.key_tolerance ? 1.0 : 0.0)
+          : smoothstep(u.key_tolerance, u.key_tolerance + u.key_softness, d);
+
+  // The despill, on the colour as it actually is rather than on the normalised
+  // copy, and at constant luma: taking green off the green channel would trade
+  // a green halo for a grey one.
+  const float p = dot(c, u.key_axis);
+  if (u.key_spill > 0.0 && p > 0.0) {
+    const float2 s = c - (u.key_spill * p) * u.key_axis;
+    const float r = y + vd_chroma_r * s.y;
+    const float b = y + vd_chroma_b * s.x;
+    const float g = (y - vd_luma_weights.r * r - vd_luma_weights.b * b) /
+                    vd_luma_weights.g;
+    rgb = clamp(float3(r, g, b), 0.0, 1.0);
+  }
+  return alpha;
+}
+
+// What a layer contributes, premultiplied — or its matte, when that is what is
+// being looked at. Opaque in that case, so the black paints over what is
+// underneath instead of showing through it.
+static inline float4 vd_emit(float3 rgb, float alpha,
+                             constant VdLayerUniforms& u) {
+  if (u.matte != 0u) return float4(alpha, alpha, alpha, 1.0);
+  return float4(rgb * alpha, alpha);
+}
+
 constexpr sampler vd_lut_sampler(filter::linear, address::clamp_to_edge);
 
 // The look: an arbitrary map from colour to colour, which is the half of a
@@ -198,9 +288,12 @@ fragment float4 vd_fragment_nv12(VertexOut in [[stage_in]],
   float y = luma.sample(vd_sampler, in.uv).r;
   float2 cbcr = chroma.sample(vd_sampler, in.uv).rg;
   float3 rgb = ycbcr_to_rgb(y, cbcr.x, cbcr.y, u.kr, u.kb, u.full_range != 0u);
+  // The key runs on the shot as it was shot, before the grade: measured after
+  // one, every slider in the colour panel would secretly be a keying control.
+  const float keyed = vd_key(rgb, u);
   rgb = vd_grade(rgb, u, lut);
   // Premultiplied, to match the blend state.
-  return float4(rgb * u.opacity, u.opacity);
+  return vd_emit(rgb, u.opacity * keyed, u);
 }
 
 // Software decode: three separate planes.
@@ -214,9 +307,10 @@ fragment float4 vd_fragment_yuv420p(VertexOut in [[stage_in]],
   float y = luma.sample(vd_sampler, in.uv).r;
   float u_ = cb.sample(vd_sampler, in.uv).r;
   float v_ = cr.sample(vd_sampler, in.uv).r;
-  float3 rgb = vd_grade(
-      ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u), u, lut);
-  return float4(rgb * u.opacity, u.opacity);
+  float3 rgb = ycbcr_to_rgb(y, u_, v_, u.kr, u.kb, u.full_range != 0u);
+  const float keyed = vd_key(rgb, u);
+  rgb = vd_grade(rgb, u, lut);
+  return vd_emit(rgb, u.opacity * keyed, u);
 }
 
 // --- blur fill --------------------------------------------------------------
@@ -245,9 +339,22 @@ fragment float4 vd_fragment_texture(VertexOut in [[stage_in]],
                                     texture2d<float> source [[texture(0)]],
                                     texture3d<float> lut [[texture(3)]]) {
   if (vd_hidden(in.quad, u.hide)) discard_fragment();
-  const float4 texel =
-      vd_grade_premultiplied(source.sample(vd_sampler, in.uv), u, lut);
+  float4 texel = source.sample(vd_sampler, in.uv);
+
+  // A still or a sticker arrives with an alpha of its own, and a key is a
+  // second one to multiply into it. Undone and redone around the premultiply
+  // for vd_grade_premultiplied's reason: the arithmetic below is defined on
+  // the colour a pixel *is*, not on that colour scaled by how present it is.
+  if (u.keyed != 0u && texel.a > 0.0) {
+    float3 straight = texel.rgb / texel.a;
+    const float keyed = vd_key(straight, u);
+    texel = float4(straight * (texel.a * keyed), texel.a * keyed);
+  }
+
+  texel = vd_grade_premultiplied(texel, u, lut);
   // Already premultiplied by the pass that produced it, so opacity scales
   // both halves together.
-  return texel * u.opacity;
+  texel *= u.opacity;
+  if (u.matte != 0u) return float4(texel.a, texel.a, texel.a, 1.0);
+  return texel;
 }

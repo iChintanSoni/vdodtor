@@ -41,14 +41,25 @@ struct LayerUniforms {
   uint32_t graded;
   uint32_t lut_size;
   float lut_strength;
+  // `keyed` sits before the pairs rather than after them because Metal gives a
+  // float2 an 8-byte alignment: putting it last would leave a hole here and
+  // not there, and the two layouts would part company silently.
+  uint32_t keyed;
+  float key_chromaticity[2];
+  float key_axis[2];
+  float key_inv_length;
+  float key_tolerance;
+  float key_softness;
+  float key_spill;
+  uint32_t matte;
   // Metal rounds a struct up to its own 16-byte alignment and this mirror
-  // would stop at 156 bytes; setFragmentBytes copies exactly what it is told
+  // would stop at 196 bytes; setFragmentBytes copies exactly what it is told
   // to, so without this the GPU is handed a buffer shorter than the layout it
   // was compiled against.
-  uint32_t padding_[1];
+  uint32_t padding_[3];
 };
-static_assert(sizeof(LayerUniforms) == 160,
-              "VdLayerUniforms in vd_shaders.metal is 160 bytes; this mirror "
+static_assert(sizeof(LayerUniforms) == 208,
+              "VdLayerUniforms in vd_shaders.metal is 208 bytes; this mirror "
               "has drifted from it");
 
 static float clamp01(float v) {
@@ -134,6 +145,26 @@ void set_grade(LayerUniforms* u, const VdColorAdjust& adjust) {
     u->grade[row][3] = t.offset[row];
   }
   u->graded = 1;
+}
+
+// The key, resolved into what the shader needs once per layer rather than once
+// per fragment — the division of labour `set_grade` makes, for the same reason.
+// A layer nobody keyed takes the path it took before this existed.
+void set_key(LayerUniforms* u, const VdChromaKey& key) {
+  const VdKeyMatte matte = vd_key_matte(&key);
+  if (vd_key_matte_is_off(&matte)) {
+    u->keyed = 0;
+    return;
+  }
+  u->key_chromaticity[0] = matte.chromaticity.cb;
+  u->key_chromaticity[1] = matte.chromaticity.cr;
+  u->key_axis[0] = matte.axis.cb;
+  u->key_axis[1] = matte.axis.cr;
+  u->key_inv_length = matte.inv_length;
+  u->key_tolerance = matte.tolerance;
+  u->key_softness = matte.softness;
+  u->key_spill = matte.spill;
+  u->keyed = 1;
 }
 
 // The other half, and the same bargain: a layer with no look on it takes the
@@ -570,9 +601,13 @@ static void draw_full_frame(id<MTLRenderCommandEncoder> encoder,
                             id<MTLRenderPipelineState> pipeline,
                             id<MTLTexture> source, id<MTLTexture> lut,
                             float opacity, float step_x, float step_y,
-                            const float hide[4]) {
+                            const float hide[4], bool matte) {
   LayerUniforms u = {};
   if (hide) memcpy(u.hide, hide, sizeof(u.hide));
+  // Zeroed uniforms mean no key here — the backdrop was keyed, or rather was
+  // not, in the pass that produced the texture. The matte flag does carry,
+  // because it is about how the whole frame is being looked at.
+  u.matte = matte ? 1u : 0u;
   u.rect[0] = 0.0f;
   u.rect[1] = 0.0f;
   u.rect[2] = 1.0f;
@@ -644,11 +679,24 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       const int32_t crop_w = (int32_t)(disp_w * transform.crop_w + 0.5);
       const int32_t crop_h = (int32_t)(disp_h * transform.crop_h + 0.5);
 
+      // **A keyed layer contains, whatever its fit says.** Filling a bar with
+      // a blurred copy of a background the user has just declared is not there
+      // floods the frame with the very colour being removed — and the backdrop
+      // goes into an offscreen cleared to opaque black and is then drawn
+      // full-frame, so the holes a key put in it would paint black over every
+      // layer underneath. The substitution happens here, once, rather than at
+      // the `wants_blur` test alone: VD_FIT_BLUR is not VD_FIT_CONTAIN to
+      // compute_fit, so a keyed layer that skipped only the blur passes would
+      // still be laid out as cover. See VdLayer::key.
+      const VdFitMode fit_mode =
+          (layer.fit == VD_FIT_BLUR && !vd_key_is_off(&layer.key))
+              ? VD_FIT_CONTAIN
+              : layer.fit;
+
       // Blur fill shows the whole frame, like contain, and fills what is left
       // over with a blurred copy instead of black.
-      const bool wants_blur = layer.fit == VD_FIT_BLUR;
-      const VdFitMode foreground_fit =
-          wants_blur ? VD_FIT_CONTAIN : layer.fit;
+      const bool wants_blur = fit_mode == VD_FIT_BLUR;
+      const VdFitMode foreground_fit = wants_blur ? VD_FIT_CONTAIN : fit_mode;
 
       FitRect fit =
           compute_fit(crop_w, crop_h, c->width, c->height, foreground_fit);
@@ -696,6 +744,8 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
       uniforms.opacity = opacity;
       set_grade(&uniforms, layer.color);
       set_look(&uniforms, layer.look);
+      set_key(&uniforms, layer.key);
+      uniforms.matte = layer.matte_view ? 1u : 0u;
       id<MTLTexture> lut = lut_texture_for(c, layer.look);
       uniforms.quarter_turns = (uint32_t)turns;
       // The decoder read the range from the stream; the pixel buffer's own
@@ -754,6 +804,10 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         background.rotation[0] = 1.0f;  // the extra turn belongs to the clip
         background.rotation[1] = 0.0f;
         background.opacity = 1.0f;      // applied once, at the final draw
+        // The offscreen is a colour source for the blur, so it is drawn as a
+        // picture even when the frame is being looked at as a matte; the flag
+        // is put back on the draw that composites it.
+        background.matte = 0;
         // The backdrop is rendered *whole* and cut at the final composite
         // below, not here. Cutting it here would leave the hidden part of the
         // offscreen texture as opaque black, and that black is then drawn
@@ -784,13 +838,13 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         id<MTLRenderCommandEncoder> across =
             begin_pass(commands, c->blur_b, true);
         draw_full_frame(across, c->pipeline_blur, c->blur_a, c->lut_identity,
-                        1.0f, step_x, 0.0f, nullptr);
+                        1.0f, step_x, 0.0f, nullptr, false);
         [across endEncoding];
 
         id<MTLRenderCommandEncoder> down =
             begin_pass(commands, c->blur_a, true);
         draw_full_frame(down, c->pipeline_blur, c->blur_b, c->lut_identity,
-                        1.0f, 0.0f, step_y, nullptr);
+                        1.0f, 0.0f, step_y, nullptr, false);
         [down endEncoding];
 
         // Back to the output, keeping whatever earlier layers drew.
@@ -801,7 +855,8 @@ int32_t vd_compositor_render(VdCompositor* c, const VdLayer* layers,
         // graded and doing it again would leave the bars twice as far from
         // neutral as the picture in front of them.
         draw_full_frame(encoder, c->pipeline_texture, c->blur_a,
-                        c->lut_identity, opacity, 0.0f, 0.0f, uniforms.hide);
+                        c->lut_identity, opacity, 0.0f, 0.0f, uniforms.hide,
+                        layer.matte_view);
       }
 
       [encoder setRenderPipelineState:pipeline];

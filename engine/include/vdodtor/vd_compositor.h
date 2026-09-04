@@ -16,6 +16,7 @@
 
 #include "vdodtor/vd_color.h"
 #include "vdodtor/vd_decoder.h"
+#include "vdodtor/vd_key.h"
 #include "vdodtor/vd_lut.h"
 #include "vdodtor/vd_time.h"
 
@@ -153,6 +154,42 @@ typedef struct {
   // Applied after `color`, which is the order a colourist works in: correct
   // the shot, then style it. See vd_lut.h.
   VdColorLook look;
+
+  // What this layer removes from itself. A zeroed VdChromaKey removes nothing,
+  // so this is another field a caller can leave alone — see vd_key.h.
+  //
+  // Applied **before** `color` and `look`, and that is the decision. A key
+  // measured on a graded picture makes every slider in the colour panel above
+  // it secretly a keying control: turn up the contrast and the matte closes
+  // over. The despill runs there too, so what the grade is handed is a
+  // corrected plate.
+  //
+  // **A keyed layer is contained, whatever `fit` says.** A blur fill paints
+  // the bars with a blurred copy of this same picture, and filling them with a
+  // copy of a background the user has just declared is not there is a
+  // contradiction — it floods the frame with the very colour being removed.
+  // Worse, the backdrop is rendered into an offscreen cleared to opaque black
+  // and then drawn full-frame, so the holes a key put in it would paint black
+  // over every layer underneath. VD_FIT_BLUR therefore reads as
+  // VD_FIT_CONTAIN here. A rendering rule and not a document change: nothing
+  // rewrites the fit the user chose.
+  VdChromaKey key;
+
+  // Draws this layer's alpha as luminance instead of its picture — white where
+  // it reaches the frame, black where it does not — which is how somebody
+  // sees what a tolerance is actually doing.
+  //
+  // It is a property of the person looking rather than of the document, so
+  // nothing on a clip carries it: `vd_engine_set_view` sets it on every layer
+  // at once, and vd_export builds its own engine that never calls that. See
+  // VdViewMode in vd_engine.h for why it lives there and not in the render
+  // list.
+  //
+  // Opaque, so the black paints over what is underneath rather than letting it
+  // show through a hole — a matte you can see past is not a matte. And it is
+  // the alpha *after* opacity, because the question it answers is how much of
+  // this layer reaches the frame.
+  bool matte_view;
 } VdLayer;
 
 // Creates a compositor rendering `width` x `height` BGRA frames.

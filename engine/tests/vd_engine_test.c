@@ -10,6 +10,7 @@
 #include <pthread.h>
 
 #include "vdodtor/vd_audio.h"
+#include "vdodtor/vd_key.h"
 #include "vdodtor/vd_lut.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -2299,6 +2300,298 @@ static void test_audio_follows_a_seek(void) {
   vd_engine_destroy(e);
 }
 
+
+// --- the chroma key ---------------------------------------------------------
+// What a key means is pinned in vd_key_test.c and that the shader does the same
+// arithmetic is pinned in vd_compositor_test.c. What is left for here is the
+// engine's own half: a clip carries a key, it survives an edit, it is not a
+// function of time, and the two things that are about *looking* rather than
+// about the document — the matte view and the eyedropper — live on the engine
+// and reach every layer at once.
+
+// green_screen.mp4: an orange subject in front of a screen whose light falls
+// off by half from right to left. See engine/tests/media/generate.sh.
+static const int SUBJECT[3] = {225, 112, 48};
+// The middle of that gradient, which is what an eyedropper on the screen gives.
+#define SCREEN_KEY 0x001F791Du
+// And the screen as it is decoded just above the subject, which is where the
+// eyedropper tests point.
+static const int SCREEN_ABOVE_SUBJECT[3] = {37, 153, 37};
+
+static VdChromaKey screen_key(void) {
+  VdChromaKey key = vd_key_none();
+  key.color = SCREEN_KEY;
+  key.tolerance = 0.2f;
+  key.softness = 0.15f;
+  key.spill = 1.0f;
+  return key;
+}
+
+static void test_a_key_on_a_clip_reaches_the_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.key = screen_key();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.03, 0.5, BLACK, "the dark end of the screen");
+  check_frame_pixel_is(e, 0.97, 0.5, BLACK, "the lit end of the screen");
+  check_frame_is(e, SUBJECT, "and the subject is still standing there");
+
+  // And off again, so the key is a property of the timeline rather than
+  // something the engine keeps once it has seen one.
+  clip.key = vd_key_none();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  int rgb[3] = {0, 0, 0};
+  VD_CHECK(frame_rgb(e, 0.03, 0.5, rgb));
+  VD_CHECK(rgb[1] > rgb[0] + 40);  // green again, unkeyed
+
+  vd_engine_destroy(e);
+}
+
+// The point of the whole feature: the lane underneath shows through the hole,
+// rather than the hole being black paint.
+static void test_a_key_shows_the_lane_beneath(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clips[2];
+  clips[0] = vd_timeline_clip_default();
+  clips[0].path = fixture("solid_sd_orange.mp4");
+  clips[0].start = 0;
+  clips[0].duration = 2 * SECOND;
+  clips[0].fit = VD_FIT_STRETCH;
+  clips[0].track = 0;
+
+  clips[1] = vd_timeline_clip_default();
+  clips[1].path = fixture("green_screen.mp4");
+  clips[1].start = 0;
+  clips[1].duration = 2 * SECOND;
+  clips[1].fit = VD_FIT_STRETCH;
+  clips[1].track = 1;
+  clips[1].key = screen_key();
+
+  VdTimeline timeline;
+  memset(&timeline, 0, sizeof(timeline));
+  timeline.width = 320;
+  timeline.height = 240;
+  timeline.frame_rate = (VdRational){30, 1};
+  timeline.clips = clips;
+  timeline.clip_count = 2;
+
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND / 2);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_pixel_is(e, 0.03, 0.5, ORANGE, "the lane beneath, through it");
+  check_frame_is(e, SUBJECT, "and the subject over the top of it");
+
+  vd_engine_destroy(e);
+}
+
+// A key is four numbers and a colour at every instant of the clip, like a
+// grade and unlike the animation and the transition beside it on the struct.
+static void test_a_key_does_not_change_through_the_clip(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.key = screen_key();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  const VdTick at[] = {0, SECOND / 2, SECOND, 2 * SECOND - 1};
+  for (size_t i = 0; i < sizeof(at) / sizeof(at[0]); i++) {
+    vd_engine_seek(e, at[i]);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+    check_frame_pixel_is(e, 0.03, 0.5, BLACK, "keyed at every instant");
+    check_frame_is(e, SUBJECT, "and kept at every instant");
+  }
+
+  vd_engine_destroy(e);
+}
+
+// Dragging a tolerance must not reopen the file. The slider is the one control
+// somebody will move continuously while watching the picture, so a reopen per
+// value would stutter the preview for the whole drag.
+static void test_dragging_a_key_keeps_the_decoders(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.key = screen_key();
+  vd_engine_set_timeline(e, &timeline);
+  vd_engine_seek(e, 0);
+  vd_engine_render_now(e);
+
+  VdEngineStats before;
+  vd_engine_stats(e, &before);
+  VD_CHECK_EQ(before.open_decoders, 1);
+
+  for (int i = 1; i <= 20; i++) {
+    clip.key.tolerance = (float)i / 40.0f;
+    VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+    VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  }
+
+  VdEngineStats after;
+  vd_engine_stats(e, &after);
+  VD_CHECK_EQ(after.open_decoders, 1);
+
+  vd_engine_destroy(e);
+}
+
+// --- the view --------------------------------------------------------------
+
+// A view mode is the engine's, so it reaches every layer at once — and it is
+// not in the render list, so replacing the timeline does not clear it.
+static void test_the_matte_view_draws_every_layers_alpha(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VD_CHECK_EQ(vd_engine_view(e), VD_VIEW_NORMAL);
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.key = screen_key();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+
+  vd_engine_set_view(e, VD_VIEW_MATTE);
+  VD_CHECK_EQ(vd_engine_view(e), VD_VIEW_MATTE);
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  const int WHITE[3] = {255, 255, 255};
+  check_frame_pixel_is(e, 0.03, 0.5, BLACK, "black where the screen was");
+  check_frame_is(e, WHITE, "white where the subject is");
+
+  // An edit does not clear it: the view belongs to the person looking, and
+  // nothing in a document can say anything about one.
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_view(e), VD_VIEW_MATTE);
+
+  vd_engine_set_view(e, VD_VIEW_NORMAL);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+  check_frame_is(e, SUBJECT, "and back to the picture");
+
+  vd_engine_destroy(e);
+}
+
+// --- the eyedropper ---------------------------------------------------------
+
+static void check_pick_is(VdEngine* e, float u, float v, const int rgb[3],
+                          const char* what) {
+  uint32_t argb = 0;
+  vd_checks++;
+  const int32_t result = vd_engine_pick_color(e, u, v, &argb);
+  if (result != VD_OK) {
+    vd_failures++;
+    fprintf(stderr, "FAIL %s: pick returned %d\n", what, result);
+    return;
+  }
+  const int r = (int)((argb >> 16) & 0xFFu);
+  const int g = (int)((argb >> 8) & 0xFFu);
+  const int b = (int)(argb & 0xFFu);
+  if ((argb >> 24) != 0xFFu || !near_enough(r, rgb[0]) ||
+      !near_enough(g, rgb[1]) || !near_enough(b, rgb[2])) {
+    vd_failures++;
+    fprintf(stderr,
+            "FAIL %s\n  expected RGB (%d, %d, %d)\n  actual   RGB (%d, %d, %d)\n",
+            what, rgb[0], rgb[1], rgb[2], r, g, b);
+  }
+}
+
+static void test_the_eyedropper_picks_what_is_under_it(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  check_pick_is(e, 0.5f, 0.08f, SCREEN_ABOVE_SUBJECT, "the screen");
+  check_pick_is(e, 0.5f, 0.5f, SUBJECT, "and the subject");
+
+  vd_engine_destroy(e);
+}
+
+// **The reason it renders through VD_VIEW_PLAIN.** A colour picked out of a
+// graded frame is a colour that moves the moment the grade does — and with a
+// key already on, the screen the user is pointing at has been removed, so
+// there is nothing under the cursor at all.
+static void test_the_eyedropper_ignores_the_grade_and_the_key(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.color = vd_color_neutral();
+  clip.color.saturation = -1.0f;  // no chroma left to pick at all
+  clip.key = screen_key();        // and the screen already removed
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  check_pick_is(e, 0.5f, 0.08f, SCREEN_ABOVE_SUBJECT,
+                "the screen as the camera recorded it");
+  check_pick_is(e, 0.5f, 0.5f, SUBJECT, "and the subject, ungraded");
+
+  vd_engine_destroy(e);
+}
+
+// And it puts the frame back. The pick publishes into the same texture the
+// preview is showing, so a paused editor would otherwise sit on an ungraded,
+// unkeyed frame until something else happened to repaint it.
+static void test_the_eyedropper_leaves_the_frame_as_it_found_it(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  clip.key = screen_key();
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  vd_engine_seek(e, SECOND);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  uint32_t argb = 0;
+  VD_CHECK_EQ(vd_engine_pick_color(e, 0.5f, 0.08f, &argb), VD_OK);
+
+  check_frame_pixel_is(e, 0.03, 0.5, BLACK, "still keyed after a pick");
+  check_frame_is(e, SUBJECT, "and still the same picture");
+  VD_CHECK_EQ(vd_engine_view(e), VD_VIEW_NORMAL);
+
+  vd_engine_destroy(e);
+}
+
+static void test_the_eyedropper_refuses_a_point_off_the_frame(void) {
+  VdEngine* e = make_engine();
+  if (!e) return;
+
+  VdTimelineClip clip;
+  VdTimeline timeline = one_clip_timeline(&clip, "green_screen.mp4");
+  VD_CHECK_EQ(vd_engine_set_timeline(e, &timeline), VD_OK);
+  VD_CHECK_EQ(vd_engine_render_now(e), VD_OK);
+
+  uint32_t argb = 0;
+  VD_CHECK(vd_engine_pick_color(e, -0.1f, 0.5f, &argb) != VD_OK);
+  VD_CHECK(vd_engine_pick_color(e, 1.5f, 0.5f, &argb) != VD_OK);
+  VD_CHECK(vd_engine_pick_color(e, 0.5f, -0.01f, &argb) != VD_OK);
+  VD_CHECK(vd_engine_pick_color(e, 0.5f, 0.5f, NULL) != VD_OK);
+  VD_CHECK(vd_engine_pick_color(NULL, 0.5f, 0.5f, &argb) != VD_OK);
+
+  // The far corner is inside, though, and the clamp is what makes it so.
+  VD_CHECK_EQ(vd_engine_pick_color(e, 1.0f, 1.0f, &argb), VD_OK);
+
+  vd_engine_destroy(e);
+}
+
 int main(void) {
   test_lifecycle();
   test_rejects_a_bad_timeline();
@@ -2357,5 +2650,14 @@ int main(void) {
   test_audio_is_the_master_clock();
   test_a_silent_timeline_uses_the_wall_clock();
   test_audio_follows_a_seek();
+  test_a_key_on_a_clip_reaches_the_frame();
+  test_a_key_shows_the_lane_beneath();
+  test_a_key_does_not_change_through_the_clip();
+  test_dragging_a_key_keeps_the_decoders();
+  test_the_matte_view_draws_every_layers_alpha();
+  test_the_eyedropper_picks_what_is_under_it();
+  test_the_eyedropper_ignores_the_grade_and_the_key();
+  test_the_eyedropper_leaves_the_frame_as_it_found_it();
+  test_the_eyedropper_refuses_a_point_off_the_frame();
   return VD_REPORT();
 }
