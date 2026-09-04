@@ -32,6 +32,14 @@ final class TimelineGeometry {
   static const double trackHeight = 48;
   static const double trackGap = 4;
 
+  /// The strip along the bottom that says how much timeline there is.
+  static const double scrollbarHeight = 10;
+
+  /// A thumb never shrinks below this, however long the project. A bar you
+  /// cannot see is a bar you cannot grab, and the one place that bites is the
+  /// long project — which is the only case it exists for.
+  static const double minThumbWidth = 28;
+
   /// Zoom bounds. The low end fits about half an hour on a laptop screen; the
   /// high end puts a 30 fps frame at ~40 px, which is as far in as anyone can
   /// use before frames stop being the unit that matters.
@@ -111,7 +119,49 @@ final class TimelineGeometry {
 
   /// Height needed to show [trackCount] lanes without scrolling.
   static double heightFor(int trackCount) =>
-      rulerHeight + trackCount * (trackHeight + trackGap) + trackGap;
+      rulerHeight + trackCount * (trackHeight + trackGap) + trackGap +
+          scrollbarHeight;
+
+  /// The strip the scrollbar occupies in a view [width] by [height].
+  ///
+  /// Measured from the **bottom** rather than from the last lane, because
+  /// [heightFor] is clamped by the editor and a project with many lanes gets
+  /// less room than it asked for. Pinned to the bottom it is where the eye
+  /// looks for it either way, and the pointer and the paint agree because both
+  /// ask here.
+  static Rect scrollbarBand(double width, double height) =>
+      Rect.fromLTRB(headerWidth, height - scrollbarHeight, width, height);
+
+  /// The thumb for a project [content] long shown in a view [width] wide, or
+  /// null when the whole thing fits and a scrollbar would be saying nothing.
+  ///
+  /// `scale` is content pixels per thumb pixel, so dragging the thumb needs no
+  /// second copy of this arithmetic.
+  ///
+  /// What there is to reach is the longer of the film and wherever the view has
+  /// actually been panned to. [TimelineController] bounds scrolling at the end
+  /// of the film, so the second half of that is normally moot — but the bound
+  /// needs a window width and this function does not, and a film that has just
+  /// got shorter leaves the view beyond its own end until something re-applies
+  /// it. A bar drawing the view outside its own track would be lying about
+  /// where you are, and it costs one `max` not to.
+  ({double left, double width, double scale})? scrollbarThumb(
+      Tick content, double width) {
+    final track = width - headerWidth;
+    if (track <= 0) return null;
+
+    final contentPx = math.max(content.raw * pxPerTick, scrollPx + track);
+    if (contentPx <= track + 0.5) return null;
+
+    final thumb = math.max(minThumbWidth, track * track / contentPx);
+    final travel = track - thumb;
+    final reach = contentPx - track;
+    return (
+      left: travel <= 0 ? 0 : (scrollPx / reach) * travel,
+      width: thumb,
+      scale: travel <= 0 ? 0 : reach / travel,
+    );
+  }
 
   TimelineGeometry copyWith({double? pxPerSecond, double? scrollPx}) =>
       TimelineGeometry(

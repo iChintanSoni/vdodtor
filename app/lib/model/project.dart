@@ -228,6 +228,21 @@ final class Project {
   bool canAddTrackOfKind(TrackKind kind) =>
       trackCountOfKind(kind) < maxTracksOfKind(kind);
 
+  /// What the next lane of [kind] should be called.
+  ///
+  /// [plus] is how many lanes of that kind are already being made in the same
+  /// edit but are not in this project yet, so a command adding three at once
+  /// numbers them 2, 3, 4 rather than 2, 2, 2.
+  String nextTrackName(TrackKind kind, {int plus = 0}) {
+    final n = trackCountOfKind(kind) + plus + 1;
+    return switch (kind) {
+      TrackKind.main => 'Video',
+      TrackKind.overlay => 'Overlay $n',
+      TrackKind.audio => 'Audio $n',
+      TrackKind.text => 'Text $n',
+    };
+  }
+
   /// Where a new lane of [kind] belongs in [tracks].
   ///
   /// List order *is* compositing order — later renders on top — so this is not

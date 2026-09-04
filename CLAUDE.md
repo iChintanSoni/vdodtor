@@ -339,6 +339,44 @@ cd app/packages/vdodtor_engine && dart run ffigen --config ffigen.yaml
   place an icon comes from; the flag that makes a volume use it lives on the volume
   root, which is why `package_mac.sh` now builds read/write, marks it and compresses
   afterwards.
+- **A trackpad is not a wheel, and macOS sends neither what you would guess.** A
+  discrete wheel notch arrives as a `PointerScrollEvent`; a two-finger swipe carries an
+  `NSEvent` phase, so the embedder sends `PointerPanZoomStart/Update/End` instead — a
+  `Listener` handling only `onPointerSignal` hears nothing at all, which is how the
+  timeline came to be pannable with a mouse and not with the trackpad of the machine it
+  was written on. **The signs are opposite**: the embedder negates a wheel's delta and
+  not a pan's, because a pan is a *drag* and a drag subtracts from a scroll offset where
+  a wheel delta adds to it. And macOS **drops the inertia events** once the fingers lift
+  — "the framework will generate scroll momentum", which `Scrollable` does from drag
+  velocity and a bare `Listener` does not — so momentum is ours to run, on a
+  `FrictionSimulation` off a second ticker, stopped by any gesture that starts. Two
+  further traps: `localPan` is transformed as a *position*, so it arrives with the
+  widget's own place in the window added and every horizontal swipe measures as
+  vertical — accumulate `localPanDelta`, which transforms as a vector — and the axis
+  must be **locked once per gesture**, because both axes carry real numbers and picking
+  the larger one per event makes a drifting hand stutter. `TimelineView` is the only
+  place any of this lives; a widget test that synthesises a mouse proves none of it,
+  which is why the trackpad ones use `PointerDeviceKind.trackpad`.
+- **Scrolling stops at the end of the film, and the bound is the controller's.**
+  `TimelineController` is the only place that knows both numbers it takes — how long the
+  project is, and how wide the window is — so `TimelineGeometry` cannot enforce it and
+  everything that moves the view goes through `_setGeometry` instead. It is re-applied
+  when the *document* moves too: deleting the last clip shortens the film under a view
+  that may be looking past the new end. One consequence worth knowing: when the whole
+  project fits on screen there is nothing to scroll, so zooming no longer holds the
+  playhead still — the film stays left-aligned. The scrollbar is what says there is more
+  film than window at all, and its arithmetic is `TimelineGeometry.scrollbarThumb` so the
+  thing drawn and the thing dragged cannot disagree.
+- **An import makes the lane it needs, whatever the kind.** `MediaImporter.place` used to
+  create a missing lane only for overlays, on the reasoning that a new project already
+  has a main and an audio lane — true the day it was written, and false the moment
+  somebody presses the × every lane but the main one carries. An audio file imported into
+  a project with no audio lane went into the bin, left the timeline untouched, and said
+  nothing. The lane goes in **with the clip as one command**, so undoing the import
+  cannot strand an empty lane, and the one remaining way to be unplaceable — every lane
+  of the kind existing and locked — is reported through `ImportResult.unplaced`, which is
+  deliberately not a `failures` entry: the file *is* in the project and can be dragged out
+  of the bin, so calling it a failed import would be wrong in the other direction.
 - **The site is in this repository because the app cannot be updated.** vdodtor
   hard-codes six `vdodtor.app` addresses — `/`, `/download`, `/pro`, `/licence`,
   `/bugs`, `/source` — into a build with no updater, no remote config and no socket, so

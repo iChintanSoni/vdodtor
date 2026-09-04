@@ -141,6 +141,7 @@ class TimelineController extends ChangeNotifier {
   /// button was guessing at `MediaQuery.width - 240`, which is right until
   /// somebody changes the layout and wrong quietly afterwards.
   double _viewportWidth = 0;
+  double _viewportHeight = 0;
 
   TimelineGeometry get geometry => _geometry;
 
@@ -239,6 +240,10 @@ class TimelineController extends ChangeNotifier {
     // names clips the document no longer has is a selection that silently
     // does nothing when acted on.
     _pruneSelection();
+    // Deleting the last clip shortens the film under a view that may be
+    // looking at where it used to end, so the bound is re-applied whenever the
+    // document moves rather than only when a gesture does.
+    _geometry = _bounded(_geometry);
     notifyListeners();
   }
 
@@ -249,6 +254,20 @@ class TimelineController extends ChangeNotifier {
   }
 
   double get viewportWidth => _viewportWidth;
+
+  /// Set at layout for [viewportWidth]'s reason. Only the scrollbar needs it,
+  /// and only to know where the bottom is.
+  set viewportHeight(double value) {
+    if (value > 0) _viewportHeight = value;
+  }
+
+  double get viewportHeight => _viewportHeight;
+
+  /// The thumb to draw, or null when the whole project fits.
+  ({double left, double width, double scale})? get scrollbarThumb =>
+      _viewportWidth <= 0
+          ? null
+          : _geometry.scrollbarThumb(duration, _viewportWidth);
 
   void zoomAround(double focusX, double factor) {
     _setGeometry(_geometry.zoomedAround(focusX, factor));
@@ -293,9 +312,28 @@ class TimelineController extends ChangeNotifier {
     ));
   }
 
+  /// The furthest right the view may go: the end of the film against the
+  /// right-hand edge, and not a pixel past it.
+  ///
+  /// Scrolling is bounded here rather than in [TimelineGeometry] because this
+  /// is the only place that knows both numbers it takes — how long the project
+  /// is, and how wide the window is. Everything that moves the view goes
+  /// through [_setGeometry], so there is one bound rather than one per gesture.
+  double maxScrollPx(TimelineGeometry g) {
+    final track = _viewportWidth - TimelineGeometry.headerWidth;
+    if (track <= 0) return double.infinity;
+    return math.max(0, duration.raw * g.pxPerTick - track);
+  }
+
+  TimelineGeometry _bounded(TimelineGeometry g) {
+    final max = maxScrollPx(g);
+    return g.scrollPx > max ? g.copyWith(scrollPx: max) : g;
+  }
+
   void _setGeometry(TimelineGeometry next) {
-    if (next == _geometry) return;
-    _geometry = next;
+    final bounded = _bounded(next);
+    if (bounded == _geometry) return;
+    _geometry = bounded;
     notifyListeners();
   }
 
@@ -305,7 +343,7 @@ class TimelineController extends ChangeNotifier {
   /// only this widget reads.
   void pump() {
     if (_following && _viewportWidth > 0) {
-      _geometry = _geometry.scrolledToShow(playhead, _viewportWidth);
+      _geometry = _bounded(_geometry.scrolledToShow(playhead, _viewportWidth));
     }
     notifyListeners();
   }
@@ -436,6 +474,17 @@ class TimelineController extends ChangeNotifier {
   void pointerDown(Offset position,
       {bool additive = false, bool alt = false}) {
     if (position.dx < TimelineGeometry.headerWidth) return;
+
+    // The scrollbar is a widget of its own laid over the bottom of the same
+    // box, and this [Listener] sees every press in that box whatever else
+    // handles it. Without this, grabbing the thumb would also clear the
+    // selection — the press lands below the last lane, which is empty space,
+    // and pressing empty space means "nothing is selected".
+    if (_viewportHeight > 0 &&
+        TimelineGeometry.scrollbarBand(_viewportWidth, _viewportHeight)
+            .contains(position)) {
+      return;
+    }
 
     // The ruler is the scrub strip; the lanes below it are about clips.
     if (position.dy < TimelineGeometry.rulerHeight) {
@@ -1015,12 +1064,11 @@ class TimelineController extends ChangeNotifier {
   /// Adds an overlay lane above the visual lanes already there.
   bool addOverlayTrack() {
     if (!canAddOverlayTrack) return false;
-    final number = project.trackCountOfKind(TrackKind.overlay) + 1;
     store.endGesture();
     store.run(AddTrack(Track.of(
       id: _ids.next('tr-'),
       kind: TrackKind.overlay,
-      name: 'Overlay $number',
+      name: project.nextTrackName(TrackKind.overlay),
     )));
     store.endGesture();
     return true;
@@ -1098,7 +1146,7 @@ class TimelineController extends ChangeNotifier {
         Track.of(
           id: _ids.next('tr-'),
           kind: TrackKind.text,
-          name: 'Text ${project.trackCountOfKind(TrackKind.text) + 1}',
+          name: project.nextTrackName(TrackKind.text),
         );
     final clip = build(_ids.next('c-'), at);
 
@@ -1145,7 +1193,7 @@ class TimelineController extends ChangeNotifier {
   Track _newAudioTrack() => Track.of(
         id: _ids.next('tr-'),
         kind: TrackKind.audio,
-        name: 'Audio ${project.trackCountOfKind(TrackKind.audio) + 1}',
+        name: project.nextTrackName(TrackKind.audio),
       );
 
   // --- detaching audio -----------------------------------------------------
@@ -1207,7 +1255,7 @@ class TimelineController extends ChangeNotifier {
         final track = Track.of(
           id: _ids.next('tr-'),
           kind: TrackKind.audio,
-          name: 'Audio ${project.trackCountOfKind(TrackKind.audio) + created.length + 1}',
+          name: project.nextTrackName(TrackKind.audio, plus: created.length),
         );
         created.add(track);
         lanes[track.id] = [];

@@ -467,7 +467,24 @@ machine is still needed before any of this becomes a product guarantee (see PERF
       Playback moves the playhead from a ticker that runs only while playing, dirtying one
       `RepaintBoundary` — the same discipline `EnginePreview` needed, for the same reason.
       The transport slider is gone: it scrubbed the same playhead over the same range as
-      the ruler now does, and two controls for one value is one of them always wrong
+      the ruler now does, and two controls for one value is one of them always wrong.
+      **Navigating it was then found broken by driving the real app**, in three ways one
+      after another, none of which any existing test could see. macOS does not report a
+      trackpad as a wheel: a two-finger swipe carries an `NSEvent` phase, so the embedder
+      sends `PointerPanZoom*` and a `Listener` handling only `onPointerSignal` hears
+      nothing — the timeline could be panned with a mouse and not with the trackpad of the
+      machine it was written on, and the test that covered it synthesised the one device
+      that worked. Then the embedder **drops the inertia events** after the fingers lift,
+      on the grounds that the framework generates momentum, which `Scrollable` does and a
+      bare `Listener` does not: it stopped dead where every other window on the machine
+      coasts. And scrolling was **unbounded**, so the film could be taken off the left
+      edge into empty space with every gesture that would bring it back looking like the
+      one that had not worked. It now pans with momentum on a friction simulation, locks
+      the axis once per gesture rather than picking the larger one per event, stops with
+      the last frame against the right edge, and **carries a scrollbar** — which is what
+      says the project continues past the window at all. A vertical swipe deliberately
+      does nothing: time runs across, and the wheel maps its one axis onto that only
+      because it has no other to offer
 - [x] **Preview repaint pump**: `textureFrameAvailable:` does not schedule a Flutter frame
       on macOS + Impeller (measured: 0 ui fps without a ticker). `EnginePreview` drives
       repaints from a ticker that runs only during playback and dirties a single
@@ -2228,10 +2245,165 @@ buy Pro, and export 4K — with no help.
 
 ---
 
+## M6 — fast-follow (post-v1)
+
+The brief's fast-follow list, in the order §4 writes it. Open-ended by design:
+v1 has shipped, and what lands here is what the first thousand users ask for.
+
+### Chroma key
+
+- [ ] **`vd_key`: what a matte means, as arithmetic** — the third grading
+      module, and a different kind of thing from the two beside it. `vd_color`
+      is every affine operation on RGB, which is exactly why five sliders fold
+      into one matrix; `vd_lut` is the arbitrary map left over, which is why it
+      arrives as a lattice. A key changes **whether a pixel is there**, not
+      what colour it is, so it is neither — it gets its own module, its own
+      document object and its own inspector section rather than four more
+      fields on `ClipColor`.
+      It takes the same bargain as the two beside it: what a key *means* is
+      plain C with no GPU in the room, asserted on numbers, and what is left in
+      Metal is a distance and a mix that a test could tell you nothing about.
+      Not mirrored in Dart, for `vd_anim`'s reason — nothing in the app draws a
+      matte.
+      **The key runs on chroma, not on RGB.** Distance in RGB makes the matte a
+      function of how brightly that corner of the screen was lit: the shadow on
+      the cyclorama stays and the subject's lit shoulder goes. Converting both
+      the pixel and the key colour to (Cb, Cr) with the BT.709 weights
+      `vd_color.h` already declares takes the light out of the measurement
+      entirely — `alpha = smoothstep(tolerance, tolerance + softness, d)` on
+      the 2D distance between them. Those weights and not the source's own
+      `kr`/`kb`, for the reason saturation already uses them: by then the
+      picture is RGB, and it is the *project's* idea of hue that has to decide
+      or two cameras key to two different greens.
+      **Smoothstep and not a linear ramp.** A linear one leaves a corner where
+      the matte meets solid, and that corner reads as a bright line drawn
+      around the subject — which is the one artefact everybody recognises as
+      "badly keyed".
+      **The despill runs on the same axis, and holds the level.** Subtracting
+      the pixel's projection onto the key's own chroma direction is what makes
+      one space pay for both halves of the feature; doing it in chroma with Y
+      untouched is `vd_color`'s "a white balance keeps its level" pointed at a
+      despill. Pulling green out by taking it off the green *channel* darkens
+      every edge pixel it touches, which trades a green halo for a grey one.
+      **A zeroed `VdChromaKey` is no key twice over**: tolerance 0 means
+      nothing is within 0 of the key colour, and the zeroed colour is black,
+      which is grey, which has no hue to be near at all. `vd_key_is_off` short
+      circuits the shader on the terms `graded` and `lut_size` already have, so
+      an unkeyed fragment takes the arithmetic it took before this existed and
+      **no golden frame moves**. That is an assertion, not a hope.
+      **And the key is measured on the shot as it was shot**, before the five
+      sliders and before the look. The other order makes every control in the
+      COLOUR panel above it secretly a keying control — turn up the contrast
+      and the matte closes, drag saturation and the fringe comes back. The
+      despill runs there too, so what the grade is handed is a corrected plate.
+- [ ] **The key reaches the compositor, and a keyed layer contains** —
+      `VdLayer::key` beside `VdLayer::color` and `VdLayer::look`, per layer for
+      the reason a grade is per layer: a key on the *frame* would key the
+      caption over the shot as well. It reaches the premultiplied layers too —
+      a still, a sticker on a white card — undone and redone around the alpha
+      exactly as `vd_grade_premultiplied` does it, with the matte multiplied
+      into the alpha that was already there.
+      **The one interaction that has to be decided is blur fill.**
+      `ClipTransform.fit` defaults to `blurFill`, so a green-screen clip
+      dropped into a project of a different aspect fills its own bars with a
+      blurred copy of the green — the exact opposite of the ask — and worse,
+      the backdrop offscreen is cleared *opaque*, so the holes in it would then
+      be painted black over the lane underneath, which is the failure
+      `draw_full_frame`'s `hide` comment already describes once. Filling a bar
+      with a blurred copy of a picture you have just declared is not there is a
+      contradiction, so **the compositor reads `VD_FIT_BLUR` as
+      `VD_FIT_CONTAIN` for a keyed layer**. A rendering rule and not a document
+      change — nothing rewrites what the user chose — and the inspector greys
+      the blur-fill chip while a key is on, so the panel and the picture agree.
+- [ ] **`ClipKey`, and no toggle** — colour, tolerance, softness and spill on
+      the document, and `tolerance` *is* the on switch: nothing is within 0 of
+      the key colour, so a key at 0 keys nothing and there is no second flag
+      that can disagree with it. `ClipKey.withColor` brings the tolerance back
+      up when a colour is picked, which is `ClipColor.withLook`'s rule verbatim
+      — a colour chosen after the slider was dragged to nothing would appear to
+      do nothing. `ClipKey.none` writes nothing at all to the file, so every
+      project written before this existed round-trips byte for byte.
+      The section is offered on `showsPicture && !clip.isGenerated`, which is
+      exactly where COLOUR is offered and for the same reason: a key on a
+      rectangle somebody just chose the colour of is a control fighting the one
+      above it.
+- [ ] **The eyedropper, and what it picks** — the control that decides whether
+      the feature is usable at all. Finding a screen's exact green by dragging
+      a colour field is the part of chroma key everybody gives up on.
+      `vd_engine_pick_color(engine, u, v)` renders the current position once
+      with **the grade, the look and the key all suppressed**, and that
+      suppression is the whole point: the green has to be picked as the camera
+      recorded it, or a grade applied afterwards moves the key out from under
+      itself — and with a key already on, there is no green left to point at.
+      It **averages a small patch rather than reading one pixel**, because one
+      pixel of a 4:2:0-compressed screen is noise and a key built on a noisy
+      sample needs a wider tolerance than the screen deserves. And it
+      **renders normally again before returning**: the pick render publishes
+      into the preview texture, and a paused editor would otherwise sit showing
+      an ungraded frame until the next edit.
+      The Flutter half is smaller than it looks. The preview already lives
+      inside an `AspectRatio` of the project's own format with the texture
+      filling it, so a tap maps to normalised output coordinates by one
+      division and no fit arithmetic, and the `Stack` the tour hangs off is
+      where the picking overlay goes.
+- [ ] **The matte view, and where a view mode lives** — white where the picture
+      is kept, black where it has gone: the fastest way to see what a tolerance
+      is actually doing.
+      It is **not** a field on the render list. A view mode is a property of
+      the person looking, not of the document, so it goes on the engine beside
+      the only other two things that are not the document — the clock and the
+      position — as `vd_engine_set_view(engine, VD_VIEW_NORMAL |
+      VD_VIEW_MATTE | VD_VIEW_PLAIN)`. That is what keeps "a frame is a pure
+      function of (document, time)" true: no project file can record a view
+      mode, because it never reaches one. And it keeps "preview and export
+      differ in the clock and in nothing else" true by **naming** the second
+      difference rather than leaving a hole in it — `vd_export` builds its own
+      headless `VdEngine` and never calls this, so a zeroed engine renders
+      exactly what the export writes.
+      `VD_VIEW_PLAIN` is the eyedropper's render, so one enum pays for both
+      features. It crosses the FFI boundary as an index, so it is append only —
+      and it is **two** enums to keep in step rather than the usual three,
+      because it never reaches the document.
+      The toggle is ephemeral app state and **resets when the selection
+      changes**. Somebody who leaves it on and comes back later has a
+      black-and-white editor, which reads as a broken app rather than as a
+      debug view.
+- [ ] **The tests, and one new fixture** — `vd_key_test.c` pins what a key
+      means with no GPU in the room: a green plate keys, a grey key keys
+      nothing, tolerance 0 keys nothing, softness 0 is a hard edge, and a
+      despill holds Y. `vd_compositor_test.c` pins that the shader agrees with
+      it, on a plate built by hand the way the look tests build theirs — the
+      arrangement that already keeps `vd_lut_sample` and the texture fetch
+      honest. One new golden for a keyed plate over a background, and **every
+      existing golden unchanged**, which is the short circuit's proof.
+      A `green_screen.mp4` goes into `engine/tests/media/generate.sh` — a
+      coloured subject on a green field, a few KB, committed like the rest —
+      for the engine and parity tests, because a key that works on a synthetic
+      buffer and not on subsampled chroma is a key that does not work. Dart
+      gets the round trip, `withColor`, the command and an inspector widget
+      test.
+- [ ] **What is deliberately not in it.** Spatial matte controls — shrink,
+      grow, edge blur, a garbage matte — are a second render pass and a
+      different feature: a chroma-space key with a despill is what makes a
+      green screen work, and the rest is what makes it work *well*, which is a
+      decision to take later against real footage. Keyframing the key is the
+      fast-follow keyframes item and not this one. And the bin and the timeline
+      strip still draw green, because a thumbnail is a picture of the *file*,
+      drawn by `vd_thumbnail`, which knows nothing about a clip — right, but
+      worth saying out loud rather than leaving to be discovered.
+
+**Exit criteria:** a green-screen clip dropped on an overlay lane, keyed with
+one click of the eyedropper, shows the lane underneath through it — in the
+preview *and* in the exported file, with the two compared by the parity test
+rather than by eye.
+
+---
+
 ## Post-v1 (priority order)
 
-1. **Fast-follow features:** chroma key · on-device auto-captions (stays free) · voiceover
-   recording · keyframes on all transforms · 120 fps export · premium pack drops
+1. **Fast-follow features:** chroma key (**planned — see M6 above**) · on-device
+   auto-captions (stays free) · voiceover recording · keyframes on all transforms ·
+   120 fps export · premium pack drops
 2. **Windows port:** engine already FFmpeg; compositor backend decision (Vulkan/D3D or ANGLE);
    NVENC/QSV/AMF encode paths; installer + updater
 3. **Web-lite funnel:** WebCodecs/WebGPU backend behind the engine interface;

@@ -29,6 +29,7 @@ final class ImportResult {
     this.reused = const [],
     this.clipsPlaced = 0,
     this.failures = const [],
+    this.unplaced = const [],
   });
 
   /// Assets that were not in the bin before.
@@ -41,13 +42,29 @@ final class ImportResult {
   final int clipsPlaced;
   final List<ImportFailure> failures;
 
+  /// Imported into the bin, but with no lane free to put them on.
+  ///
+  /// Not a [failures] entry: the file is in the project and can be dragged out
+  /// of the bin later, so calling it a failed import would be wrong in the
+  /// other direction. It is here because a drop that changes nothing visible
+  /// and says nothing is the worst of both — which is exactly what an audio
+  /// import did in a project with no audio lane.
+  final List<MediaAsset> unplaced;
+
   int get importedCount => added.length + reused.length;
   bool get isEmpty => importedCount == 0 && failures.isEmpty;
 
   /// One line for the editor's notice bar, or null when there is nothing worth
   /// interrupting for.
   String? get notice {
-    if (failures.isEmpty) return null;
+    if (failures.isEmpty) {
+      if (unplaced.isEmpty) return null;
+      final what = unplaced.length == 1
+          ? '"${unplaced.single.displayName}" is'
+          : '${unplaced.length} files are';
+      return '$what in the media bin — every lane that could hold '
+          '${unplaced.length == 1 ? 'it' : 'them'} is full or locked.';
+    }
     if (failures.length == 1) {
       return 'Could not import "${failures.single.displayName}": '
           '${failures.single.reason}';
@@ -138,6 +155,7 @@ final class MediaImporter {
     final added = <MediaAsset>[];
     final reused = <MediaAsset>[];
     final failures = <ImportFailure>[];
+    final unplaced = <MediaAsset>[];
     var placed = 0;
 
     store.endGesture();
@@ -173,7 +191,11 @@ final class MediaImporter {
 
       if (!placeOnTimeline) continue;
       try {
-        if (place(store, asset)) placed++;
+        if (place(store, asset)) {
+          placed++;
+        } else {
+          unplaced.add(asset);
+        }
       } on EditException catch (error) {
         // The asset is in the bin either way; only the placement failed, and
         // the user can drag it out of the bin themselves.
@@ -187,6 +209,7 @@ final class MediaImporter {
       reused: reused,
       clipsPlaced: placed,
       failures: failures,
+      unplaced: unplaced,
     );
   }
 
@@ -212,19 +235,23 @@ final class MediaImporter {
     var track = _trackOfKind(project, kind);
     Track? created;
     if (track == null) {
-      // Only overlays are missing from a new project, and a sticker with
-      // nowhere to land would be a drop that appeared to do nothing. The lane
-      // goes in with the clip as one command rather than as an AddTrack before
-      // it, so undoing the clip cannot leave an empty lane behind — the same
-      // thing InsertClips.newTracks does for the first caption in a project.
-      if (kind != TrackKind.overlay ||
-          !project.canAddTrackOfKind(TrackKind.overlay)) {
-        return false;
-      }
+      // **Whatever the kind.** A new project has a main lane and an audio
+      // lane, so the one usually missing is the overlay a sticker wants — but
+      // every lane except the main one carries a remove button on its header,
+      // and this used to make the lane for a sticker and give up for a sound.
+      // An audio file imported into a project whose audio lane had been
+      // removed went into the bin and nowhere else, saying nothing: the file
+      // is listed, the timeline is unchanged, and there is no message. The
+      // lane is what the drop meant.
+      if (!project.canAddTrackOfKind(kind)) return false;
+      // The lane goes in with the clip as one command rather than as an
+      // AddTrack before it, so undoing the clip cannot leave an empty lane
+      // behind — the same thing InsertClips.newTracks does for the first
+      // caption in a project.
       created = Track.of(
         id: _ids.next('tr-'),
-        kind: TrackKind.overlay,
-        name: 'Overlay ${project.trackCountOfKind(TrackKind.overlay) + 1}',
+        kind: kind,
+        name: project.nextTrackName(kind),
       );
       track = created;
     }
